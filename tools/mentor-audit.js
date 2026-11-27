@@ -26,7 +26,7 @@ const PREMISE = {
   ptu:       S => S.temp > 38.0,
   d50:       S => S.glu < 4.0,
   abx:       S => (S.infection || 0) > 0.4,
-  atropine:  S => S.hr < 60,
+  atropine:  S => S.hr < 60 || ((S.tags || []).includes('op') && S.cholinergic > 0.5),
   dialysis:  S => S.k > 5.0,
   blood:     S => S.hb < 90,
   scope:     S => (S.tags || []).includes('bleed'),
@@ -47,7 +47,10 @@ for (let i = 0; i < 40; i++) {
   try { spec = G.generate(diff, 5000 + i * 37); } catch (e) { continue; }
   const S = E.create(spec);
   for (let t = 0; t < 20 && S.running && !S.death && !S.discharged; t++) {
-    for (let k = 0; k < 6; k++) E.tick(S, 30);          // 3 分钟
+    for (let k = 0; k < 6; k++) {
+      E.tick(S, 30);
+      G.step(S, 30, E);
+    }
     let hs;
     try { hs = M.hints(S) || []; } catch (e) { hs = []; }
     for (const h of hs) {

@@ -15,7 +15,7 @@ let hits = [], checked = 0;
 for (const m of G.MODULES) {
   const texts = [];
   if (m.hint) texts.push(['case-hint', m.hint]);
-  const rules = (M.RULES && M.RULES[m.tag]) || [];
+  const rules = M.RULES[m.tag] || [];
   for (const r of rules) texts.push(['mentor:' + r.id, [r.c, r.d, r.s].filter(Boolean).join(' ')]);
   for (const [tag, t] of texts) {
     checked++;
@@ -24,7 +24,7 @@ for (const m of G.MODULES) {
 }
 /* 提示里若写\"操作 → X\"，X 必须是真实操作名或药物名（给个大致校验） */
 for (const m of G.MODULES) {
-  const all = [m.hint || ''].concat(((M.RULES && M.RULES[m.tag]) || []).map(r => r.s || '')).join(' ');
+  const all = [m.hint || ''].concat((M.RULES[m.tag] || []).map(r => r.s || '')).join(' ');
   const mm = all.match(/操作\s*→\s*([^\s，。；、）)]+)/g) || [];
   for (const s of mm) {
     const name = s.replace(/操作\s*→\s*/, '').trim();

@@ -114,7 +114,10 @@ function render(canvas, history, groupId) {
     let started = false;
     for (const p of data) {
       const v = p[s.k];
-      if (typeof v !== 'number' || !isFinite(v)) continue;
+      if (typeof v !== 'number' || !isFinite(v)) {
+        started = false;
+        continue;
+      }
       const x = tx(p.t), y = tyFor(si, v);
       if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
     }

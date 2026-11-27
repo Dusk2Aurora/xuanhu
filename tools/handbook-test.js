@@ -91,6 +91,8 @@ const EXPECT = {
   thyroid: '甲状腺危象', hypogly: '低血糖', asthma: '支气管哮喘急性发作',
   organophosphate: '有机磷中毒', apap: '对乙酰氨基酚中毒',
   htnEmergency: '高血压急症', hyponatremia: '低钠血症', pe: '急性肺栓塞',
+  aki: '急性肾损伤', trauma: '失血性休克', hhs: '高渗高血糖状态',
+  tbi: '颅内血肿伴颅压升高',
 };
 const KEYWORD = {
   highK: '高钾', dka: '酮症酸中毒', bleed: '出血', sepsis: '感染性休克',
@@ -99,6 +101,8 @@ const KEYWORD = {
   htnEmergency: '高血压急症', hyponatremia: '低钠', pe: '肺栓塞',
 };
 const COMPLICATIONS = {
+  '高渗高血糖状态': ['高血糖'],
+  '急性肾损伤': ['高钾血症', '代谢性酸中毒'],
   '高钾血症': ['心室颤动', '心静止', '代谢性酸中毒', '急性肾损伤', '低钾血症'],
   '失血性休克': ['心室颤动', '心静止', '代谢性酸中毒', '急性肾损伤'],
   '糖尿病酮症酸中毒': ['代谢性酸中毒', '心静止', '低钾血症', '急性肾损伤'],
@@ -117,7 +121,10 @@ const COMPLICATIONS = {
 function expectedOf(C) {
   const names = [];
   const cases = Array.isArray(C && C.cases) ? C.cases : [];
-  for (const id of cases) if (EXPECT[id]) names.push(EXPECT[id]);
+  for (const id of cases) {
+    const name = EXPECT[id] || GEN.MODULES.find(m => m.id === id)?.name;
+    if (name) names.push(name);
+  }
   if (!names.length) {
     const text = String((C && C.name) || '');
     for (const id of Object.keys(KEYWORD)) {

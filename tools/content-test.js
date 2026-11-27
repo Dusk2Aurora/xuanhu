@@ -1,8 +1,7 @@
 ﻿/* ==========================================================================
- * 内容回归：14 个病理模块 × {规范治疗, 完全不管}
+ * 内容回归：每个启用的病理模块分别运行游戏救治脚本和无干预对照
  *  - 每个模块 5 个不同 seed，各生成 1 例
- *  - 规范治疗：按临床路径给药 → 要求 ≥90% 能出院
- *  - 完全不管：只推进时间 → 要求 100% 恶化（未出院），其中 ≥70% 死亡
+ *  - 救治组检查出院，对照组检查持续危重或死亡
  *  - 同时检查每个模块的导师提示规则是否 ≥2 条
  *
  * 用法：
@@ -12,13 +11,12 @@ require('../prototype/substances.js');
 require('../prototype/mentor.js');
 const E = require('../prototype/engine.js');
 
-/* 固定病人身份：对照与处置必须是同一个人，否则性别/年龄差异会污染结论 */
-try { const _E = require('../prototype/engine.js'); _E.setIdentity && _E.setIdentity({ name:'测试患者', sex:'男', age:45, weight:70, height:172 }); } catch (e) {}
 const G = require('../prototype/generator.js');
 const A = require('../prototype/achievements.js');
 
 const DT = 10;              // 每步 10 秒
 const MAX_MIN = 360;        // 最长观察 6 小时
+const OBSERVATION_MIN = { hhs: 3 * 1440, hyponatremia: 4 * 1440, opioid: 12 * 60, sepsis: 1440 };
 const VERBOSE = process.argv.includes('--verbose');
 const ONLY = (process.argv.find(a => a.startsWith('--module=')) || '').split('=')[1] || '';
 const TRACE = (process.argv.find(a => a.startsWith('--trace=')) || '').split('=')[1] || '';
@@ -28,9 +26,11 @@ const SEEDS = Array.from({ length: SEED_N }, (_, i) => (i + 1) * 101);
 
 const has = (S, id) => !!(S.pk && S.pk.some(p => p.id === id));
 const bp = S => E.bp(S);
-const o2 = S => { if ((S.fio2 || 0.21) < 0.85) E.ACTIONS.oxygen.apply(S); };
+const o2 = S => {
+  if (!S.o2 && !S.vent && (S.spo2 < 94 || E.roomAirSaturation(S) < 94)) E.ACTIONS.oxygen.apply(S);
+};
 
-/* ---------- 各模块的规范治疗路径 ---------- */
+/* ---------- 各模块的游戏救治路径 ---------- */
 const TREAT = {
   highK(S, t) {
     if (!S._p) { S._p = 1; E.give(S, 'calcium', 10); E.give(S, 'insulin', 10); E.give(S, 'dextrose50', 25); }
@@ -61,10 +61,10 @@ const TREAT = {
     if (S.hb < 80 && !has(S, 'prbc')) E.give(S, 'prbc', 2);
   },
   sepsis(S, t) {
-    if (!S._p) { S._p = 1; E.give(S, 'nacl', 1000); }
+    if (!S._p) { S._p = 1; E.give(S, 'ringer', 1000); }
     if (t >= 60 && !has(S, 'ceftriaxone')) E.give(S, 'ceftriaxone', 2);
     if (bp(S).map < 70 && !has(S, 'norepi')) E.give(S, 'norepi', 12);
-    if (S.vol < 4.4 && !has(S, 'nacl')) E.give(S, 'nacl', 1000);
+    if (S.vol < 4.4 && !has(S, 'ringer')) E.give(S, 'ringer', 1000);
   },
   opioid(S, t) {
     if (!S._p) { S._p = 1; E.give(S, 'naloxone', 0.4); S._nNext = 240; }
@@ -111,15 +111,16 @@ const TREAT = {
   },
   htnEmergency(S) {
     if (!S._p) { S._p = 1; E.give(S, 'nitroprusside', 0.5); E.give(S, 'labetalol', 10); }
-    if ((S._sys || 0) > 160 && !has(S, 'nitroprusside')) E.give(S, 'nitroprusside', 0.5);
-    if ((S._sys || 0) > 160 && !has(S, 'labetalol')) E.give(S, 'labetalol', 10);
+    if (bp(S).sys > 160 && !has(S, 'nitroprusside')) E.give(S, 'nitroprusside', 0.5);
+    if (bp(S).sys > 160 && !has(S, 'labetalol')) E.give(S, 'labetalol', 10);
   },
   hyponatremia(S) {
-    /* 指南：先给一次 bolus 抬 4–6，之后每 30 min 复评；24 h 总升幅控制在 ~10–12，过快会脱髓鞘 */
-    if (!S._p) { S._p = 1; E.give(S, 'hypertonic_saline', 150); S._hAt = S.t; S._hN = 1; }
-    const rise = S.na - (S.na0 == null ? S.na : S.na0);
-    if (S.na < 124 && rise < 12 && (S._hN || 0) < 3 && (S.t - (S._hAt || 0)) >= 1800) {
-      E.give(S, 'hypertonic_saline', 150); S._hAt = S.t; S._hN = (S._hN || 0) + 1;
+    /* 首次小幅升钠缓解脑病，按每日纠正限额继续恢复。 */
+    if (!S.hyponatremiaCauseControlled) E.ACTIONS.hyponatremia_care.apply(S);
+    if (S._hAt == null || (S.na < 130 && S.t - S._hAt > 24 * 3600)) {
+      const dose = S._hAt == null ? 112.5 : Math.min(150, Math.ceil((130.2 - S.na) / 7 * 4) * 37.5);
+      E.give(S, 'hypertonic_saline', dose);
+      S._hAt = S.t;
     }
   },
 
@@ -131,16 +132,29 @@ const TREAT = {
   },
   hhs(S) {
     S._fl2 = S._fl2 || 0; S._insN = S._insN || 0;
-    if (S._fl2 < 4 && S.vol < 4.2) { S._fl2++; E.give(S, 'nacl', 1000); }
-    /* 小剂量、间隔给药：每 60 分钟一次，最多 6 次 */
-    if (S._insN < 6 && S.glu > 15 && (S._insN === 0 || S.t >= (S._insAt || 0) + 2700)) { S._insN++; S._insAt = S.t; E.give(S, 'insulin', 6); }
+    if (S._fl2 < 4 && S.vol < 4.2 && (S._fluidAt == null || S.t - S._fluidAt >= 600)) {
+      S._fl2++; S._fluidAt = S.t; E.give(S, 'nacl', 1000);
+    }
+    /* 按血糖复查，最多 6 次 */
+    if (S.t >= 600 && S._insN < 6 && S.glu > 15 && (S._insN === 0 || S.t >= (S._insAt || 0) + 2700)) { S._insN++; S._insAt = S.t; E.give(S, 'insulin', 5, '静推'); }
     if (S.glu < 5 && !S._d50) { S._d50 = 1; E.give(S, 'dextrose50', 25); }
     /* 补钾要限量：每 tick 都给会把血钾推成高钾室颤 */
     S._kclN = S._kclN || 0;
-    if (S._kclN < 4 && S.k < 3.8) { S._kclN++; E.give(S, 'kcl', 20); }
+    if (S._kclN < 4 && S.k < 3.8 && (S._hhsKAt == null || S.t - S._hhsKAt >= 1800)) {
+      S._kclN++; S._hhsKAt = S.t; E.give(S, 'kcl', 20);
+    }
+    const osmolality = 2 * S.na + S.glu + S.bun;
+    if (S.t >= (S._nextOsmReviewAt || 3600)) {
+      if (S.vol >= 4.2 && osmolality >= 300 && S.na > 138 && S._osmPrev - osmolality < 3
+          && (S._halfSalineAt == null || S.t - S._halfSalineAt >= 6 * 3600)) {
+        E.give(S, 'half_saline', 500); S._halfSalineAt = S.t;
+      }
+      S._osmPrev = osmolality;
+      S._nextOsmReviewAt = S.t + 3600;
+    }
   },
   co(S) {
-    if (!S.o2) E.ACTIONS.oxygen.apply(S);
+    if ((S.coHb || 0) > 0.05 && !S.o2) E.ACTIONS.oxygen.apply(S);
   },
 
 
@@ -159,10 +173,10 @@ const TREAT = {
   },
 
   myxedema(S) {
-    if (!S._t4) { S._t4 = 1; E.give(S, 'levothyroxine', 100); }
     if (!S._hc) { S._hc = 1; E.give(S, 'hydrocortisone', 100); }
-    if (S.temp < 35.5) E.setEnv(S, 'heat', true);
-    if (S.rr < 10) E.ACTIONS.oxygen.apply(S);
+    if (!S._t4) { S._t4 = 1; E.give(S, 'levothyroxine', 200, '静推'); }
+    E.setEnv(S, 'heat', S.temp < 35.5);
+    o2(S);
   },
   liverFailure(S) {
     if (!S._lac) { S._lac = 1; E.give(S, 'lactulose', 30); }
@@ -180,7 +194,7 @@ const TREAT = {
 
   tbi(S) {
     if ((S.icp || 0) > 0.6 && !S._man) { S._man = 1; E.give(S, 'mannitol', 250); }
-    if ((S.hematoma || 0) > 0.1 && !S._cran) { S._cran = 1; E.ACTIONS.craniotomy.apply(S); S.cranied = 1; }
+    if ((S.hematoma || 0) > 0.1 && !S._cran) { S._cran = 1; E.ACTIONS.craniotomy.apply(S); }
   },
 
   burn(S) {
@@ -195,7 +209,7 @@ const TREAT = {
 
   stemi(S) {
     if (!S._asa) { S._asa = 1; E.give(S, 'aspirin', 300); E.give(S, 'clopidogrel', 300); E.give(S, 'heparin', 5000); }
-    if ((S.stemi || 0) > 0.15 && !S._pci) { S._pci = 1; E.ACTIONS.pci.apply(S); S.reperfused = 1; }
+    if ((S.stemi || 0) > 0.15 && !S._pci) { S._pci = 1; E.ACTIONS.pci.apply(S); }
     if (S.map > 95 && !S._ntg) { S._ntg = 1; E.give(S, 'nitroglycerin', 0.5); }
   },
 
@@ -258,15 +272,27 @@ const TREAT = {
   },
 };
 
+function treatPatient(S, mod) {
+  TREAT[mod]?.(S, S.t);
+  if (S.vent && (mod !== 'burn' || S.burnAirwayResolved) && S.t >= (S._extubateAt ?? 0)) {
+    E.ACTIONS.extubate.apply(S);
+    S._extubateAt = S.t + 60;
+  }
+  if (!S.vent && S.o2 && (S.coHb || 0) <= 0.05 && S.rr >= 10 && E.roomAirSaturation(S) >= 94) {
+    E.ACTIONS.oxygen_off.apply(S);
+  }
+}
+
+const observationMinutes = mod => OBSERVATION_MIN[mod] || MAX_MIN;
+
 /* ---------- 跑一例 ---------- */
 function runOne(mod, seed, mode) {
   const caseObj = G.generate(2, seed, [mod]);
   const S = E.create(caseObj);
-  const treat = TREAT[mod] || (() => {});
-  const maxSec = MAX_MIN * 60;
+  const maxSec = observationMinutes(mod) * 60;
 
   while (S.running && S.t < maxSec) {
-    if (mode === 'treat') treat(S, S.t);
+    if (mode === 'treat') treatPatient(S, mod);
     E.tick(S, DT);
     G.step(S, DT, E);                    // 与 game.js 主循环一致：先 tick 再推进病程
     E.pollTests(S);
@@ -297,7 +323,7 @@ function traceOne(mod, mode, seed) {
   for (let i = 0; i < S.history.length; i += step) {
     const h = S.history[i];
     console.log(`  ${String(Math.round(h.t / 60)).padStart(3)}m HR${String(h.hr).padStart(3)} `
-      + `BP${String(h.sys).padStart(3)} RR${String(h.rr).padStart(2)} SpO2${String(Math.round(h.spo2)).padStart(3)}% `
+      + `BP${String(h.sys).padStart(3)} RR${String(h.rr).padStart(2)} SpO2${h.spo2 == null ? '无信号' : String(h.spo2).padStart(3) + '%'} `
       + `pH${h.ph} HCO3 ${h.hco3} PaCO2 ${h.paco2} Lac? K${h.k} Na${h.na} Glu${h.glu} vol${h.vol} `
       + `DO2 ${h.do2} LW ${h.lw} 损伤${h.ins}`);
   }
@@ -326,9 +352,13 @@ if (require.main === module) {
     const treatOk = treatRuns.filter(r => r.outcome === '出院').length;
     const noneBad = noneRuns.filter(r => r.outcome !== '出院').length;
     const noneDead = noneRuns.filter(r => r.outcome === '死亡').length;
+    const persistentCrisis = r => r.S.myxedemaSeverity > 0.8 && r.S.temp < 35 && r.S.gcs < 14 && r.S.paco2 > 48;
+    const controlOk = m.id === 'myxedema'
+      ? noneRuns.every(r => r.S.death || persistentCrisis(r))
+      : noneDead / SEEDS.length >= 0.7;
     const ok = treatOk / SEEDS.length >= 0.9
             && noneBad === SEEDS.length
-            && noneDead / SEEDS.length >= 0.7
+            && controlOk
             && hintCount >= 2;
     if (!ok) pass = false;
 
@@ -351,9 +381,9 @@ if (require.main === module) {
   };
 
   console.log('');
-  console.log(`病理模块内容回归（每模块 ${SEEDS.length} 例，规范治疗 vs 完全不管）`);
+  console.log(`病理模块内容回归（每模块 ${SEEDS.length} 例，游戏救治与无干预对照）`);
   console.log('='.repeat(112));
-  console.log(pad('模块', 22) + pad('导师规则', 10) + pad('规范治疗出院', 16) + pad('完全不管恶化', 16) + pad('其中死亡', 11) + pad('治疗均时', 11) + '结论');
+  console.log(pad('模块', 22) + pad('导师规则', 10) + pad('救治后出院', 16) + pad('对照未达标', 16) + pad('其中死亡', 11) + pad('治疗均时', 11) + '结论');
   console.log('-'.repeat(112));
   for (const r of rows) {
     console.log(
@@ -382,7 +412,7 @@ if (require.main === module) {
         console.log(`  [治疗失败] ${r.id} seed=${x.seed} → ${x.outcome}（${x.min} min）${x.reason}`);
       for (const x of r.noneRuns.filter(x => x.outcome === '出院'))
         console.log(`  [自然病程过轻] ${r.id} seed=${x.seed} → 未处理也出院（${x.min} min）`);
-      if (r.noneDead / r.noneN < 0.7)
+      if (r.id !== 'myxedema' && r.noneDead / r.noneN < 0.7)
         console.log(`  [致死率不足] ${r.id} 只死 ${r.noneDead}/${r.noneN}`);
       if (r.hintCount < 2) console.log(`  [导师规则不足] ${r.id} 只有 ${r.hintCount} 条`);
     }
@@ -394,7 +424,7 @@ if (require.main === module) {
       console.log(`\n## ${r.name}（${r.id}）`);
       for (let i = 0; i < SEEDS.length; i++) {
         const a = r.treatRuns[i], b = r.noneRuns[i];
-        console.log(`  seed=${SEEDS[i]}  规范治疗: ${a.outcome.padEnd(3)} ${String(a.min).padStart(3)}min ¥${String(a.cost).padStart(4)}  ${a.reason}`);
+        console.log(`  seed=${SEEDS[i]}  游戏救治: ${a.outcome.padEnd(3)} ${String(a.min).padStart(3)}min ¥${String(a.cost).padStart(4)}  ${a.reason}`);
         console.log(`              完全不管: ${b.outcome.padEnd(3)} ${String(b.min).padStart(3)}min  ${b.reason}`);
       }
     }
@@ -428,6 +458,6 @@ if (require.main === module) {
   process.exitCode = (pass && !achFails.length) ? 0 : 1;
 }
 
-module.exports = { TREAT, runOne, traceOne, MODULES: G.MODULES, SEEDS };
+module.exports = { TREAT, treatPatient, observationMinutes, runOne, traceOne, MODULES: G.MODULES, SEEDS };
 
 

@@ -106,7 +106,7 @@ const CASES = {
     id: 'sepsis', name: '感染性休克',
     comorbidities: ['肺部感染'],
     age: 67, sex: '男', weight: 70, bloodType: 'O',
-    complaint: '发热咳嗽 3 天，今日意识模糊、尿少。血压 78/46，皮肤花斑。',
+    complaint: '发热咳嗽 3 天，今日意识模糊、尿少，皮肤花斑。',
     init: {
       vol: 3.70, k: 4.3, na: 132, cl: 98, ca: 1.15, hco3: 17, lac: 5.8, glu: 8.2,
       cr: 186, bun: 24.0, hb: 108, wbc: 19.5, plt: 140,
@@ -231,6 +231,8 @@ const DRUGS = {
 };
 
 /* ---------------- 操作 ---------------- */
+const DELIVERY_DURATION = 10 * 60;
+
 function setBleedingRate(S, site, rate) {
   S.bleedingSites[site] = rate;
   S.bleedRate = Object.values(S.bleedingSites).reduce((sum, value) => sum + value, 0);
@@ -249,15 +251,15 @@ function restoreBleeding(S, saved) {
 
 const ACTIONS = {
   delivery: {
-    name: '终止妊娠', cost: 1600,
-    desc: '子痫前期的唯一根治手段：胎盘娩出后血管痉挛与血小板消耗才会停止。',
+    name: '启动分娩流程', cost: 1600,
+    desc: '启动重度子痫前期的产科处置。模拟流程耗时 10 分钟，胎盘娩出后母体血管痉挛才开始缓解。',
     apply: (S) => {
-      if (!S.tags.includes('preeclampsia')) { S.log.push(['操作', '当前病例无终止妊娠指征', 'warn']); return; }
-      if (S.delivered) { S.log.push(['操作', '已经终止妊娠', 'warn']); return; }
-      S.delivered = true;
-      S.deliveryAt = S.t;
-      S.svr = Math.max(18, (S.svr || 26) - 3);
-      S.log.push(['操作', '终止妊娠 → 胎盘娩出，血管痉挛开始缓解', 'good']);
+      if (!S.running) { S.log.push(['操作', '当前病例已停止推进', 'warn']); return; }
+      if (!S.tags.includes('preeclampsia')) { S.log.push(['操作', '当前病例无分娩处置指征', 'warn']); return; }
+      if (S.delivered) { S.log.push(['操作', '分娩流程已完成', 'warn']); return; }
+      if (Number.isFinite(S.deliveryStartedAt)) { S.log.push(['操作', '分娩流程进行中', 'warn']); return; }
+      S.deliveryStartedAt = S.t;
+      S.log.push([fmt(S.t), '已启动分娩流程，预计 10 分钟后完成', 'good']);
     },
   },
 
@@ -619,7 +621,9 @@ function create(caseId) {
     rhythm: 'sinus',
     drugs: [], eff: { insulin: 0, norepi: 0, amio: 0, furo: 0, ppi: 0 },
     pk: [], benzoPkVersion: 1, mod: makeMod(), modBase: makeMod(),
-    log: [], tests: {}, score: 100, death: null, discharged: false,
+    log: [], tests: {}, labSnap: {}, labPrevious: {}, lungExam: { latest: null, previous: null },
+    score: 100, death: null, discharged: false,
+    delivered: false, deliveryStartedAt: null, deliveryAt: null,
     caProtectUntil: -1, dialysisUntil: -1, o2: 0, fio2: 0.21, mapBoost: 0,
     bleedStopped: false, cost: 0, events: [], arrests: 0, infection: 0,
     coag: 1.0, tox: { benzo: 0, op: 0, apap: 0 }, env: makeEnv(),
@@ -1103,6 +1107,17 @@ function urineOutput(S, renalPerf) {
 /* =========================================================================
  * 每帧推进
  * ========================================================================= */
+function finishDelivery(S) {
+  if (!S.running || S.delivered || !Number.isFinite(S.deliveryStartedAt)) return;
+  const dueAt = S.deliveryStartedAt + DELIVERY_DURATION;
+  /* 0.2 秒模拟步长反复相加会在边界处产生微小舍入误差。 */
+  if (S.t < dueAt - 1e-7) return;
+  S.delivered = true;
+  S.deliveryAt = dueAt;
+  S.svr = Math.max(18, (S.svr || 26) - 3);
+  S.log.push([fmt(dueAt), '胎盘已娩出，母体血管痉挛开始缓解，进入产后观察', 'good']);
+}
+
 function tick(S, dtSec) {
   if (!S.running) return S;
   const dtMin = Math.max(1e-5, dtSec / 60);
@@ -1680,6 +1695,8 @@ function tick(S, dtSec) {
 
   }
 
+  finishDelivery(S);
+
   /* ---------- 19. 历史 ---------- */
   if (!S._lastHist || S.t - S._lastHist >= 10) {
     S._lastHist = S.t;
@@ -1892,12 +1909,52 @@ function dischargeCheck(S) {
   return { ok: bad.length === 0, reasons: bad, heartRateTarget };
 }
 
-/* --- 开检验：延迟出结果 --- */
+/* --- 主动听诊、开检验 --- */
+function auscultate(S) {
+  const sounds = [];
+  const cholinergic = (1 - (S.acheActivity ?? 1)) * (1 - (S.muscarinicBlock ?? 0));
+  const airway = S.airwayResistance || 0;
+  const inhalationInjury = S.tags?.includes('burn');
+  if (S.lungWater >= 0.65) sounds.push('多肺区较多湿啰音');
+  else if (S.lungWater >= 0.32) sounds.push('肺底少量湿啰音');
+  if (cholinergic >= 0.25) sounds.push('痰鸣音');
+  if ((!inhalationInjury || S.tags?.includes('asthma')) && airway >= 0.30) {
+    sounds.push(airway >= 0.65 ? '广泛哮鸣音' : '散在哮鸣音');
+  }
+  const breathSound = (S.rr < 8 || (!S.vent && inhalationInjury && airway >= 0.55)) ? '呼吸音减弱' : '呼吸音可闻';
+  const bilateral = sounds.length ? `${breathSound}，伴${sounds.join('、')}` : breathSound;
+  /* 现有气胸病例设定为左侧，减压后残余气胸仍可使该侧呼吸音减弱。 */
+  const left = S.tensionPTX >= 0.65 ? '呼吸音消失' : S.tensionPTX > 0 ? '呼吸音减弱' : bilateral;
+  const result = { t: S.t, left, right: bilateral };
+  S.lungExam = { latest: result, previous: S.lungExam?.latest ?? null };
+  S.log.push([fmt(S.t), `双肺听诊 · 左肺${left}；右肺${bilateral}`, 'info']);
+  return result;
+}
+
+function isSerialBloodTest(id) {
+  return id === 'cbc' || id === 'abg';
+}
+
+function testSample(S, id) {
+  const sample = snapshot(S);
+  if (id === 'cbc') {
+    sample.wbc = Number.isFinite(S.wbc) ? r1(S.wbc) : null;
+    sample.plt = Number.isFinite(S.plt) ? Math.round(S.plt) : null;
+  }
+  const test = TESTS[id];
+  return { t: S.t, s: sample, name: test.name, fields: test.fields };
+}
+
 function orderTest(S, id) {
   const T = TESTS[id]; if (!T) return null;
+  const serial = isSerialBloodTest(id);
+  const current = S.tests[id];
+  if (serial && current && !current.done) return current.readyAt;
   const readyAt = S.t + T.min * 60;
+  const order = { readyAt, done: false };
+  if (serial) order.sample = testSample(S, id);
   S.cost += T.cost;
-  S.tests[id] = { readyAt, done: false };
+  S.tests[id] = order;
   S.log.push([fmt(S.t), `开出 ${T.name}（${T.min} 分钟后出结果）`, 'info']);
   return readyAt;
 }
@@ -1906,20 +1963,23 @@ function pollTests(S) {
     if (!t.done && S.t >= t.readyAt) {
       t.done = true;
       S.log.push([fmt(S.t), `${TESTS[id].name} 结果已出`, 'good']);
-      /* 保存每项检查出结果时的快照，供之后查看和复查对照。 */
-      const sample = snapshot(S);
-      if (id === 'cbc') {
-        sample.wbc = Number.isFinite(S.wbc) ? r1(S.wbc) : null;
-        sample.plt = Number.isFinite(S.plt) ? Math.round(S.plt) : null;
+      S.labSnap ??= {};
+      const report = t.sample ?? testSample(S, id);
+      if (isSerialBloodTest(id)) {
+        /* 旧存档中的待出报告只保留了预计回报时间。 */
+        if (!t.sample) report.sampledAtKnown = false;
+        report.reportedAt = S.t;
+        S.labPrevious ??= {};
+        if (S.labSnap[id]?.s) S.labPrevious[id] = S.labSnap[id];
+        delete t.sample;
       }
-      S.labSnap = S.labSnap || {};
-      S.labSnap[id] = { t: S.t, s: sample, name: TESTS[id].name, fields: TESTS[id].fields };
+      S.labSnap[id] = report;
       S.lastLabAt = S.t;
     }
   }
 }
 function testValue(S, id) {
-  return TESTS[id] && S.tests[id]?.done ? S.labSnap?.[id]?.s ?? null : null;
+  return TESTS[id] && (isSerialBloodTest(id) || S.tests[id]?.done) ? S.labSnap?.[id]?.s ?? null : null;
 }
 
 function snapshot(S) {
@@ -2003,8 +2063,8 @@ function finalScore(S) {
 }
 
 const API = {
-  setIdentity(p) { IDENTITY = p || null; }, CASES, DRUGS, ACTIONS, TESTS, create, tick, give, acetaminophenExposure, setEnv, finalScore, scoreBreakdown, bp, snapshot,
-              dischargeCheck, orderTest, pollTests, testValue, computeMap, fmt, endCase, setBleedingRate, restoreBleeding,
+  setIdentity(p) { IDENTITY = p || null; }, CASES, DRUGS, ACTIONS, TESTS, DELIVERY_DURATION, create, tick, give, acetaminophenExposure, setEnv, finalScore, scoreBreakdown, bp, snapshot,
+              dischargeCheck, auscultate, orderTest, pollTests, testValue, computeMap, fmt, endCase, setBleedingRate, restoreBleeding,
               benzodiazepineExposure, restoreBenzodiazepines, temperatureStatus, restoreTemperature,
               hill, computePh, computePcwp, roomAirSaturation, restoreCardiorespiratory, restoreDischargeObservation };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;

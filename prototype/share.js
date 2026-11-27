@@ -99,9 +99,8 @@
     if (data.c === 'gen') {
       if (!root.CASEGEN) return null;
       const gen = root.CASEGEN;
-      const generate = (data.g || 1) === 1 ? gen.generateLegacy : gen.generate;
       if (data.g > gen.VERSION) return null;
-      base = E.create(generate(data.d || 3, data.s || 0));
+      base = E.create(gen.generateVersion(data.d || 3, data.s || 0, data.g || 1));
     } else {
       base = E.create(data.c);
     }

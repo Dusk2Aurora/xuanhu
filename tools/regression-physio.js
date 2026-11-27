@@ -259,17 +259,20 @@ for (const id of ['hyperkalemia', 'dka', 'bleed', 'sepsis', 'opioid']) {
 {
   const edema = E.create(G.generate(2, 101, ['edema']));
   E.ACTIONS.oxygen.apply(edema);
-  E.orderTest(edema, 'abg');
+  const samplingAt = E.TESTS.abg.min * 60;
   let consistent = true;
   for (let sec = 0; sec < 18 * 60; sec += 2) {
     E.tick(edema, 2);
     G.step(edema, 2, E);
+    if (edema.t === samplingAt) E.orderTest(edema, 'abg');
     E.pollTests(edema);
     consistent &&= Math.abs(edema.spo2 - E.hill(edema.pao2) * 100) < 0.01;
   }
   const abg = E.testValue(edema, 'abg');
+  const report = edema.labSnap.abg;
   const latest = E.snapshot(edema);
-  check('高浓度吸氧时动脉血气与监护血氧一致', consistent && abg?.oxygenModelVersion === 2 &&
+  check('高浓度吸氧时动脉血气与监护血氧一致', consistent && report?.t === samplingAt &&
+    report.reportedAt === samplingAt + E.TESTS.abg.min * 60 && abg?.oxygenModelVersion === 2 &&
     Math.abs(abg.sao2 - E.hill(abg.pao2) * 100) < 1 && abg.spo2 === abg.sao2 &&
     edema.endCapillaryPo2 > 600 && latest.pao2 < abg.pao2 && latest.spo2 < abg.spo2 &&
     latest.pao2 < edema.endCapillaryPo2 && latest.spo2 < 97,
@@ -305,6 +308,122 @@ for (const id of ['hyperkalemia', 'dka', 'bleed', 'sepsis', 'opioid']) {
     restored.pao2 < 200 && Math.abs(restored.spo2 - E.hill(restored.pao2) * 100) < 0.01 &&
     restored.labSnap.abg === oldSample && oldSample.s.pao2 === 631 && !oldSample.s.oxygenModelVersion,
     `实时 PaO₂ ${Math.round(restored.pao2)} mmHg，旧报告 631 mmHg`);
+}
+
+{
+  const makeBed = () => E.create({ id: 'blood-test', init: { ...G.BASE } });
+  const bed = makeBed();
+  const other = makeBed();
+  Object.assign(bed, { t: 33, hb: 125, wbc: 9.24, plt: 233.4 });
+  const firstReady = E.orderTest(bed, 'cbc');
+  Object.assign(bed, { t: firstReady - 1, hb: 109, wbc: 18.4, plt: 175 });
+  E.pollTests(bed);
+  const waiting = E.testValue(bed, 'cbc') === null;
+  bed.t++;
+  E.pollTests(bed);
+  const first = bed.labSnap.cbc;
+  check('血常规按开单时取样并延迟显示', waiting && first?.t === 33 && first?.reportedAt === firstReady &&
+    first.s.hb === 125 && first.s.wbc === 9.2 && first.s.plt === 233,
+    '等待期间改变血红蛋白、白细胞和血小板');
+
+  const secondAt = bed.t + 12;
+  bed.t = secondAt;
+  const secondReady = E.orderTest(bed, 'cbc');
+  Object.assign(bed, { t: secondAt + 3, hb: 95, wbc: 23, plt: 120 });
+  const reusedReady = E.orderTest(bed, 'cbc');
+  const waitingOnSecond = E.testValue(bed, 'cbc') === first.s;
+  const restored = Object.assign(makeBed(), JSON.parse(JSON.stringify(bed)));
+  restored.t = secondReady;
+  E.pollTests(restored);
+  const second = restored.labSnap.cbc;
+  check('血常规复查保留原样本，待出时不重复下单', reusedReady === secondReady && waitingOnSecond &&
+    restored.cost === 2 * E.TESTS.cbc.cost && second?.t === secondAt && second?.reportedAt === secondReady &&
+    second.s.hb === 109 && second.s.wbc === 18.4 && second.s.plt === 175 &&
+    restored.labPrevious.cbc?.t === 33 && restored.labPrevious.cbc.s.hb === 125 && !other.labSnap.cbc,
+    '等待复查时存档重载，并检查另一床的报告');
+
+  const legacy = makeBed();
+  legacy.t = 2000;
+  legacy.tests.cbc = { readyAt: 2000, done: false };
+  legacy.labSnap.cbc = { t: 100, s: { hb: 130 } };
+  E.pollTests(legacy);
+  check('旧档待出报告保留原回报规则和旧结果', legacy.labSnap.cbc?.sampledAtKnown === false &&
+    legacy.labSnap.cbc.reportedAt === 2000 && legacy.labPrevious.cbc?.s.hb === 130,
+    '旧档缺少开单时样本');
+}
+
+{
+  const ptx = E.create(G.generate(2, 101, ['ptx']));
+  const asthma = E.create(G.generate(2, 101, ['asthma']));
+  const edema = E.create(G.generate(2, 101, ['edema']));
+  const isolated = !asthma.lungExam.latest;
+  const before = E.auscultate(ptx);
+  E.ACTIONS.chestTube.apply(ptx);
+  ptx.t = 35;
+  const after = E.auscultate(ptx);
+  const obstructed = E.auscultate(asthma);
+  const wet = E.auscultate(edema);
+  check('双肺听诊反映病情机制并分床保存复查', isolated && before.left.includes('消失') &&
+    before.left !== before.right && after.left === after.right && after.t === 35 &&
+    ptx.lungExam.previous === before && ptx.lungExam.latest === after && !asthma.lungExam.previous &&
+    obstructed.left.includes('哮鸣音') && obstructed.left === obstructed.right &&
+    wet.left.includes('湿啰音') && wet.left === wet.right,
+    '气胸引流前后、哮喘、肺水肿');
+}
+
+{
+  const makeBed = () => E.create(G.generate(2, 101, ['preeclampsia']));
+  const action = E.ACTIONS.delivery;
+  const attempt = bed => {
+    action.apply(bed);
+    const status = bed.log.at(-1)[2];
+    if (status === 'good') bed.cost += action.cost;
+    return status;
+  };
+  const advance = (bed, seconds) => {
+    E.tick(bed, seconds);
+    G.step(bed, seconds, E);
+  };
+  const bed = makeBed();
+  const noIndication = E.create({ id: 'stable', init: { ...G.BASE } });
+  const { svr, plt } = bed;
+  const accepted = attempt(bed) === 'good';
+  const duplicate = attempt(bed) === 'warn';
+  const rejected = attempt(noIndication) === 'warn';
+  check('分娩启动保留病因，重复和无指征申请不计费', accepted && duplicate && rejected &&
+    bed.deliveryStartedAt === 0 && !bed.delivered && bed.deliveryAt === null && bed.svr === svr &&
+    bed.cost === action.cost && noIndication.deliveryStartedAt === null && noIndication.cost === 0,
+    '常规操作入口按开始时的成功日志计费');
+
+  bed.running = false;
+  advance(bed, E.DELIVERY_DURATION);
+  const stayedPaused = bed.t === 0 && !bed.delivered;
+  bed.running = true;
+  const steps = E.DELIVERY_DURATION / 0.2;
+  for (let step = 1; step < steps; step++) advance(bed, 0.2);
+  const stillPending = !bed.delivered && bed.deliveryAt === null && bed.plt < plt;
+  const { cas, ...stored } = bed;
+  const restored = Object.assign(makeBed(), JSON.parse(JSON.stringify(stored)));
+  const control = Object.assign(makeBed(), JSON.parse(JSON.stringify(stored)), { deliveryStartedAt: null });
+  advance(restored, 0.2);
+  advance(control, 0.2);
+  const completion = /胎盘已娩出/;
+  const atBoundary = restored.deliveryAt === E.DELIVERY_DURATION && restored.delivered &&
+    restored.svr === Math.max(18, control.svr - 3) && restored.plt > bed.plt &&
+    restored.cas.extra(restored).some(reason => reason.includes('产后观察'));
+  attempt(restored);
+  advance(restored, 0.2);
+  check('分娩按模拟时间完成一次并开始产后观察', stayedPaused && stillPending && atBoundary &&
+    restored.cost === action.cost && restored.log.filter(([, msg]) => completion.test(msg)).length === 1,
+    '暂停期间冻结，临界点前重载，完成后再次执行');
+
+  const legacy = Object.assign(makeBed(), { t: 700, delivered: true, deliveryAt: 90, cost: action.cost });
+  const legacyPlt = legacy.plt;
+  const alreadyDelivered = attempt(legacy) === 'warn';
+  advance(legacy, 1);
+  check('旧档已娩出保留完成时刻和产后病程', alreadyDelivered && legacy.deliveryAt === 90 &&
+    legacy.deliveryStartedAt === null && legacy.plt > legacyPlt && legacy.cost === action.cost &&
+    !legacy.log.some(([, msg]) => completion.test(msg)), '兼容即时完成的旧版本');
 }
 
 const fails = out.filter(x => !x.ok);

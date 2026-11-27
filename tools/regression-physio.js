@@ -15,6 +15,24 @@ const out = [];
 function check(name, ok, detail) { out.push({ name, ok, detail }); }
 
 {
+  const apap = E.create(G.generate(1, 123, ['apap']));
+  const waiting = E.dischargeCheck(apap);
+  apap.t = 2 * 3600;
+  check('对乙酰氨基酚中毒的留观时限', waiting.observationEndsAt === apap.t &&
+    waiting.reasons.some(reason => reason.includes('肝损窗口')) && E.dischargeCheck(apap).observationEndsAt === null,
+    '提前等待，到满两小时结束');
+
+  const stemi = E.create(G.generate(1, 123, ['stemi']));
+  const beforePci = E.dischargeCheck(stemi).observationEndsAt;
+  stemi.reperfused = true;
+  stemi.reperfusionAt = stemi.t = 120;
+  const afterPci = E.dischargeCheck(stemi).observationEndsAt;
+  stemi.t = 1020;
+  check('PCI 后的留观时限', beforePci === null && afterPci === 1020 && E.dischargeCheck(stemi).observationEndsAt === null,
+    '从再通时起计十五分钟');
+}
+
+{
   const s = { arrests: 1, t: 3600, cost: 920, death: {}, penalties: 2, penaltyReasons: [{ label: '重复处置', count: 1 }] };
   const report = E.scoreBreakdown(s);
   check('结算分数可由明细逐项还原', report.score === 20 && E.finalScore(s) === 20 &&

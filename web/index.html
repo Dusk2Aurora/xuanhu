@@ -388,6 +388,8 @@ button { color: inherit; }
   cursor: pointer;
 }
 button.drow { width: 100%; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; }
+.paired-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 4px; }
+.related-action { min-height: 44px; border: 0; background: transparent; color: var(--accent); font: inherit; font-size: 13px; cursor: pointer; }
 .drow .nm { flex: 1 1 115px; min-width: 0; font-size: 14px; overflow-wrap: anywhere; }
 .drow .tag { padding: 2px 6px; border-radius: 5px; color: var(--ink-2); background: var(--subtle); font-size: 11px; }
 .drow .amt { color: var(--ink-2); font-family: var(--mono); font-size: 11px; text-align: right; }
@@ -501,8 +503,8 @@ button.drow { width: 100%; border: 0; background: transparent; color: inherit; f
   padding: 5px 0;
 }
 #detail.case-review .case-review-log li + li { border-top: 1px solid var(--line); }
-#detail.case-review summary { color: var(--accent); cursor: pointer; }
-#detail.case-review details dl { margin: 6px 0; }
+#detail summary { color: var(--accent); cursor: pointer; }
+#detail details dl { margin: 6px 0; }
 #detail.case-review .case-review-log time {
   color: var(--ink-2);
   font: 12px/1.625 var(--mono);
@@ -789,7 +791,7 @@ button.drow { width: 100%; border: 0; background: transparent; color: inherit; f
       <button class="pill on" type="button" data-s="1" aria-pressed="true">1×</button>
       <button class="pill" type="button" data-s="4" aria-pressed="false">4×</button>
       <button class="pill" type="button" data-s="16" aria-pressed="false">16×</button>
-      <button class="pill ff" id="ff" type="button" aria-pressed="false">快进</button>
+      <button class="pill ff" id="ff" type="button" aria-pressed="false">快进 20×</button>
     </div>
   </header>
 

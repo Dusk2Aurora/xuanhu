@@ -343,16 +343,20 @@ function openSheet(title, sub, rows, patient) {
   const list = $('#sheetList');
   $('#sheetTitle').innerHTML = `${escapeHtml(title)} <small>${escapeHtml(sub)}</small>`;
   delete $('#sheetTitle').dataset.view;
-  list.innerHTML = rows.map((r, i) => r.sec
-    ? `<div class="sec">${r.sec}</div>`
-    : `<button type="button" class="drow" data-i="${i}"><span class="nm">${r.n}</span>
-        <span class="tag">${r.tag}</span><span class="amt">${r.amt}</span></button>`).join('');
-  list.querySelectorAll('.drow').forEach(el => {
+  list.innerHTML = rows.map((r, i) => {
+    if (r.sec) return `<div class="sec">${r.sec}</div>`;
+    const button = `<button type="button" class="drow" data-i="${i}"><span class="nm">${r.n}</span>
+        <span class="tag">${r.tag}</span><span class="amt">${r.amt}</span></button>`;
+    return r.related ? `<div class="paired-actions">${button}<button type="button" class="related-action" data-i="${i}">${escapeHtml(r.related.label)}</button></div>` : button;
+  }).join('');
+  list.querySelectorAll('button[data-i]').forEach(el => {
     el.addEventListener('click', () => {
       if (!list.contains(el) || !$('#sheet').classList.contains('on')) return;
       if (!hasCurrentSaveEpoch()) return;
       if (patient && !isCurrentPatient(patient)) return;
-      rows[+el.dataset.i].run();
+      const row = rows[+el.dataset.i];
+      if (el.classList.contains('related-action')) row.related.run();
+      else row.run();
     });
   });
   $('#sheet').classList.add('on');
@@ -759,23 +763,30 @@ function chestXrayRows(report) {
     ['影像所见', escapeHtml(report.findings)]];
 }
 
-function chestXrayEntries(patient) {
+function filmDetails(title, report) {
+  const fields = chestXrayRows(report).map(([label, value]) => `<dt>${label}</dt><dd>${value}</dd>`).join('');
+  return `<details><summary>${escapeHtml(title)}</summary><dl>${fields}</dl></details>`;
+}
+
+function openLatestFilm(patient) {
   const reports = E.chestXrayReports(patient);
-  if (!reports.length) return [];
-  return [{ sec: '已回报 · 影像检查' }, ...reports.slice().reverse().map(report => ({
-    n: '床旁胸片结果', tag: caseTime(report.reportedAt), amt: '查看报告',
-    run: () => openDetail('床旁胸片报告', patient.patient.name, chestXrayRows(report), ''),
-  }))];
+  const latest = reports.pop();
+  if (!latest) return;
+  const rows = chestXrayRows(latest);
+  if (reports.length) rows.push(['此前报告', reports.reverse()
+    .map(report => filmDetails('床旁胸片 · ' + caseTime(report.reportedAt), report)).join('')]);
+  openDetail('床旁胸片报告', patient.patient.name, rows, '');
 }
 
 function openChecks(patient) {
   if (!isCurrentPatient(patient)) return;
-  const rows = [...chestXrayEntries(patient), { sec: '床旁查体' }, { n: '双肺听诊', tag: '床旁', amt: '立即查体', run: examineLungs },
+  const rows = [{ sec: '床旁查体' }, { n: '双肺听诊', tag: '床旁', amt: '立即查体', run: examineLungs },
     { sec: '检查开单' }, ...testRows(patient)];
   const d = E.dischargeCheck(patient);
+  const canObserve = canStartObservation(patient, d);
   rows.push({ sec: '结局' });
-  if (!d.ok && (d.circulationObservation?.phase === 'observing' || patient.opioidTox || patient.tags.some(tag => ['hhs', 'hypona', 'sepsis'].includes(tag)))) {
-    rows.push({ n: '稳定期留观快进', tag: '全病房 · 遇重症或检查出结果时停止', amt: '最多 6 小时', run: startObservation });
+  if (canObserve) {
+    rows.push({ n: '稳定期留观快进', tag: '全病房 · 达到观察目标、遇重症或报告回报时停止', amt: '最多 6 小时', run: startObservation });
   }
   rows.push({
     n: d.ok ? '办理出院' : '出院评估', tag: d.ok ? '可出院' : '未达标',
@@ -814,6 +825,7 @@ function openChecks(patient) {
   openSheet('检查 / 结局', patient.patient.name + ' · 开单后出结果', rows, patient);
   $('#sheetTitle').dataset.view = 'checks';
   $('#sheetTitle').dataset.eligible = String(d.ok);
+  $('#sheetTitle').dataset.observation = String(canObserve);
 }
 
 function refreshDischargeAssessment(patient, assessment) {
@@ -835,6 +847,8 @@ function refreshDischargeAssessment(patient, assessment) {
 function testRows(patient) {
   return Object.entries(E.TESTS).map(([id, t]) => ({
     n: t.name, tag: patient.tests[id] && !patient.tests[id].done ? '待出报告' : t.min + ' min',
+    related: id === 'cxr' && E.chestXrayReports(patient).length
+      ? { label: '查看上次报告', run: () => openLatestFilm(patient) } : null,
     amt: patient.tests[id] && !patient.tests[id].done ? '预计 ' + caseTime(patient.tests[id].readyAt) : '¥' + t.cost,
     run: () => {
       const order = patient.tests[id];
@@ -1247,30 +1261,34 @@ function loop(ts) {
   lastTs = ts;
   if (paused || !beds.length) { ecg.pause(); silenceMonitor(); requestAnimationFrame(loop); return; }
   if (beds.length) {
-    const adv = observationUntil == null
+    const observationStartedAt = observationUntil == null ? null : S.t;
+    const hourlyBedCost = realism && S.ins ? (isSevere(S) ? 80 : 25) : 0;
+    let observationEnd = observationStopReason();
+    const adv = observationEnd ? 0 : observationUntil == null
       ? dt * (ff ? 20 : speed) * (nightMode ? 1.3 : 1)
-      : Math.min(dt * 1200, 20, Math.max(0.2, observationUntil - S.t));
-    if (realism && S && S.ins) {
-      const severe = isSevere(S);
-      S.bedCost = (S.bedCost || 0) + (severe ? 80 : 25) * (adv / 3600);   // ¥/小时
-    }
+      : Math.min(dt * 1200, 20);
     acc += adv;
-    while (acc >= 0.2) {
+    while (acc >= 0.2 && !observationEnd) {
       for (const b of beds) {
         if (!b.S.running) continue;
         E.tick(b.S, 0.2);
         if (window.CASEGEN) CASEGEN.step(b.S, 0.2, E);   // 病理模块的病程推进
       }
       acc -= 0.2;
+      if (observationUntil != null) observationEnd = observationStopReason();
+    }
+    if (hourlyBedCost) {
+      const elapsed = observationStartedAt == null ? adv : S.t - observationStartedAt;
+      S.bedCost = (S.bedCost || 0) + hourlyBedCost * elapsed / 3600;
     }
     const pendingFilm = S.tests.cxr && !S.tests.cxr.done;
     for (const b of beds) { try { E.pollTests(b.S); } catch (e) {} }
     if (pendingFilm && S.tests.cxr.done && $('#sheet').classList.contains('on') &&
         $('#sheetTitle').dataset.view === 'checks' && isCurrentPatient(S)) openChecks(S);
-    if (observationUntil != null && (S.t >= observationUntil - 0.1 || beds.some(b => needsAttention(b.S)) || E.dischargeCheck(S).ok)) {
+    if (observationUntil != null && (observationEnd || E.dischargeCheck(S).ok)) {
       stopObservation();
       saveGame();
-      toast('留观快进已结束，请复查病情');
+      toast(observationEnd?.message ?? '已达到出院标准，留观快进已结束', observationEnd?.urgent);
     }
     settleBeds();
     if (!beds.length) { ecg.pause(); silenceMonitor(); requestAnimationFrame(loop); return; }
@@ -1381,7 +1399,8 @@ function renderHUD() {
   syncEnvSheet();
   if ($('#sheetTitle').dataset.view === 'checks' && $('#sheet').classList.contains('on')) {
     const assessment = E.dischargeCheck(S);
-    if ($('#sheetTitle').dataset.eligible !== String(assessment.ok)) openChecks(S);
+    if ($('#sheetTitle').dataset.eligible !== String(assessment.ok) ||
+        $('#sheetTitle').dataset.observation !== String(canStartObservation(S, assessment))) openChecks(S);
     if ($('#detail').dataset.view === 'discharge' && $('#detail').classList.contains('on')) refreshDischargeAssessment(S, assessment);
   }
   syncBedSeverity();
@@ -1400,7 +1419,10 @@ function checkCrucial() {
   }
 }
 function syncSpeedUI() {
-  if (!ff) observationUntil = null;
+  if (!ff && observationUntil != null) {
+    observationUntil = null;
+    acc = 0;
+  }
   $('#speed').querySelectorAll('.pill[data-s]').forEach(x => {
     const active = !ff && +x.dataset.s === speed;
     x.classList.toggle('on', active);
@@ -1409,7 +1431,7 @@ function syncSpeedUI() {
   const f = $('#ff');
   f.classList.toggle('on', ff);
   f.setAttribute('aria-pressed', ff);
-  f.textContent = observationUntil != null ? '结束留观' : ff ? '快进中' : '快进';
+  f.textContent = observationUntil != null ? '结束留观' : ff ? '20× 快进中' : '快进 20×';
 }
 
 function stopObservation() {
@@ -1420,14 +1442,34 @@ function stopObservation() {
 }
 
 function needsAttention(st) {
-  return !st.running || isSevere(st) || st.glu < 3.9 || st.k < 3 || st.rr < 10 || st.rr > 30 || st.ph < 7.2;
+  return !st.running || isSevere(st) || E.bp(st).sys < 70 ||
+    st.glu < 3.9 || st.k < 3 || st.rr < 10 || st.rr > 30 || st.ph < 7.2;
+}
+
+function canStartObservation(patient, assessment) {
+  return !assessment.ok && (assessment.observationEndsAt != null || patient.opioidTox ||
+    patient.tags.some(tag => ['hhs', 'hypona', 'sepsis'].includes(tag)));
+}
+
+function observationStopReason() {
+  if (observationUntil == null) return null;
+  if (beds.some(b => needsAttention(b.S))) {
+    return { message: '有床位需要连续处置，留观快进已结束', urgent: true };
+  }
+  if (beds.some(({ S: patient }) => Object.values(patient.tests).some(test => !test.done && patient.t >= test.readyAt))) {
+    return { message: '有检查报告已回报，留观快进已结束' };
+  }
+  if (S.t >= observationUntil) return { message: '留观快进已结束，请复查病情' };
+  return null;
 }
 
 function startObservation() {
+  if (!isCurrentPatient(S)) return;
+  const assessment = E.dischargeCheck(S);
+  if (!canStartObservation(S, assessment)) return;
   if (beds.some(b => needsAttention(b.S))) { toast('有床位需要连续处置，请先稳定病情', true); return; }
-  const pending = beds.flatMap(b => Object.values(b.S.tests)
-    .filter(test => !test.done).map(test => Math.max(0, test.readyAt - b.S.t)));
-  observationUntil = S.t + Math.min(6 * 3600, ...pending);
+  observationUntil = Math.min(S.t + 6 * 3600, assessment.observationEndsAt ?? Infinity);
+  acc = 0;
   ff = true;
   paused = false;
   closeSheet();
@@ -1863,9 +1905,6 @@ function openCaseRecord(r) {
   const scoreRows = breakdown ? [['基础分', breakdown.base], ...breakdown.items.map(x => [x.label, points(x.delta)])] : [];
   const log = r.操作日志;
   const films = new Map((r.胸片报告 || []).map(report => [report.id, report]));
-  const filmDetails = (title, report) => `<details><summary>${escapeHtml(title)}</summary><dl>${
-    chestXrayRows(report).map(([label, value]) => `<dt>${label}</dt><dd>${value}</dd>`).join('')
-  }</dl></details>`;
   const renderLog = ([stamp, message, sample, reportId]) => {
     const report = films.get(reportId);
     const receipt = report ? filmDetails(message, report) : escapeHtml(message);
@@ -2930,7 +2969,8 @@ function renderAll() {
 const RELEASES = [
   { v: '1.54.3', notes: [
     '出院评估区分循环支持中和撤药后稳定观察，显示血压和剩余观察时间',
-    '检查页可复阅历次床旁胸片，结算和病历里的结果回执可展开影像所见',
+    '床旁胸片开单项旁新增「查看上次报告」，此前报告和结算日志也可展开影像所见',
+    '有待完成的限时观察时，可从「检查 → 结局」启动稳定期留观快进，包括对乙酰氨基酚中毒的肝损观察',
   ] },
   { v: '1.54.2', notes: [
     '修正先锋必、罗氏芬和泰能的商品名归属与搜索结果',

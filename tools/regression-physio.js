@@ -14,6 +14,15 @@ const G = globalThis.CASEGEN;
 const out = [];
 function check(name, ok, detail) { out.push({ name, ok, detail }); }
 
+{
+  const s = { arrests: 1, t: 3600, cost: 920, death: {}, penalties: 2, penaltyReasons: [{ label: '重复处置', count: 1 }] };
+  const report = E.scoreBreakdown(s);
+  check('结算分数可由明细逐项还原', report.score === 20 && E.finalScore(s) === 20 &&
+    report.base + report.items.reduce((n, item) => n + item.delta, 0) === 20 &&
+    report.items.some(item => item.label.includes('重复处置') && item.delta === -6),
+    '骤停、死亡、费用、带教及旧记录');
+}
+
 /* 1. 首帧自洽：create 后与第一个 tick 的血压差 < 3 mmHg */
 for (const id of ['hyperkalemia', 'dka', 'bleed', 'sepsis', 'opioid']) {
   const S = E.create(id);
@@ -174,6 +183,130 @@ for (const id of ['hyperkalemia', 'dka', 'bleed', 'sepsis', 'opioid']) {
   check('旧存档的苯巴比妥独立起效', barbiturate.tox.benzo === 0 && !diagnosed(barbiturate) &&
     barbiturate.gcs < 15 && barbiturate.gcs === matched.gcs, '拮抗剂不清除苯巴比妥作用');
 }
+{
+  const patient = (init = {}) => E.create({ id: 'thermal', init: { ...G.BASE, ...init } });
+  function advance(s, minutes) {
+    for (let i = 0; i < minutes * 6 && s.running; i++) {
+      E.tick(s, 10);
+      G.step(s, 10, E);
+    }
+  }
+
+  const cold = patient({ temp: 34.2 });
+  const matched = patient({ temp: 34.2 });
+  E.give(cold, 'acetaminophen', 500);
+  check('低体温监护与出院判定', E.temperatureStatus(cold.temp) === 'crit' &&
+    E.dischargeCheck(cold).reasons.some(s => s.includes('体温')), '34.2℃ 需复温观察');
+  advance(cold, 45); advance(matched, 45);
+  check('退热药不加重低体温', Math.abs(cold.temp - matched.temp) < 0.01, '单次常规剂量，与对照比较');
+  const fever = patient({ temp: 39, infection: 0.8 });
+  const untreated = patient({ temp: 39, infection: 0.8 });
+  E.give(fever, 'acetaminophen', 500);
+  advance(fever, 45); advance(untreated, 45);
+  check('感染发热对退热药有反应', fever.temp < untreated.temp - 0.1, '病因相同的配对病例');
+
+  const hot = E.create(G.generate(1, 13, ['heatstroke']));
+  const drugOnly = E.create(G.generate(1, 13, ['heatstroke']));
+  const dx = require('../prototype/diagnosis');
+  const ids = s => dx.classifyAll(s).map(d => d.primaryId);
+  check('热射病识别并保留合并感染的可能', dx.classify(hot).primary === '热射病' &&
+    !ids(hot).includes('septicShock') && ids({ ...hot, infection: 0.8 }).includes('septicShock'), '比较有无感染负荷');
+  const myxedema = E.create(G.generate(1, 13, ['myxedema']));
+  check('甲减危象识别并保留合并阿片中毒的可能', dx.classify(myxedema).primary.includes('甲减') &&
+    !ids(myxedema).includes('opioidOD') && ids({ ...myxedema, opioidTox: true }).includes('opioidOD'), '比较有无阿片中毒证据');
+  E.setEnv(hot, 'cooling', true);
+  E.give(drugOnly, 'acetaminophen', 500);
+  advance(hot, 45); advance(drugOnly, 45);
+  check('物理降温达标后停止且继续恢复', hot.running && !hot.env.cooling && hot.heatstrokeCooled &&
+    hot.temp < 38.5 && hot.temp >= 36 && hot.history.some(p => p.temp > 40), hot.temp.toFixed(1) + '℃');
+  check('普通退热药不解除热射病负荷', drugOnly.heatstrokeDrive === 1.30 && !!drugOnly.death, '未启动物理降温');
+
+  const thyroid = E.create(G.generate(1, 13, ['thyroid']));
+  E.give(thyroid, 'propylthiouracil', 200);
+  advance(thyroid, 5);
+  const early = thyroid.thyroidHeatDrive;
+  advance(thyroid, 45);
+  check('甲亢治疗按药物起效延迟降温', early >= 0.70 && thyroid.thyroidHeatDrive < early, '比较 5 与 50 分钟');
+  const combined = E.create(G.generate(3, 13, ['heatstroke', 'seizure']));
+  const reversed = E.create(G.generate(3, 13, ['seizure', 'heatstroke']));
+  const initial = Math.min(combined.temp, reversed.temp);
+  combined.seizure = 0;
+  advance(combined, 1);
+  check('复合病例保留入院高温与独立热负荷', initial > 40 && combined.heatstrokeDrive === 1.3 &&
+    !combined.tempDrive, '热射病合并癫痫，互换模块顺序');
+  const legacy = { tempDrive: 0.38, env: { cold: 1 } };
+  const restored = E.create(G.generate(1, 13, ['heatstroke']));
+  E.restoreTemperature(restored, legacy);
+  check('继承旧存档进行中的降温', restored.heatstrokeDrive === 0.38 && !restored.tempDrive &&
+    restored.env.cooling && !restored.env.cold && legacy.env.cold, '已取得的治疗进度保留');
+
+  const low = patient({ temp: 34.2 });
+  E.setEnv(low, 'cold', true); E.setEnv(low, 'warming', true);
+  advance(low, 45);
+  check('保暖回到目标后自动停止', !low.env.warming && low.log.some(([, msg]) => msg.includes('停止被动保暖')),
+    '在寒冷环境中开启被动保暖');
+}
+{
+  const general = E.create({ id: 'stable', init: { ...G.BASE } });
+  const blocked = (st, hr) => E.dischargeCheck({ ...st, hr }).reasons.some(r => r.includes('心率'));
+  check('通用出院心率与监护读数一致', [50, 114, 115, 119, 119.49].every(hr => !blocked(general, hr)) &&
+    [49, 119.5, 120, NaN].every(hr => blocked(general, hr)), '显示 50–119 次/分');
+  const hypo = E.create(G.generate(1, 13, ['myxedema']));
+  const both = E.create(G.generate(3, 13, ['myxedema', 'organophosphate']));
+  check('合并病例取更严格的心率下限', blocked(hypo, 54) && !blocked(hypo, 55) &&
+    blocked(both, 59) && !blocked(both, 60), '甲减危象 55，有机磷中毒 60');
+}
+{
+  const edema = E.create(G.generate(2, 101, ['edema']));
+  E.ACTIONS.oxygen.apply(edema);
+  E.orderTest(edema, 'abg');
+  let consistent = true;
+  for (let sec = 0; sec < 18 * 60; sec += 2) {
+    E.tick(edema, 2);
+    G.step(edema, 2, E);
+    E.pollTests(edema);
+    consistent &&= Math.abs(edema.spo2 - E.hill(edema.pao2) * 100) < 0.01;
+  }
+  const abg = E.testValue(edema, 'abg');
+  const latest = E.snapshot(edema);
+  check('高浓度吸氧时动脉血气与监护血氧一致', consistent && abg?.oxygenModelVersion === 2 &&
+    Math.abs(abg.sao2 - E.hill(abg.pao2) * 100) < 1 && abg.spo2 === abg.sao2 &&
+    edema.endCapillaryPo2 > 600 && latest.pao2 < abg.pao2 && latest.spo2 < abg.spo2 &&
+    latest.pao2 < edema.endCapillaryPo2 && latest.spo2 < 97,
+    `首份血气 ${abg?.pao2} mmHg / ${abg?.sao2}%，后续 ${latest.pao2} mmHg / ${latest.spo2}%`);
+
+  const support = E.create({ id: 'oxygen-test', init: { ...G.BASE } });
+  Object.assign(support, { shunt: 0.35, t: 300, spontaneousRr: 16, spontaneousCO2: 40, respiratoryAssessmentAt: 300 });
+  E.ACTIONS.oxygen.apply(support);
+  support.vent = 1;
+  const low = E.roomAirSaturation(support, support.spontaneousCO2);
+  E.ACTIONS.extubate.apply(support);
+  const refused = support.vent;
+  support.shunt = 0;
+  E.ACTIONS.extubate.apply(support);
+  E.ACTIONS.oxygen_off.apply(support);
+  E.tick(support, 1);
+  check('撤机与撤氧使用室内空气估算和观察', low < 92 && refused && !support.vent &&
+    support.fio2 === 0.21 && E.roomAirSaturation(support) >= 94 &&
+    E.dischargeCheck(support).reasons.some(reason => reason.includes('室内空气血氧需稳定')),
+    `高分流室气估计 ${low.toFixed(1)}%，解除分流后允许撤机`);
+
+  const healthy = E.create({ id: 'oxygen-test', init: { ...G.BASE } });
+  const co = E.create({ id: 'oxygen-test', init: { ...G.BASE, coHb: 0.4 } });
+  check('碳氧血红蛋白降低氧输送，血氧仪可维持假正常', Math.abs(healthy.pao2 - co.pao2) < 0.1 &&
+    Math.abs(healthy.spo2 - co.spo2) < 0.1 && co.spo2 >= 94 && co.do2 < healthy.do2 * 0.7,
+    `SpO₂ ${co.spo2.toFixed(1)}%，氧输送 ${Math.round(healthy.do2)} → ${Math.round(co.do2)} mL/min`);
+
+  const oldSample = { s: { pao2: 631, spo2: 90 } };
+  const saved = { pao2: 631, spo2: 90, shunt: 0.25, svo2: 0.50, labSnap: { abg: oldSample } };
+  const restored = Object.assign(E.create({ id: 'oxygen-test', init: { ...G.BASE } }), saved);
+  E.restoreCardiorespiratory(restored, saved);
+  check('恢复旧档时重算现时氧合并保留原血气', restored.endCapillaryPo2 === 631 &&
+    restored.pao2 < 200 && Math.abs(restored.spo2 - E.hill(restored.pao2) * 100) < 0.01 &&
+    restored.labSnap.abg === oldSample && oldSample.s.pao2 === 631 && !oldSample.s.oxygenModelVersion,
+    `实时 PaO₂ ${Math.round(restored.pao2)} mmHg，旧报告 631 mmHg`);
+}
+
 const fails = out.filter(x => !x.ok);
 const pad = s => s + ' '.repeat(Math.max(0, 26 - s.length));
 console.log(pad('断言') + '结果   实测');

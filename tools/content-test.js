@@ -190,14 +190,13 @@ const TREAT = {
   heatstroke(S) {
     S._fl4 = S._fl4 || 0;
     if (S._fl4 < 3 && S.vol < 4.3) { S._fl4++; E.give(S, 'nacl', 1000); }
-    if (S.temp > 38.5) E.setEnv(S, 'cold', true);
-    else E.setEnv(S, 'cold', false);
+    E.setEnv(S, 'cooling', S.temp > 38.5);
   },
 
   myxedema(S) {
     if (!S._t4) { S._t4 = 1; E.give(S, 'levothyroxine', 100); }
     if (!S._hc) { S._hc = 1; E.give(S, 'hydrocortisone', 100); }
-    if (S.temp < 35.5) E.setEnv(S, 'heat', true);
+    if (S.temp < 35.5) E.setEnv(S, 'warming', true);
     if (S.rr < 10) E.ACTIONS.oxygen.apply(S);
   },
   liverFailure(S) {

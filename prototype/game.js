@@ -133,7 +133,7 @@ const ORGAN_META = {
   bladder: {n:'膀胱', f: (s, state) => [
     ['尿量', s.uo, 'mL/min'], ['导尿管', state.urineDrained ? '已留置' : '未留置', '']]},
   brain:   {n:'脑',   f: s => [['意识', s.gcs, 'GCS'], ['脑灌注', s.map < 60 ? '不足' : '正常', ''], ['瞳孔', s.gcs < 6 ? '散大' : '等大', '']]},
-  lung:    {n:'肺',   f: s => [['SpO₂', s.spo2 ?? '无信号', s.spo2 == null ? '' : '%'], ['PaO₂', s.pao2, 'mmHg'], ['PaCO₂', s.paco2, 'mmHg'], ['RR', s.rr, s.vent ? 'rpm · 机械通气' : 'rpm']]},
+  lung:    {n:'肺',   f: s => [['SpO₂', s.spo2 ?? '无信号', s.spo2 == null ? '' : '%'], ['PaO₂', s.pao2, 'mmHg'], ['FiO₂', Math.round(s.fio2 * 100), '%'], ['PaCO₂', s.paco2, 'mmHg'], ['RR', s.rr, s.vent ? 'rpm · 机械通气' : 'rpm']]},
   heart:   {n:'心脏', f: s => [['HR', s.hr, 'bpm'], ['EF', s.rhythm === 'sinus' ? s.ef : '—', s.rhythm === 'sinus' ? '%' : ''], ['MAP', s.map, 'mmHg'], ['心律', s.rhythm === 'sinus' ? '窦性' : (s.rhythm === 'vf' ? '室颤' : '心静止'), '']]},
   liver:   {n:'肝脏', f: (s, state) => [['凝血系数', state.coag.toFixed(2), ''], ['肝损伤指数', s.hepato, '']]},
   stomach: {n:'胃',   f: (s, state) => [['上消化道出血', bleedingStatus(state, 'bleed'), '']]},
@@ -189,7 +189,8 @@ function updateOrganValues() {
   });
 }
 /* ---------------- 体征 / 状态 ---------------- */
-function vitalList(s) {
+function vitalList(S) {
+  const s = E.snapshot(S);
   const sys = s.sys, dia = s.dia;
   return [
     {k:'hr',   n:'心率', v:s.hr,  u:'bpm', st: s.hr > 120 || s.hr < 50 ? 'crit' : (s.hr > 100 ? 'warn' : '')},
@@ -197,18 +198,19 @@ function vitalList(s) {
     {k:'rr',   n:s.vent ? '机械通气' : '呼吸', v:s.rr, u:'rpm', st: s.rr < 8 ? 'crit' : (s.rr > 24 ? 'warn' : '')},
     {k:'spo2', n:'血氧', v:s.spo2 ?? '无信号', u:s.spo2 == null ? '' : '%',
      st: s.spo2 == null || s.spo2 < 92 ? 'crit' : (s.spo2 < 95 ? 'warn' : '')},
-    {k:'temp', n:'体温', v:s.temp,u:'℃',   st: s.temp > 37.5 ? 'warn' : ''},
+    {k:'temp', n:'体温', v:s.temp ?? '未测', u:s.temp == null ? '' : '℃',
+     st: E.temperatureStatus(S.temp)},
     {k:'gcs',  n:'意识', v:s.gcs, u:'GCS', st: s.gcs < 12 ? 'crit' : (s.gcs < 15 ? 'warn' : '')},
   ];
 }
 function renderVitals() {
-  const host = $('#vitals'), readings = vitalList(E.snapshot(S));
+  const host = $('#vitals'), readings = vitalList(S);
   if (!host.childElementCount) {
     host.innerHTML = readings.map(v => `<button type="button" class="vpill" data-v="${v.k}">
       <span class="dot"></span><span class="k">${v.n}</span><span class="v"></span><span class="u">${v.u}</span></button>`).join('');
     host.addEventListener('click', event => {
       const key = event.target.closest('[data-v]')?.dataset.v;
-      const v = vitalList(E.snapshot(S)).find(x => x.k === key);
+      const v = vitalList(S).find(x => x.k === key);
       if (!v) return;
       openDetail(v.n + ' · 参考范围', v.u,
         [['参考', REF[v.k] || '—'], ['当前', v.u ? v.v + ' ' + v.u : v.v], ['趋势', trend(v.k)]], '');
@@ -227,13 +229,26 @@ const REF = {hr:'60–100 bpm', bp:'90–140 / 60–90 mmHg', rr:'12–20 rpm',
              spo2:'95–100 %', temp:'36.1–37.5 ℃', gcs:'15'};
 function trend(k) {
   if (k === 'spo2' && S.rhythm !== 'sinus') return '—';
-  const h = S.history.slice(-12);
+  let h = S.history.slice(-12);
+  if (k === 'temp') h = h.filter(sample => Number.isFinite(sample.temp));
   if (h.length < 3) return '—';
   const key = k === 'bp' ? 'sys' : k;
   const a = h[0][key], b = h[h.length - 1][key];
-  if (a == null || b == null) return '—';
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return '—';
   const d = b - a;
+  if (k === 'temp') {
+    const change = r1(Math.abs(d));
+    return change < 0.3 ? '平稳' : `${d > 0 ? '上升' : '下降'} ${change.toFixed(1)} ℃`;
+  }
   return Math.abs(d) < 2 ? '平稳' : (d > 0 ? '上升 ' + r1(d) : '下降 ' + r1(Math.abs(d)));
+}
+
+function temperatureLabel(temp) {
+  if (!Number.isFinite(temp)) return '体温未测';
+  const status = E.temperatureStatus(temp);
+  if (status === 'crit') return temp < 35 ? '低体温' : (temp > 40 ? '超高热' : '高热');
+  if (status === 'warn') return temp < 36.1 ? '体温偏低' : '体温偏高';
+  return '';
 }
 
 function renderStates() {
@@ -248,6 +263,8 @@ function renderStates() {
   if (s.glu < 3.9) out.push('低血糖');
   if (s.spo2 != null && s.spo2 < 92) out.push('低氧血症');
   if (s.sys < 90) out.push('低血压');
+  const tempLabel = temperatureLabel(S.temp);
+  if (tempLabel) out.push(tempLabel);
   const pp = (s.sys || 0) - (s.dia || 0);
   if ((S.tamponade || 0) > 0.3 && pp < 25) out.push('奇脉（吸气收缩压 −' + Math.round(10 + 8 * (S.tamponade || 0)) + '）');
   if ((S.cvp || 0) > 9) out.push('颈静脉怒张');
@@ -278,6 +295,8 @@ function renderStates() {
   if (env.cold) out.push('低温环境');
   if (env.exercise) out.push('运动中');
   if (env.sleep) out.push('睡眠');
+  if (env.cooling) out.push('物理降温中');
+  if (env.warming) out.push('被动保暖中');
   if (!out.length) out.push('生命体征平稳');
   const states = $('#states'), labels = out.join('|');
   if (states.dataset.labels === labels) return;
@@ -345,6 +364,10 @@ function closeDetail() {
 
 function openDetail(name, sub, kv, warn) {
   stopObservation();
+  const detail = $('#detail');
+  detail.classList.remove('case-review', 'case-review-success', 'case-review-failure');
+  detail.querySelector('.case-review-body')?.remove();
+  detail.querySelector('.card').scrollTop = 0;
   $('#dName').textContent = name;
   $('#dSub').textContent = sub || '';
   $('#dKv').innerHTML = kv.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
@@ -531,9 +554,10 @@ function openGiveConfig(it, patient) {
     if (go) go.addEventListener('click', () => {
       if (!$('#sheetList').contains(go) || !$('#sheet').classList.contains('on') || !isCurrentPatient(patient)) return;
       E.give(patient, it.id, dose, routes[ri].r);
+      const entry = patient.log[patient.log.length - 1];
       checkBudget();
       if (window.SOUND) SOUND.drug();
-      judge('drug', it.id);
+      judge('drug', it.id, null, entry);
       saveGame();
       closeSheet();
       toast(`已给予 ${it.n} ${fmt(dose)}${it.unit}（${routes[ri].r}）`);
@@ -543,18 +567,53 @@ function openGiveConfig(it, patient) {
   render();
 }
 
-/* 环境 / 场景切换（炎热、寒冷、运动、睡眠） */
+function syncEnvSheet() {
+  if ($('#sheetTitle').dataset.view !== 'env' || !$('#sheet').classList.contains('on')) return;
+  for (const button of $('#sheetList').querySelectorAll('[data-env]')) {
+    const on = !!S.env?.[button.dataset.env];
+    if (button.getAttribute('aria-pressed') === String(on)) continue;
+    button.setAttribute('aria-pressed', String(on));
+    button.querySelector('.tag').textContent = on ? '开' : '关';
+  }
+}
+
+/* 环境 / 场景切换 */
 function openEnvSheet() {
   if (!isCurrentPatient(S)) return;
-  const env = S.env || {};
+  const change = key => {
+    const before = { ...S.env };
+    const on = !S.env?.[key];
+    const env = E.setEnv(S, key, on);
+    if (on && key === 'cooling' && !env.cooling) return toast('体温高于 38.5℃ 时可开启物理降温');
+    if (on && key === 'warming' && !env.warming) return toast('体温低于 36.1℃ 时可开启被动保暖');
+    if (Object.keys(env).some(k => !!env[k] !== !!before[k])) {
+      const name = rows.find(row => row.key === key)?.n;
+      const label = key === 'reset' ? '恢复正常环境与活动，结束体温处置' : (on ? '开启' : '关闭') + name;
+      S.log.push([E.fmt(S.t), label, 'info']);
+    }
+    saveGame();
+    renderStates();
+    syncEnvSheet();
+  };
+  const toggle = (key, n, amt = '') => ({ key, n, tag: '', amt, run: () => change(key) });
   const rows = [
-    { n: '炎热环境', tag: env.heat ? '开' : '关', amt: '', run: () => { E.setEnv(S, 'heat', !env.heat); openEnvSheet(); } },
-    { n: '寒冷环境', tag: env.cold ? '开' : '关', amt: '', run: () => { E.setEnv(S, 'cold', !env.cold); openEnvSheet(); } },
-    { n: '运动',     tag: env.exercise ? '开' : '关', amt: '', run: () => { E.setEnv(S, 'exercise', !env.exercise); openEnvSheet(); } },
-    { n: '睡眠',     tag: env.sleep ? '开' : '关', amt: '', run: () => { E.setEnv(S, 'sleep', !env.sleep); openEnvSheet(); } },
-    { n: '恢复正常', tag: '', amt: '', run: () => { E.setEnv(S, 'reset'); openEnvSheet(); } },
+    { sec: '体温处置' },
+    toggle('cooling', '物理降温', '降至 38.5℃ 自动停止'),
+    toggle('warming', '被动保暖', '回升至 36.1℃ 自动停止'),
+    { sec: '环境与活动' },
+    toggle('heat', '炎热环境'),
+    toggle('cold', '寒冷环境'),
+    toggle('exercise', '运动'),
+    toggle('sleep', '睡眠'),
+    { n: '恢复正常', tag: '', amt: '', run: () => change('reset') },
   ];
-  openSheet('环境 / 场景', S.patient.name + ' · 影响体温、心率、呼吸', rows, S);
+  openSheet('环境 / 场景', S.patient.name, rows, S);
+  for (const button of $('#sheetList').querySelectorAll('.drow')) {
+    const key = rows[+button.dataset.i].key;
+    if (key) button.dataset.env = key;
+  }
+  $('#sheetTitle').dataset.view = 'env';
+  syncEnvSheet();
 }
 
 /* 给药列表（旧接口，保留给不支持 SUBSTANCES 的场合） */
@@ -592,7 +651,7 @@ function actionRows() {
         msg: result[1],
       };
       closeSheet();
-      judge('action', id, feedback);
+      judge('action', id, feedback, result);
       if (level === 'expert') toast(result[1], result[2] === 'warn' || result[2] === 'bad');
       saveGame();
       renderAll();
@@ -684,11 +743,12 @@ function showAdvice(force) {
 }
 
 /* ---------------- 操作评价 ---------------- */
-function markEvent(label) {
+function markEvent(entry) {
   try {
     S.tl = S.tl || [];
     const b = E.snapshot(S);
-    S.tl.push({ t: S.t, label: String(label || '').slice(0, 40),
+    entry[3] = S.t;
+    S.tl.push({ t: S.t, label: String(entry[1] || ''),
                 sys: b.sys, dia: b.dia, hr: b.hr, spo2: b.spo2,
                 k: +S.k.toFixed(1), glu: +S.glu.toFixed(1), ph: +S.ph.toFixed(2),
                 gcs: S.gcs, lac: +S.lac.toFixed(1), temp: +S.temp.toFixed(1) });
@@ -696,15 +756,21 @@ function markEvent(label) {
   } catch (e) {}
 }
 
-function judge(kind, id, assessment) {
+function judge(kind, id, assessment, entry) {
   try {
-    const last = S.log && S.log.length ? S.log[S.log.length - 1] : null;
-    if (last) markEvent(last[1]);
+    const last = entry || S.log?.[S.log.length - 1];
+    if (last) markEvent(last);
   } catch (e) {}
   if (!MENTOR || level === 'expert') return;
   const r = assessment || MENTOR.evaluate(S, kind, id);
   if (!r || !r.msg) return;
-  if (!r.ok) S.penalties = (S.penalties || 0) + 1;
+  if (!r.ok) {
+    S.penalties = (S.penalties || 0) + 1;
+    S.penaltyReasons = S.penaltyReasons || [];
+    const reason = S.penaltyReasons.find(item => item.label === r.msg);
+    if (reason) reason.count++;
+    else S.penaltyReasons.push({ label: r.msg, count: 1 });
+  }
   S.log.push([E.fmt(S.t), '带教点评：' + r.msg, r.ok ? 'good' : 'warn']);
   S._lastJudgeAt = S.t;
   toast((r.ok ? '✓ ' : '⚠ ') + r.msg, !r.ok);
@@ -851,6 +917,7 @@ function loadGame() {
       E.restoreBenzodiazepines(st, item.s);
       E.restoreBleeding(st, item.s);
       E.restoreCardiorespiratory(st, item.s);
+      E.restoreTemperature(st, item.s);
       E.restoreDischargeObservation(st, item.s);
       if (st.death || st.discharged) st.running = false;
       if (i <= savedActive) rebuiltActive = rebuilt.length;
@@ -877,7 +944,20 @@ function pushRecord(rec) {
     const list = loadRecords();
     if (list.some(row => row.recordId === rec.recordId)) return;
     list.unshift(rec);
-    localStorage.setItem(REC_KEY, JSON.stringify(list.slice(0, 30)));   // 只保留最近 30 条
+    list.length = Math.min(list.length, 30);
+    for (;;) {
+      try {
+        localStorage.setItem(REC_KEY, JSON.stringify(list));
+        break;
+      } catch (err) {
+        if (err.name !== 'QuotaExceededError') throw err;
+        // 优先保留每份病历的结局和评分；空间不足时从最旧的日志开始腾空间。
+        const oldest = list.slice().reverse().find(r => r.操作日志?.length);
+        if (!oldest) throw err;
+        const i = list.indexOf(oldest);
+        list[i] = { ...oldest, 操作日志: null, 日志已清理: true };
+      }
+    }
   } catch (e) {}
 }
 function openRecords() {
@@ -886,10 +966,8 @@ function openRecords() {
   if (!list.length) rows.push({ n:'还没有病历', tag:'完成一例后自动归档', amt:'', run: () => {} });
   for (const r of list) {
     rows.push({
-      n: r.病例名, tag: `${r.结局} · ${r.耗时} 分钟`, amt: (r.评分 || 0) + ' 分',
-      run: () => openDetail('病历 · ' + r.病例名, r.时间,
-        [['诊断', r.诊断], ['结局', r.结局], ['耗时', r.耗时 + ' 分钟'],
-         ['费用', '¥' + r.费用], ['评分', r.评分 + ' / 100']], ''),
+      n: escapeHtml(r.病例名), tag: `${escapeHtml(r.结局)} · ${escapeHtml(r.耗时)} 分钟`, amt: escapeHtml(r.评分 ?? '—') + ' 分',
+      run: () => openCaseRecord(r),
     });
   }
   openSheet('病历档案', `最近 ${list.length} / 30 例`, rows);
@@ -953,6 +1031,8 @@ function bloodReport() {
   for (const { name, time, values, fields } of reports) {
     const sampledAt = time < 0 ? '采样时间未记录' : `采样于病例用时 ${caseTime(time)}`;
     rows.push([`<strong>${name}</strong>`, sampledAt]);
+    if (fields.includes('pao2') && Number.isFinite(values.fio2)) rows.push(['采样时 FiO₂', Math.round(values.fio2 * 100) + '%']);
+    if (fields.includes('pao2') && values.oxygenModelVersion == null) rows.push(['旧版血气', '此结果来自旧版氧合模型，可复查动脉血气。']);
     for (const field of fields) rows.push(metricRow(field, values[field]));
   }
   if (!reports.length) rows.push(['怎么做', '在「检查」开立血液化验，结果出来后会显示在这里。']);
@@ -1098,6 +1178,8 @@ function renderHUD() {
   $('#clock').textContent = E.fmt(S.t);
   renderVitals();
   renderStates();
+  syncEnvSheet();
+  syncBedSeverity();
   if (selected) renderOrganPanel();
   checkCrucial();
 }
@@ -1160,11 +1242,25 @@ function toast(msg, urgent) {
 
 /* ---------------- 结束 / 复盘 ---------------- */
 function buildTimeline(st) {
-  const rows = (st.tl || []).map(e =>
-    `${E.fmt(e.t)}  ${e.label}　|　BP ${e.sys}/${e.dia}　HR ${e.hr}　SpO₂ ${e.spo2 == null ? '无信号' : e.spo2 + '%'}　K ${e.k}　pH ${e.ph}`);
-  if (!rows.length) return st.log.slice(-8).map(l => `${l[0]}  ${l[1]}`).join('\n');
-  if (rows.length > 16) return rows.slice(0, 4).concat(['…']).concat(rows.slice(-11)).join('\n');
-  return rows.join('\n');
+  const events = st.tl || [];
+  const vitals = e => `血压 ${e.sys}/${e.dia} · 心率 ${e.hr} · SpO₂ ${e.spo2 == null ? '无信号' : e.spo2 + '%'} · 血钾 ${e.k} · pH ${e.ph}`;
+  if (!st.log?.length) return events.map(e => [E.fmt(e.t), e.label, vitals(e)]);
+  const byLabel = new Map();
+  for (const e of events) {
+    const samples = byLabel.get(e.label) || [];
+    samples.push(e);
+    byLabel.set(e.label, samples);
+  }
+  // 时间轴仅保留最近的处置快照，从最新日志向前匹配同名操作。
+  return st.log.slice().reverse().map(([stamp, message, , seconds]) => {
+    const samples = byLabel.get(message) || byLabel.get(String(message).slice(0, 40));
+    const e = samples?.[samples.length - 1];
+    const matched = e && (seconds == null || e.t === seconds) ? samples.pop() : null;
+    const time = seconds ?? matched?.t;
+    const row = [time == null ? stamp : E.fmt(time), message];
+    if (matched) row.push(vitals(matched));
+    return row;
+  }).reverse();
 }
 
 function closePatientOverlays() {
@@ -1400,13 +1496,24 @@ function renderBedBar() {
   el.innerHTML = html;
 }
 
+function bedSeverity(patient) {
+  return patient?.running && isSevere(patient) ? ' · 重症' : '';
+}
+
+function syncBedSeverity() {
+  for (const marker of document.querySelectorAll('[data-bed-severity]')) {
+    const label = bedSeverity(beds[+marker.dataset.bedSeverity]?.S);
+    if (marker.textContent !== label) marker.textContent = label;
+  }
+}
+
 function openBeds() {
   const rows = beds.map((b, i) => {
     const st = b.S;
     const tag = st.discharged ? '已出院' : (st.death ? '已死亡' : `${Math.round(st.t / 60)} min`);
     return {
       n: `床位 ${i + 1} · ${st.cas.name}`,
-      tag: (b.S === S ? '当前 · ' : '') + tag,
+      tag: `${b.S === S ? '当前 · ' : ''}${tag}<span data-bed-severity="${i}">${bedSeverity(st)}</span>`,
       amt: b.S === S ? '—' : '切换',
       run: () => switchBed(st),
     };
@@ -1431,9 +1538,15 @@ function archiveCase(st, wardCount) {
   st._level = level;
   st._beds = wardCount;
   const ok = st.discharged;
-  const score = E.finalScore(st);
+  const breakdown = E.scoreBreakdown(st);
   const min = Math.round(st.t / 60);
   const name = (st.cas && st.cas.name) || st.caseId;
+  const settings = {
+    admission: st.admissionSettings,
+    level, realism,
+    difficulty: st.diff ?? st.cas?.diff ?? null,
+    fixed: st.caseId !== 'gen' && st.diff == null && st.cas?.diff == null,
+  };
 
   /* === HANDBOOK PATCH: 诊断分类 + 行医手册（只记录本局实际发生的事） === */
   try {
@@ -1472,16 +1585,26 @@ function archiveCase(st, wardCount) {
   /* === /HANDBOOK PATCH === */
 
   /* 病历归档：每例结束追加一条，只留最近 30 条 */
-  pushRecord({
+  const record = {
     recordId: wardRecordId(st),
     时间: new Date().toLocaleString('zh-CN', { hour12: false }),
     病例名: name,
+    患者: st.patient.name,
     诊断: name,
     结局: ok ? '出院' : '死亡',
     耗时: min,
     费用: Math.round(st.cost),
-    评分: score,
-  });
+    评分: breakdown.score,
+    计分明细: breakdown,
+    操作日志: buildTimeline(st),
+    设置: settings,
+  };
+  if (st.death) {
+    const s = E.snapshot(st);
+    record.死因 = st.death.reason;
+    record.终末血钾 = s.k;
+    record.终末pH = s.ph;
+  }
 
   /* 成就判定：只报新解锁的，避免刷屏；学习模式按说明不解锁成就 */
   const newAch = (window.ACHIEVEMENTS && level !== 'learning') ? window.ACHIEVEMENTS.evaluate(st) : [];
@@ -1490,28 +1613,67 @@ function archiveCase(st, wardCount) {
     return a ? a.name : id;
   });
 
-  return { ok, score, min, achNames };
+  if (achNames.length) record.新成就 = achNames;
+  pushRecord(record);
+  return { record };
 }
 
-function showCaseReview(st, { ok, score, min, achNames }) {
-  const s = E.snapshot(st);
-  if (window.SOUND) { if (ok) SOUND.success(); else SOUND.fail(); }
-  const tl = buildTimeline(st);
-  const key = ok
-    ? [['诊断', st.cas.name], ['结局', '痊愈出院'], ['耗时', min + ' 分钟'],
-       ['总费用', '¥' + Math.round(st.cost)], ['评分', score + ' / 100']]
-    : [['诊断', st.cas.name], ['结局', '死亡'], ['死因', st.death ? st.death.reason : '—'],
-       ['终末血钾', s.k + ' mmol/L'], ['终末 pH', s.ph], ['评分', score + ' / 100']];
-  key.unshift(['患者', escapeHtml(st.patient.name)]);
-  if (achNames.length) key.push(['新成就', achNames.join('、')]);
-  openDetail(ok ? '患者出院' : '患者死亡',
-    ok ? `住院 ${min} 分钟 · 费用 ¥${Math.round(st.cost)}`
-       : `${E.fmt(st.t)} · ${st.death ? st.death.reason : ''}`,
-    key,
-    (ok ? '已达到本病例的模拟出院条件。' : '回顾病情变化与处置记录。') + '\n\n' + tl);
-  if (achNames.length) {
-    setTimeout(() => toast('🏆 解锁成就：' + achNames.join('、')), 500);
+function caseSettingsRows(settings) {
+  if (!settings) return [['本局设置', '旧病历未记录']];
+  const guidance = id => Object.hasOwn(MENTOR.LEVELS, id) ? MENTOR.LEVELS[id].name : '未记录';
+  const mode = enabled => enabled === true ? '开启' : (enabled === false ? '关闭' : '未记录');
+  function selection(key, label) {
+    const end = label(settings[key]);
+    const start = settings.admission?.[key];
+    if (start == null) return end + '（结算时）';
+    return start === settings[key] ? end : label(start) + '（接诊） → ' + end + '（结算）';
   }
+  const difficulty = Number.isInteger(settings.difficulty) && CASE_DIFFICULTIES[settings.difficulty - 1];
+  return [
+    ['指导等级', selection('level', guidance)],
+    ['病例难度', difficulty ? settings.difficulty + ' · ' + difficulty[0] : (settings.fixed ? '固定病例' : '未记录')],
+    ['现实模式', selection('realism', mode)],
+  ];
+}
+
+function openCaseRecord(r) {
+  const ok = r.结局 === '出院';
+  const summary = [['诊断', r.诊断 || r.病例名], ['住院用时', r.耗时 + ' 分钟'], ['诊疗费用', '¥' + r.费用]];
+  if (r.死因) summary.push(['死因', r.死因]);
+  if (r.终末血钾 != null) summary.push(['终末血钾', r.终末血钾 + ' mmol/L'], ['终末 pH', r.终末pH]);
+  summary.push(...caseSettingsRows(r.设置));
+  if (r.新成就?.length) summary.push(['新成就', r.新成就.join('、')]);
+  openDetail(ok ? '患者出院' : '患者死亡', [r.患者, r.时间].filter(Boolean).join(' · '), [], '');
+  const detail = $('#detail');
+  detail.classList.add('case-review', ok ? 'case-review-success' : 'case-review-failure');
+  const body = document.createElement('div');
+  body.className = 'case-review-body';
+  const breakdown = r.计分明细;
+  const points = delta => {
+    const magnitude = Math.abs(delta);
+    return (delta < 0 ? '−' : '+') + (magnitude < 0.01 && magnitude > 0 ? '<0.01' : String(+magnitude.toFixed(2)));
+  };
+  const scoreRows = breakdown ? [['基础分', breakdown.base], ...breakdown.items.map(x => [x.label, points(x.delta)])] : [];
+  const log = r.操作日志;
+  const empty = r.日志已清理 ? '存储空间不足，此病历的日志已清理。' : (log ? '本例没有操作记录。' : '旧病历未保存操作日志。');
+  body.innerHTML = `
+    <section class="case-review-section case-review-summary"><h5>病例摘要</h5><dl>
+      ${summary.map(([label, value]) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd>`).join('')}</dl></section>
+    <section class="case-review-section case-review-score"><h5>评分明细</h5><table>
+      <tbody>${scoreRows.map(([label, value]) => `<tr><th scope="row">${escapeHtml(label)}</th><td>${escapeHtml(value)}</td></tr>`).join('')}</tbody>
+      <tfoot><tr><th scope="row">最终得分</th><td>${escapeHtml(r.评分 ?? '—')} / 100</td></tr></tfoot></table>
+      ${breakdown ? '' : '<p>旧病历未保存加扣分明细。</p>'}</section>
+    <section class="case-review-section case-review-log-panel"><h5 id="caseReviewLogHeading">操作日志${log?.length ? ' · ' + log.length + ' 条' : ''}</h5>
+      <div class="case-review-log" tabindex="0" role="region" aria-labelledby="caseReviewLogHeading">${log?.length ?
+        '<ol>' + log.map(([stamp, message, sample]) => `<li><time>${escapeHtml(stamp)}</time><div>${escapeHtml(message)}${sample ? '<small>' + escapeHtml(sample) + '</small>' : ''}</div></li>`).join('') + '</ol>'
+        : '<p>' + empty + '</p>'}</div></section>`;
+  detail.querySelector('.card').appendChild(body);
+}
+
+function showCaseReview(st, { record }) {
+  if (window.SOUND) { if (st.discharged) SOUND.success(); else SOUND.fail(); }
+  openCaseRecord(record);
+  if (record.新成就?.length) setTimeout(() => toast('🏆 解锁成就：' + escapeHtml(record.新成就.join('、'))), 500);
 }
 /* === HANDBOOK PATCH: 手册入口与首次体征提示 === */
 
@@ -1555,7 +1717,7 @@ function isAllNormal(S) {
   const b = E.bp(S);
   const bad =
     S.spo2 < 94 || S.hr > 100 || S.hr < 60 || b.sys < 95 || b.sys > 150 ||
-    S.rr > 22 || S.temp > 37.8 || S.gcs < 15 ||
+    S.rr > 22 || !Number.isFinite(S.temp) || E.temperatureStatus(S.temp) !== '' || S.gcs < 15 ||
     S.k < 3.5 || S.k > 5.3 || S.na < 135 || S.na > 145 ||
     S.glu < 3.9 || S.glu > 7.8 || S.hb < 110 || S.lac > 2.5 ||
     S.ph < 7.35 || S.ph > 7.45 || (S.plt && S.plt < 100) || (S.cr && S.cr > 130);
@@ -1569,7 +1731,7 @@ function ensurePresentation(S) {
   let guard = 0;
   const start = JSON.parse(JSON.stringify({
     k: S.k, na: S.na, glu: S.glu, vol: S.vol, hr: S.hr, gcs: S.gcs,
-    spo2: S.spo2, lac: S.lac, temp: S.temp, t: S.t,
+    lac: S.lac, temp: S.temp, t: S.t,
   }));
   while (guard < 45 && isAllNormal(S) && !S.death && S.running) {
     guard++;
@@ -1580,7 +1742,7 @@ function ensurePresentation(S) {
     /* 预热把病人推死了：退回初始值，改成小幅恶化（保证"已发病"但还救得回来） */
     S.death = null; S.running = true;
     S.k = start.k; S.na = start.na; S.glu = start.glu; S.vol = start.vol;
-    S.hr = start.hr; S.gcs = Math.min(start.gcs, 14); S.spo2 = Math.min(start.spo2, 93);
+    S.hr = start.hr; S.gcs = Math.min(start.gcs, 14);
     S.lac = Math.max(start.lac, 2.8); S.temp = Math.max(start.temp, 37.9);
   }
   if (S.tl) S.tl.length = 0;   /* 预热过程不写时间轴，避免玩家看到"凭空"的记录 */
@@ -1602,7 +1764,7 @@ function showSeverePopup() {
   if ((b.map ?? 90) < 65) reasons.push('MAP ' + Math.round(b.map));
   if (S.rhythm === 'sinus' && S.spo2 < 90) reasons.push('SpO₂ ' + Math.round(S.spo2) + '%');
   if (S.k > 6.5) reasons.push('血钾 ' + S.k.toFixed(1));
-  if (S.temp > 39.5) reasons.push('体温 ' + S.temp.toFixed(1) + '℃');
+  if (E.temperatureStatus(S.temp) === 'crit') reasons.push(`${temperatureLabel(S.temp)} ${S.temp.toFixed(1)}℃`);
   if (S.rhythm !== 'sinus') reasons.push('心律异常');
   if (S.vent) reasons.push('已插管');
   const el = document.createElement('div');
@@ -1749,7 +1911,7 @@ function openFeedback() {
 }
 
 /* ---------------- 版本 / 更新检查 ---------------- */
-const APP_VERSION = '1.52.0';
+const APP_VERSION = '1.53.0';
 const releaseRoot = document.querySelector('meta[name="xuanhu-release-root"]')?.content;
 const releaseBase = releaseRoot ? new URL(releaseRoot, location.href).href.replace(/\/$/, '') : '';
 const platformName = location.protocol === 'file:' ? '离线 HTML' :
@@ -1944,7 +2106,7 @@ function openInsuranceHelp() {
     '<div class="sec">什么时候算"出事"</div>' +
     '<div style="padding:0 14px 10px;font-size:12.5px;line-height:1.9">' +
       '· 自付 > 承受力：提醒<br>' +
-      '· 自付 > 承受力 × 1.3：<b style="color:#c0392b">医保拒付，扣 40 分</b>' +
+      '· 自付 > 承受力 × 1.3：<b style="color:#c0392b">触发医保拒付提醒</b>' +
     '</div>' +
     (ins ? (
       '<div class="sec">本例</div>' +
@@ -2216,7 +2378,11 @@ function bind() {
       run: () => {
         const current = E.dischargeCheck(patient);
         if (!current.ok) {
-          toast('还不能出院：' + current.reasons.join('、'), true);
+          openDetail('出院评估', patient.patient.name, [
+            ['本例治疗目标', escapeHtml(patient.cas.goals.join('；'))],
+            ['出院心率范围', current.heartRateTarget],
+            ['当前心率', Math.round(patient.hr) + ' 次/分'],
+          ], current.reasons.join('\n'));
           return;
         }
         E.endCase(patient, 'discharge', '达到出院标准');
@@ -2252,7 +2418,7 @@ function bind() {
     {n:'难度设置', tag:'病例难度 ' + caseDiff + ' · 指导 ' + ((MENTOR.LEVELS[level]||MENTOR.LEVELS.intern).name), amt:'', run: () => openSheet('难度设置', '两轴独立', difficultyRows())},
     {n: nightMode ? '☀ 切回白天' : '🌙 夜间模式', tag: nightMode ? '病情推进 ×1.3 · 界面转暗' : '当前白天', amt:'切换', run: () => { closeSheet(); toggleNight(); }},
     {n: realism ? '关闭现实模式' : '现实模式（医保与自付）', tag: realism ? ((S && S.ins ? S.ins.t : '已参保') + ' · 点此关闭') : '开：计费，看家庭自付', amt:'切换', run: () => { closeSheet(); toggleRealism(); }},
-    {n: '环境 / 场景', tag: '炎热·寒冷·运动·睡眠', amt: '', run: () => openEnvSheet()},
+    {n: '环境 / 场景', tag: '降温·保暖·环境', amt: '', run: () => openEnvSheet()},
     {n: autoHint ? '主动提示：开' : '主动提示：关', tag: autoHint ? '自动显示提示' : '只在给药后点评', amt: '', run: () => {
       autoHint = !autoHint;
       try { localStorage.setItem('life.autoHint', autoHint ? '1' : '0'); } catch (e) {}
@@ -2268,7 +2434,8 @@ function bind() {
     {n:'教程 · 怎么玩', tag:(window.TUTORIAL?window.TUTORIAL.PAGES.length:6)+' 页', amt:'', run: () => { if (window.TUTORIAL) TUTORIAL.open(0); }},
     {n:'病例说明', tag:'', amt:'', run: () => openDetail(S.cas.name, S.cas.complaint,
         [['诊断', S.cas.name],
-       ['目标', S.cas.goals.join('；')],
+       ['本例治疗目标', S.cas.goals.join('；')],
+       ['出院心率范围', E.dischargeCheck(S).heartRateTarget],
        ['体质', (S.traits && S.traits.length) ? S.traits.map(x => x.n).join('、') : '无特殊体质'],
        ['提示', S.cas.hint]], '')},
   ]));
@@ -2293,16 +2460,16 @@ function setCaseDiff(v) {
   dismissSheet();
   toast('病例难度：' + caseDiff);
 }
+const CASE_DIFFICULTIES = [
+  ['普通', '单一病理（原 1–2 合并）'],
+  ['重症', '单一病理 + 基础病（原 3–5 合并）'],
+  ['危重', '双病理叠加 + 基础病'],
+  ['极危', '三病理叠加 + 特殊体质'],
+  ['噩梦', '三病理 + 双体质，恶化最快'],
+];
 function caseDiffRows() {
-  const names = [
-    '1 普通 · 单一病理（原 1–2 合并）',
-    '2 重症 · 单一病理 + 基础病（原 3–5 合并）',
-    '3 危重 · 双病理叠加 + 基础病',
-    '4 极危 · 三病理叠加 + 特殊体质',
-    '5 噩梦 · 三病理 + 双体质，恶化最快',
-  ];
-  return names.map((n, i) => ({
-    n, tag: (i + 1) === caseDiff ? '当前' : '', amt: '',
+  return CASE_DIFFICULTIES.map(([name, desc], i) => ({
+    n: (i + 1) + ' ' + name + ' · ' + desc, tag: (i + 1) === caseDiff ? '当前' : '', amt: '',
     run: () => setCaseDiff(i + 1),
   }));
 }
@@ -2318,6 +2485,7 @@ function diffFromLevel() {
   return caseDiff;
 }
 function prepareCase(st) {
+  st.admissionSettings = { level, realism };
   try { if (window.DIAGNOSIS) st.dx0 = window.DIAGNOSIS.classify(st); } catch (e) {}
   return st;
 }
@@ -2442,7 +2610,7 @@ function toggleRealism() {
      报销   = min(封顶线, max(0, 总费用 − 起付线) × 报销比例)
      自付   = 总费用 − 报销
      家庭可承受自付 = 月收入 × 3（因病致贫的粗略线）
-   自付超过承受力 130% → 医保拒付/家庭放弃，重罚。 */
+   自付超过承受力 130% 时记录医保拒付。 */
 const INSURANCE = [
   { t: '职工医保', rate: 0.78, ded: 800, cap: 30000 },
   { t: '居民医保', rate: 0.58, ded: 500, cap: 15000 },
@@ -2483,8 +2651,8 @@ function checkBudget() {
   if (!S._refused && c.selfPay > c.cap * 1.3) {
     S._refused = 1;
     S.score = Math.max(0, (S.score || 100) - 40);
-    S.log.push([E.fmt(S.t), '医保拒付：自付超出家庭承受力 130%，本病例计分重罚', 'bad']);
-    toast('⛔ 医保拒付：自付超上限 30%，扣 40 分', true);
+    S.log.push([E.fmt(S.t), '医保拒付：自付费用超过家庭承受力的 130%', 'bad']);
+    toast('⛔ 医保拒付：自付费用超过家庭承受力的 130%', true);
   }
 }
 
@@ -2506,7 +2674,7 @@ function isSevere(S) {
   if (!S) return false;
   const b = (E.bp ? E.bp(S) : { map: S.map || 90 });
   return !!(S.rhythm !== 'sinus' || S.vent || S.gcs < 12 || (b.map ?? 90) < 65 ||
-            S.spo2 < 90 || S.hr > 130 || S.hr < 45 || S.k > 6.5 || S.temp > 39.5);
+            S.spo2 < 90 || S.hr > 130 || S.hr < 45 || S.k > 6.5 || E.temperatureStatus(S.temp) === 'crit');
 }
 
 function renderPatient() {
@@ -2539,6 +2707,12 @@ function renderAll() {
 
 /* 更新公告：每次发版在这里加一条（新的放最前面） */
 const RELEASES = [
+  { v: '1.53.0', notes: [
+    '动脉血气与肺面板按同一份分流后的动脉血计算氧合，并显示对应的吸氧浓度',
+    '床旁新增物理降温和被动保暖，修复热射病、低体温和体温趋势的判定',
+    '病例说明和出院评估显示实际心率范围',
+    '结算和病历显示本局设置、加扣分明细以及可滚动的操作日志',
+  ] },
   { v: '1.52.0', notes: [
     '床旁心电图按真实心率走纸，心搏音与 R 峰同步；大厅只播高优先级报警',
     '新增重置游戏存档，以及跳过结局统计的测试用患者移除功能',
@@ -2637,7 +2811,7 @@ function bindLobby() {
   lobby.querySelector('.lobby-release ul').innerHTML = release.notes.map(n => `<li>${escapeHtml(n)}</li>`).join('');
   lobby.querySelector('[data-act="download"]').hidden = !IS_WEB && !releaseBase;
   const actions = {
-    handbook: openHandbook, stats: openStats, chart: openChart, consult: openConsult,
+    handbook: openHandbook, records: openRecords, stats: openStats, chart: openChart, consult: openConsult,
     ach: openAchievements, about: openAbout, download: openGetLatest, sound: openSoundSettings,
     diff: () => openSheet('难度设置', '病例与指导', difficultyRows()),
     tutorial: () => TUTORIAL.open(0),
@@ -2676,7 +2850,7 @@ function showLobby() {
   list.innerHTML = beds.map(({ S: patient }, i) => `
     <button type="button" class="bed" data-bed="${i}" aria-current="${patient === S}">
       <span class="no">${i + 1}</span>
-      <span class="nm">${escapeHtml(patient.patient.name)}<span class="meta">${escapeHtml(patient.cas.name)} · ${Math.floor(patient.t / 60)} 分钟</span></span>
+      <span class="nm">${escapeHtml(patient.patient.name)}<span class="meta">${escapeHtml(patient.cas.name)} · ${Math.floor(patient.t / 60)} 分钟<span data-bed-severity="${i}">${bedSeverity(patient)}</span></span></span>
       <span class="go">继续 →</span>
     </button>`).join('') + `
     <button type="button" class="bed empty" data-new="${full ? 0 : 1}" ${full ? 'disabled' : ''}>

@@ -41,7 +41,7 @@ function getSnapshot(S) {
     map: map == null ? Math.round(S.map || 0) : map,
     rr: Math.round(num(S.rr) || 0),
     spo2: S.rhythm && S.rhythm !== 'sinus' ? null : num(S.spo2),
-    temp: Math.round((num(S.temp) || 0) * 10) / 10,
+    temp: num(S.temp) == null ? null : Math.round(S.temp * 10) / 10,
     gcs: Math.round(num(S.gcs) || 0),
     k: Math.round((num(S.k) || 0) * 10) / 10,
     na: Math.round(num(S.na) || 0),
@@ -147,6 +147,17 @@ function buildContext(S) {
     logHas: pat => log.some(l => pat.test(logText(l))),
   };
   return c;
+}
+
+function heatExposure(c) {
+  return (c.flag('heatstrokeDrive') ?? 0) > 0.20 || c.S.env?.heat ||
+    c.logHas(/高温暴露|高温车间|烈日暴晒/);
+}
+
+function myxedemaPattern(c) {
+  const s = c.s, temp = c.flag('temp');
+  return (c.flag('myxedemaSeverity') ?? 0) > 0.35 && temp != null && temp < 35.5 &&
+    s.gcs >= 3 && s.gcs < 14 && s.hr > 0 && s.hr < 60 && ((s.rr > 0 && s.rr <= 12) || s.paco2 > 45);
 }
 
 /* ---------------- 诊断规则 ----------------
@@ -366,11 +377,13 @@ const RULES = [
       const fever = s.temp >= 38.3;
       const hypoperf = s.sys < 95 || s.lac > 2.5;
       const tachy = s.hr > 100;
-      if (!(fever || (inf != null && inf > 0.40)) || !hypoperf || !tachy) return null;
+      const noninfectiousHeat = heatExposure(c) || (c.flag('thyroidHeatDrive') ?? 0) > 0.20 ||
+        (c.flag('seizure') ?? 0) > 0.2;
+      if (!hypoperf || !tachy || (!(inf > 0.40) && (!fever || noninfectiousHeat))) return null;
       let sc = 0.68 + (s.lac > 4 ? 0.10 : 0) + (s.temp >= 39 ? 0.06 : 0)
              + (inf != null && inf > 0.50 ? 0.05 : 0);
-      const ev = [`体温 ${s.temp}℃`, `收缩压 ${s.sys} mmHg，心率 ${s.hr} 次/分`,
-                 `乳酸 ${s.lac} mmol/L`];
+      const ev = [`收缩压 ${s.sys} mmHg，心率 ${s.hr} 次/分`, `乳酸 ${s.lac} mmol/L`];
+      if (num(s.temp) != null) ev.unshift(`体温 ${s.temp}℃`);
       if (inf != null) ev.push(`感染负荷 ${Math.round(inf * 100)}%`);
       return { score: clamp(sc, 0, 0.95), evidence: ev.slice(0, 5) };
     },
@@ -460,7 +473,7 @@ const RULES = [
       const clotShunt = num(src.clot) || 0;
       const direct = (pvr != null && pvr > 6) || clotShunt > 0.10;
       const pattern = spo2Below(s, 90) && s.hr > 115 && s.sys < 95
-        && s.ef >= 45 && s.ef <= 68 && s.temp < 38 && s.rr > 24;
+        && s.ef >= 45 && s.ef <= 68 && num(s.temp) != null && s.temp < 38 && s.rr > 24;
       if (!direct && !pattern) return null;
       let sc = direct ? 0.80 : 0.76;
       if (pvr != null && pvr > 8) sc += 0.05;
@@ -511,8 +524,8 @@ const RULES = [
       if (!airwayEvidence) return null;   // 没有气道痉挛证据时，归入急性呼吸衰竭而不是哮喘
       let sc = 0.65 + (s.rr >= 30 ? 0.08 : 0) + (spo2Below(s, 88) ? 0.08 : 0)
              + (ob != null && ob > 0.30 ? 0.10 : 0);
-      const ev = [`${spo2Evidence(s)}，呼吸 ${s.rr} 次/分`, `射血分数 ${s.ef}%（心功能不支持肺水肿）`,
-                 `体温 ${s.temp}℃`];
+      const ev = [`${spo2Evidence(s)}，呼吸 ${s.rr} 次/分`, `射血分数 ${s.ef}%（心功能不支持肺水肿）`];
+      if (num(s.temp) != null) ev.push(`体温 ${s.temp}℃`);
       if (ob != null) ev.push(`气道痉挛程度 ${Math.round(ob * 100)}%`);
       return { score: clamp(sc, 0, 0.93), evidence: ev.slice(0, 5) };
     },
@@ -542,12 +555,11 @@ const RULES = [
       const exp = c.givenAny(
         ['morphine', 'fentanyl', 'oxycodone', 'hydrocodone', 'codeine', 'tramadol', 'heroin', 'methadone'],
         ['吗啡', '芬太尼', '羟考酮', '可待因', '曲马多', '海洛因', '美沙酮'])
-        || c.S.opioidTox === true;
+        || c.S.opioidTox === true || (c.flag('opioidDepress') ?? 0) > 0.20;
       const sedated = root.LIFE?.benzodiazepineExposure?.(c.S).sedated;
       const pattern = s.rr <= 10 && s.gcs <= 9;
       if (!exp && !pattern) return null;
-      /* 有苯二氮卓暴露、又没有阿片暴露时，不要把镇静引起的呼吸抑制算成阿片过量 */
-      if (pattern && !exp && sedated) return null;
+      if (!exp && (sedated || myxedemaPattern(c))) return null;
       let sc = 0.55 + (pattern ? 0.25 : 0) + (exp ? 0.08 : 0)
              + (spo2Below(s, 90) ? 0.05 : 0) + (s.rr < 6 ? 0.05 : 0);
       const ev = [`呼吸 ${s.rr} 次/分，意识 GCS ${s.gcs}`];
@@ -567,7 +579,7 @@ const RULES = [
         || (num(c.tox.op) || 0) > 0
         || (c.flag('opTox') != null && c.flag('opTox') > 0.25);
       const cholinergic = s.hr < 62 && spo2Below(s, 93) && s.gcs < 15
-        && s.rr >= 12 && s.temp < 38.5;
+        && s.rr >= 12 && num(s.temp) != null && s.temp < 38.5;
       if (!exp && !cholinergic) return null;
       let sc = exp ? 0.72 : 0.55;
       sc += (s.hr < 55 ? 0.08 : 0) + (spo2Below(s, 88) ? 0.06 : 0)
@@ -620,12 +632,35 @@ const RULES = [
     },
   },
   {
+    id: 'heatstroke', name: '热射病', priority: 89,
+    tags: ['heatstroke', 'hyperthermia'],
+    diff: ['甲状腺危象', '感染性休克', '抗胆碱能中毒'],
+    test(c) {
+      const s = c.s, temp = c.flag('temp');
+      if (temp == null || temp < 39.5 || !(s.gcs >= 3 && s.gcs < 14) || !heatExposure(c)) return null;
+      const score = 0.83 + (temp >= 40 ? 0.07 : 0) + (s.gcs <= 12 ? 0.04 : 0);
+      return { score, evidence: ['高温暴露或热负荷升高', `体温 ${s.temp}℃，意识 GCS ${s.gcs}`] };
+    },
+  },
+  {
+    id: 'myxedema', name: '甲减危象', priority: 89,
+    tags: ['myxedema', 'endocrine', 'hypothermia'],
+    diff: ['阿片类药物过量', '原发性低体温', '肾上腺危象'],
+    test(c) {
+      if (!myxedemaPattern(c)) return null;
+      const s = c.s;
+      const score = 0.83 + (c.S.temp < 35 ? 0.06 : 0) + (s.gcs <= 9 ? 0.04 : 0);
+      return { score, evidence: ['甲状腺激素不足（推演）', `体温 ${s.temp}℃，意识 GCS ${s.gcs}`,
+        `心率 ${s.hr} 次/分，呼吸 ${s.rr} 次/分`] };
+    },
+  },
+  {
     id: 'thyroidStorm', name: '甲状腺危象', priority: 83,
     tags: ['thyroid', 'endocrine', 'hyperthermia'],
     diff: ['感染性休克', '恶性高热', '抗胆碱能中毒', '嗜铬细胞瘤危象'],
     test(c) {
       const s = c.s;
-      if (s.temp < 39.0 || s.hr < 125) return null;
+      if (num(s.temp) == null || s.temp < 39.0 || s.hr < 125) return null;
       if (s.ef < 85) return null;
       const inf = c.flag('infection');
       if (inf != null && inf > 0.45) return null;
@@ -669,11 +704,14 @@ const RULES = [
 ];
 
 /* ---------------- 分级 ---------------- */
-function severityOf(s) {
+function severityOf(s, temp) {
+  const measuredTemp = num(temp) != null;
+  const severeTemp = measuredTemp && (root.LIFE?.temperatureStatus
+    ? root.LIFE.temperatureStatus(temp) === 'crit' : temp < 35 || temp >= 39.5);
   if (s.rhythm !== 'sinus' || s.k > 7 || s.sys < 70 || spo2Below(s, 80)
       || s.gcs <= 6 || s.ph < 6.95) return 'critical';
   if (s.k > 6.0 || s.k < 2.8 || s.na < 120 || s.sys < 85 || spo2Below(s, 88)
-      || s.gcs <= 9 || s.ph < 7.15 || s.hco3 < 10 || s.lac > 4 || s.temp >= 39.5
+      || s.gcs <= 9 || s.ph < 7.15 || s.hco3 < 10 || s.lac > 4 || severeTemp
       || s.hb < 80 || s.cr > 350
       || (num(s.gsh) != null && num(s.gsh) < 0.25)
       || (num(s.napqi) != null && num(s.napqi) > 0.50)
@@ -681,7 +719,7 @@ function severityOf(s) {
   if (s.k > 5.5 || s.k < 3.2 || s.na > 148 || s.na < 130
       || s.ph < 7.32 || s.ph > 7.46 || s.hco3 < 20 || spo2Below(s, 94)
       || s.sys < 100 || s.gcs < 14 || s.glu < 3.9 || s.glu > 13
-      || s.lac > 2.5 || s.temp > 38.5 || s.cr > 200 || s.hb < 100
+      || s.lac > 2.5 || (measuredTemp && (temp < 36 || temp > 38.5)) || s.cr > 200 || s.hb < 100
       || s.uo < 0.5 || s.hr > 130 || s.hr < 50 || s.rr > 28 || s.rr < 10
       || (num(s.gsh) != null && num(s.gsh) < 0.60)
       || (num(s.napqi) != null && num(s.napqi) > 0.05)
@@ -710,7 +748,7 @@ function classifyAll(S, minScore) {
   }
   hits.sort((a, b) => b.score - a.score || b.rule.priority - a.rule.priority);
 
-  const sev = severityOf(c.s);
+  const sev = severityOf(c.s, S.temp);
   const seen = new Set();
   const out = [];
   for (const h of hits) {
@@ -758,7 +796,7 @@ function classify(S) {
 
   const top = hits[0];
   if (!top || top.score < 0.35) {
-    const sev = severityOf(c.s);
+    const sev = severityOf(c.s, S.temp);
     const abName = c.ab.primary ? c.ab.primary.name : null;
     return {
       primary: abName || '无明确急性诊断',
@@ -793,7 +831,7 @@ function classify(S) {
   const tags = [];
   for (const t of (top.rule.tags || [])) if (tags.indexOf(t) < 0) tags.push(t);
   for (const t of (c.ab.tags || [])) if (tags.indexOf(t) < 0) tags.push(t);
-  const sev = severityOf(c.s);
+  const sev = severityOf(c.s, S.temp);
   if (sev === 'critical' && tags.indexOf('critical') < 0) tags.push('critical');
 
   const evidence = top.evidence.slice(0, 5);

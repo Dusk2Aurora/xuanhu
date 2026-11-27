@@ -143,24 +143,23 @@ const MODULES = [
     id:'thyroid', name:'甲状腺危象', tag:'thyroid', weight:1,
     init:{ vol:4.4, hco3:21, lac:2.2, glu:7.0, temp:39.8, gcs:12,
            hr:148, svr:12.5, rr:26, pao2:82, paco2:32, spo2:95, uo:1.2, contractility:0.90,
-           tempDrive:0.70, hrDrive:55 },
+           thyroidHeatDrive:0.70, hrDrive:55 },
     drivers:{ kProd:0.072, lactProd:0.04 },
     complaint:'发热 39.8℃、心悸、烦躁 2 天。甲亢病史，近期自行停药。',
     goal:['心率 <120','体温 <38.5','意识恢复'],
     /* temp 已由全局判据覆盖；用"甲状腺毒症控制度"替代原来的体温重复判据 */
-    check:S=>[ (S.tempDrive||0) > 0.26 ? '甲状腺毒症尚未控制' : null ].filter(Boolean),
+    check:S=>[ (S.thyroidHeatDrive ?? 0.70) > 0.26 ? '甲状腺毒症尚未控制' : null ].filter(Boolean),
     hint:'β 阻滞剂压心率，抗甲状腺药阻断合成，激素抑制转化。',
-    /* 从"直接抬高 S.temp"改成"设置产热驱动 + 交感驱动"（替代原来的 S.temp = thyroTemp），
-       体温/心率由引擎按驱动 + 散热算出，未治疗时驱动继续上升 → 超高热 */
     advance(S, dtMin) {
-      const cooling = (active(S,'propylthiouracil') ? 0.045 : 0)
-                    + (active(S,'methimazole') ? 0.030 : 0)
-                    + (active(S,'hydrocortisone') ? 0.020 : 0)
-                    + (active(S,'dexamethasone') ? 0.015 : 0)
-                    + (active(S,'propranolol') ? 0.012 : 0);
-      S.tempDrive = clamp((S.tempDrive == null ? 0.70 : S.tempDrive) + (0.0012 - cooling) * dtMin, 0, 1.5);
-      const beta = active(S,'propranolol') ? 0.060 : 0;
-      S.hrDrive = clamp((S.hrDrive == null ? 55 : S.hrDrive) + (0.010 - beta) * dtMin, 0, 90);
+      const therapy = S.thyroidTherapyActivity || {};
+      const beta = therapy.propranolol || 0;
+      const treatment = 0.045 * (therapy.propylthiouracil || 0)
+                      + 0.030 * (therapy.methimazole || 0)
+                      + 0.020 * (therapy.hydrocortisone || 0)
+                      + 0.015 * (therapy.dexamethasone || 0)
+                      + 0.012 * beta;
+      S.thyroidHeatDrive = clamp((S.thyroidHeatDrive ?? 0.70) + (0.0012 - treatment) * dtMin, 0, 1.5);
+      S.hrDrive = clamp((S.hrDrive ?? 55) + (0.010 - 0.060 * beta) * dtMin, 0, 90);
     },
   },
   {
@@ -227,10 +226,8 @@ const MODULES = [
            contractility:0.85, acheActivity:0.12, muscarinicBlock:0 },
     drivers:{ kProd:0.068, lactProd:0.035 },
     complaint:'喷洒农药后 2 小时出现大汗、流涎、恶心呕吐，呼之能应但反应迟钝，瞳孔针尖样，双肺满布湿啰音。',
-    goal:['心率 ≥60','血氧 ≥94%','毒蕈碱样症状缓解'],
-    /* hr<60 是下限（全局只有 hr<115 的上限）；spo2 由全局覆盖；只留酶活性判据 */
-    check:S=>[ S.hr<60 ? `心率 ${Math.round(S.hr)} 次/分` : null,
-               (1-(S.acheActivity==null?1:S.acheActivity))>0.25 ? '胆碱酯酶仍被抑制、分泌物多' : null ].filter(Boolean),
+    goal:['心率 ≥60','血氧 ≥94%','毒蕈碱样症状缓解'], minDischargeHR:60,
+    check:S=>[ (1-(S.acheActivity==null?1:S.acheActivity))>0.25 ? '胆碱酯酶仍被抑制、分泌物多' : null ].filter(Boolean),
     hint:'阿托品对抗毒蕈碱样症状，碘解磷定复活胆碱酯酶。先给氧再解毒。',
     advance(S, dtMin, E) {
       const pra = active(S,'pralidoxime');
@@ -349,7 +346,7 @@ const MODULES = [
     drivers:{ kProd:0.068, lactProd:0.045 },
     complaint:'长途飞行后突发胸痛、呼吸困难，起身时晕倒。心率 132，血压 82/58，右下肢略肿。',
     goal:['血氧 ≥94%','收缩压 ≥90','右心负荷减轻'],
-    /* spo2 与 hr>115 都已被全局判据覆盖 → 只留血栓负荷 */
+    /* 血氧与心率由通用出院判据覆盖。 */
     check:S=>[ (S.clot||0)>0.25 ? '右心负荷仍未减轻（血栓未清除）' : null ].filter(Boolean),
     hint:'大面积肺栓塞先给氧、抗凝，血流动力学不稳时溶栓。补液要小心，右心已经撑不住了。',
     advance(S, dtMin, E) {
@@ -509,19 +506,19 @@ const MODULES = [
     init:{ vol:3.85, k:4.4, na:146, hco3:19, lac:5.2, glu:7.5, cr:150, bun:9.5,
            hb:132, wbc:14.0, plt:190, temp:41.2, gcs:10,
            hr:138, sv:56, svr:9.5, rr:30, pao2:82, paco2:28, spo2:93, uo:0.4,
-           contractility:0.84, tempDrive:1.30 },
+           contractility:0.84, heatstrokeDrive:1.30 },
     drivers:{ kProd:0.016, lactProd:0.08 },
     complaint:'高温车间连续作业 4 小时，突然晕倒，皮肤干热无汗，肛温 41.2℃。',
     goal:['核心体温 < 38.5','收缩压 ≥ 90','意识恢复'],
     check:S=>[ S.temp > 38.5 ? `体温 ${S.temp.toFixed(1)}℃` : null,
                S.gcs < 13 ? `意识 ${S.gcs}` : null ].filter(Boolean),
-    hint:'热射病是"散热失败"：先物理降温（冰袋/冷水浸浴），补液同时要防低血压。',
+    hint:'热射病需尽快散热。在「环境 / 场景」开启物理降温，同时补液并监测血压。',
     advance(S, dtMin){
-      /* 散热障碍用产热驱动表达（tempDrive 已进引擎的体温目标），不是直接改写体温 */
-      const cooling = ((S.env && S.env.cold) ? 1 : 0) + (S.mod && S.mod.temp < 0 ? 0.5 : 0);
-      S.tempDrive = clamp((S.tempDrive == null ? 1.30 : S.tempDrive) - cooling * 0.050 * dtMin, 0, 1.40);
-      /* 降到位就稳住，别一路降到低体温 */
-      if (S.temp < 38.6) S.tempDrive = Math.max(0, (S.tempDrive || 0) - 0.02 * dtMin);
+      const recovering = S.heatstrokeCooled && !S.env?.heat;
+      const cooling = S.env?.cooling ? 0.05 : (recovering ? 0.04 : 0);
+      if (cooling > 0) {
+        S.heatstrokeDrive = Math.max(0, (S.heatstrokeDrive ?? 1.30) - cooling * dtMin);
+      }
       /* 横纹肌溶解 → 高钾 + 凝血障碍（热射病的真实并发症） */
       if (S.temp > 40) { S.kProd = 0.020; S.coag = Math.max(0.35, (S.coag || 1) - 0.0015 * dtMin); }
       S.lactProd = 0.08;
@@ -536,12 +533,9 @@ const MODULES = [
            contractility:0.76, myxedemaSeverity:1 },
     drivers:{ kProd:0.010, lactProd:0.03 },
     complaint:'老年女性，冬季被发现倒在没开暖气的房间里，反应迟钝、面部浮肿、皮肤干冷。既往甲减，已自行停药 2 个月。',
-    goal:['体温 ≥ 35.5','心率 ≥ 60','意识恢复'],
-    check:S=>[ S.temp < 35.5 ? `体温 ${S.temp.toFixed(1)}℃` : null,
-               S.hr < 55 ? `心率 ${Math.round(S.hr)}` : null,
-               S.gcs < 13 ? `意识 ${S.gcs}` : null,
-               (S.myxedemaSeverity ?? 1) > 0.35 ? '甲状腺激素替代治疗尚未充分生效' : null ].filter(Boolean),
-    hint:'甲减危象靠甲状腺素救命：左甲状腺素 + 氢化可的松，同时被动复温、别用大剂量升压药。',
+    goal:['体温 ≥ 36.0','心率 ≥ 55','意识恢复'], minDischargeHR:55,
+    check:S=>[ (S.myxedemaSeverity ?? 1) > 0.35 ? '甲状腺激素替代治疗尚未充分生效' : null ].filter(Boolean),
+    hint:'左甲状腺素 + 氢化可的松，同时在「环境 / 场景」开启被动保暖，避免大剂量升压药。',
     advance(S, dtMin){
       const replacement = clamp(S.thyroidReplacement || 0, 0, 1);
       S.myxedemaSeverity = clamp((S.myxedemaSeverity ?? 1) + (0.001 - 0.018 * replacement) * dtMin, 0, 1);
@@ -677,7 +671,6 @@ const MODULES = [
       /* 未止惊则持续放电：乳酸飙升、体温上升、缺氧 */
       if ((S.seizure || 0) > 0.2) {
         S.lactProd = 0.150;   // 持续抽搐的乳酸生成（高于初始 7.5 的稳态，才会继续升）
-        S.tempDrive = clamp((S.seizure || 0) * 0.55, 0, 0.95);   // 引擎体温目标 36.6 + tempDrive×4.6
         S.insult.hypox += 0.10 * (S.seizure || 0) * dtMin;
       } else {
         S.lactProd = 0.030;
@@ -870,6 +863,7 @@ function generateCase(difficulty, seed, only, genVersion) {
   const { sexReq, ageLo, ageHi } = demographics;
 
   const init = Object.assign({}, BASE);
+  let admissionTemp = BASE.temp;
   const bleedingSites = {};
   const drivers = {};
   const preload = [];
@@ -879,10 +873,14 @@ function generateCase(difficulty, seed, only, genVersion) {
     const rate = m.drivers?.bleedRate ?? m.init?.bleedRate;
     if (rate > 0) bleedingSites[m.id] = rate;
     for (const [k, v] of Object.entries(m.init || {})) init[k] = v;
+    const temp = m.init?.temp;
+    if (Math.abs(temp - BASE.temp) > Math.abs(admissionTemp - BASE.temp)) admissionTemp = temp;
     Object.assign(drivers, m.drivers || {});
     if (m.preload) preload.push(...m.preload);
     if (m.opioidTox) opioidTox = true;
   }
+  // 合并病例时，保留偏离基线最大的入院体温，避免后一个模块覆盖首诊异常。
+  if (!legacy) init.temp = admissionTemp;
   init.mod = Object.assign({ hr:0, svr:0, sv:0, rr:0, spo2:0, temp:0, gcs:0 }, init.mod || {});
   Object.assign(init, drivers);
   const aki = primary.find(m => m.id === 'aki');
@@ -957,6 +955,7 @@ function generateCase(difficulty, seed, only, genVersion) {
     comorbidities,
     init,
     goals: Array.from(new Set(primary.flatMap(m => m.goal))),
+    minDischargeHR: Math.max(...primary.map(m => m.minDischargeHR ?? 50)),
     hint: primary[0].hint,
     extra: S => primary.flatMap(m => (m.check ? m.check(S) : [])),
     advance,

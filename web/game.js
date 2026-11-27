@@ -257,7 +257,9 @@ function renderStates() {
   const tox = S.tox || {};
   if ((tox.benzo || 0) > 0) out.push('苯二氮卓过量');
   if ((tox.op || 0) > 0) out.push('有机磷中毒');
-  if ((tox.apap || 0) > 0) out.push('对乙酰氨基酚过量');
+  const apap = E.acetaminophenExposure(S);
+  if (apap.known || apap.highRisk) out.push('对乙酰氨基酚过量');
+  else if (apap.aboveLimit) out.push('对乙酰氨基酚用量超出参考上限');
   if ((S.withdraw || 0) > 0.15) out.push('戒断反应');
   if ((S.anaphyl || 0) > 0.15) out.push('过敏性休克');
   if ((S.bronchospasm || 0) > 0.25) out.push('支气管痉挛');
@@ -2529,6 +2531,7 @@ const RELEASES = [
   { v: '1.52.0', notes: [
     '床旁心电图按真实心率走纸，心搏音与 R 峰同步；大厅只播高优先级报警',
     '新增重置游戏存档，以及跳过结局统计的测试用患者移除功能',
+    '修复常规对乙酰氨基酚给药触发过量提示和中毒诊断的问题',
   ] },
   { v: '1.51.0', notes: [
     '合并社区贡献：多出血点记账、撤机流程、器官图重绘、心音按实时心率',

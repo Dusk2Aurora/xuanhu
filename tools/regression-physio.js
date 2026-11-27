@@ -110,6 +110,26 @@ for (const id of ['hyperkalemia', 'dka', 'bleed', 'sepsis', 'opioid']) {
   check('去甲肾上腺素升压（脓毒症）', E.bp(se).map > m0 + 6, `${m0} → ${E.bp(se).map}`);
 }
 
+{
+  const dx = require('../prototype/diagnosis');
+  const S = E.create('hyperkalemia');
+  const hasPoisoning = () => dx.classifyAll(S).some(d => d.primaryId === 'apapOD');
+  const dose = E.give(S, 'acetaminophen');
+  check('常规对乙酰氨基酚不触发中毒', dose === 500 && !E.acetaminophenExposure(S).aboveLimit && !hasPoisoning(), dose + ' mg');
+  S.hepatotox = 0.85;
+  check('常规剂量与非特异性肝损分开', !hasPoisoning(), '其他病因的肝损');
+  S.hepatotox = 0;
+  for (let i = 1; i < 8; i++) E.give(S, 'paracetamol', 500, '栓剂');
+  check('不同途径合并用量', E.acetaminophenExposure(S).mg24h === 4000 && !E.acetaminophenExposure(S).aboveLimit, '4000 mg');
+  E.give(S, 'acetaminophen', 500);
+  check('超出累计上限仅提示用量', E.acetaminophenExposure(S).aboveLimit && !hasPoisoning(), '4500 mg');
+  E.give(S, 'acetaminophen', 5500);
+  check('高风险暴露提示', E.acetaminophenExposure(S).highRisk, '高风险');
+  S.t += 86400;
+  check('旧剂量不计入当天', E.acetaminophenExposure(S).mg24h === 0 && !hasPoisoning(), '已过 24 小时');
+  S.tags = ['apap'];
+  check('入院过量病例仍识别', E.acetaminophenExposure(S).known && hasPoisoning(), '有入院病史');
+}
 const fails = out.filter(x => !x.ok);
 const pad = s => s + ' '.repeat(Math.max(0, 26 - s.length));
 console.log(pad('断言') + '结果   实测');

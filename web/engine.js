@@ -846,6 +846,26 @@ function setEnv(S, key, on) {
   return S.env;
 }
 
+// Administration records are timestamped in simulation seconds and doses in mg.
+// A dosing-limit warning, a high-risk exposure and established poisoning are distinct.
+function acetaminophenExposure(S) {
+  const weight = S.weight > 0 ? S.weight : 70;
+  let mg24h = 0, largestDose = 0;
+  for (const dose of S.given || []) {
+    if (dose.id !== 'acetaminophen' && dose.id !== 'paracetamol') continue;
+    const age = S.t - dose.t;
+    if (!(age >= 0 && age < 86400 && Number.isFinite(dose.d) && dose.d > 0)) continue;
+    mg24h += dose.d;
+    largestDose = Math.max(largestDose, dose.d);
+  }
+  return {
+    mg24h,
+    aboveLimit: largestDose > (weight < 50 ? 15 * weight : 1000) || mg24h > (weight < 50 ? 75 * weight : 4000),
+    highRisk: mg24h >= Math.min(10000, 200 * weight),
+    known: (S.apapLoad || 0) > 0 || (S.tags || []).includes('apap'),
+  };
+}
+
 function give(S, drugId, dose, route) {
   const SUB = root.SUBSTANCES;
   if (SUB) {
@@ -1758,7 +1778,7 @@ function finalScore(S) {
 }
 
 const API = {
-  setIdentity(p) { IDENTITY = p || null; }, CASES, DRUGS, ACTIONS, TESTS, create, tick, give, setEnv, finalScore, bp, snapshot,
+  setIdentity(p) { IDENTITY = p || null; }, CASES, DRUGS, ACTIONS, TESTS, create, tick, give, acetaminophenExposure, setEnv, finalScore, bp, snapshot,
               dischargeCheck, orderTest, pollTests, testValue, computeMap, fmt, endCase, setBleedingRate, restoreBleeding,
               hill, computePh, computePcwp, roomAirSaturation, restoreCardiorespiratory, restoreDischargeObservation };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;

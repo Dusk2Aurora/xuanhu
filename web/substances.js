@@ -36,6 +36,7 @@ const CLS = {
   '兴奋剂':     { r:'口服', on:15, du:180, e:{ hr:+18, svr:+0.9, gcs:+1 } },
   '致幻剂':     { r:'口服', on:30, du:240, e:{ gcs:-3, hr:+12, temp:+0.4 } },
   'NSAID':      { r:'口服', on:30, du:240, e:{ temp:-0.3 } },
+  '解热镇痛':   { r:'口服', on:30, du:240, e:{ temp:-0.3 } },
   '抗血小板':   { r:'口服', on:30, du:360, e:{} },
   '抗凝':       { r:'静推', on:10, du:240, e:{} },
   '抑酸':       { r:'静推', on:15, du:360, e:{} },
@@ -103,7 +104,7 @@ const DRUGS = [
   ['clopidogrel','氯吡格雷',   '抗血小板', 300,'mg',     28, { e:{coag:-0.06} }],
   ['ibuprofen','布洛芬',       'NSAID',    400,'mg',     8,  null],
   ['naproxen', '萘普生',       'NSAID',    500,'mg',     9,  null],
-  ['acetaminophen','对乙酰氨基酚','NSAID', 500,'mg',     6,  null],
+  ['acetaminophen','对乙酰氨基酚','解热镇痛', 500,'mg',   6,  null],
 
   /* —— 电解质 / 酸碱 / 容量 —— */
   ['kcl',      '氯化钾',       '电解质',   20, 'mmol',   12, { r:'静滴', e:{k:+0.95}, note:'禁止静推；外周浓度 ≤40 mmol/L' }],
@@ -371,7 +372,7 @@ const ROUTE_MAP = {
   dexamethasone:[{ r:'静推', d:8,  on:30, du:300 }, { r:'口服', d:8,  on:45, du:360 }],
   omeprazole: [{ r:'静推', d:80, on:15, du:360 }, { r:'口服', d:40, on:60, du:480 }],
   ranitidine: null,
-  paracetamol:[{ r:'口服', d:500,on:30, du:240 }, { r:'栓剂', d:500,on:20, du:240 }],
+  acetaminophen:[{ r:'口服', d:500,on:30, du:240 }, { r:'栓剂', d:500,on:20, du:240 }],
   ceftriaxone:[{ r:'静滴', d:2,  on:20, du:120 }, { r:'肌注', d:1,  on:30, du:180 }],
   levofloxacin:[{ r:'静滴', d:500,on:20, du:120 }, { r:'口服', d:500,on:40, du:240 }],
   octreotide: [{ r:'静推', d:50, on:5,  du:120 }, { r:'泵入', d:25, on:5,  du:240 }],
@@ -597,7 +598,7 @@ const ALIASES = {
 
 const ALL = build();
 
-function byId(id) { return ALL.find(x => x.id === id); }
+function byId(id) { return ALL.find(x => x.id === (id === 'paracetamol' ? 'acetaminophen' : id)); }
 function byClass() {
   const m = {};
   for (const s of ALL) (m[s.cls] = m[s.cls] || []).push(s);

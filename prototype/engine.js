@@ -735,7 +735,7 @@ function applyDelta(S, key, d) {
       S.rbcMass = Math.max(20, (S.rbcMass || 0) + d * S.vol);
       break;
     case 'freeWater':
-      /* 自由水：只加水不加钠 → 稀释性低钠；用于口服水/5% 葡萄糖 */
+      /* 口服水中的自由水部分进入稀释容积，不增加钠总量。 */
       S.freeWater = clamp((S.freeWater || 0) + d, -3, 14);
       break;
     case 'uo':

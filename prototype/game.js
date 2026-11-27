@@ -11,14 +11,14 @@ const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, ch =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]);
 
 /* ---------------- 状态 ---------------- */
-let S;
+let S = null;
 /* 病房床位：同时最多 MAX_BEDS 个病例，时间同步流逝，可随时切换 */
 const MAX_BEDS = 4;
 let beds = [];
 let activeIdx = 0;
 let selected = 'heart';
 let lastTs = 0, acc = 0, hudAcc = 0, saveAcc = 0, signsAcc = 0;
-let lastBeatAt = null;
+const ecg = new EcgMonitor();
 let speed = 1, ff = false;
 let observationUntil = null;
 let lastCaseReview = false;
@@ -44,6 +44,12 @@ let caseDiff = (function(){
   try { const v = parseInt(localStorage.getItem('life.caseDiff') || '0', 10); if (v >= 1 && v <= 5) return v; } catch (e) {}
   return 3;
 })();
+
+const RESET_EPOCH_KEY = 'life.resetEpoch';
+const saveEpoch = readSaveEpoch();
+let wardRevision = null;
+let pendingResetRecovery = null;
+let reloadingForStorage = false;
 
 /* ---------------- 人体 ---------------- */
 function drawBody() {
@@ -154,9 +160,13 @@ function renderOrganPanel() {
     panel.classList.remove('hide');
     panel.innerHTML = meta.f(E.snapshot(S), S).map(([k], i) =>
           `<div class="row"><span class="lab">${k}</span><span class="val" data-oi="${i}"></span></div>`).join('')
-      + (selected === 'heart' ? '<canvas id="miniEcg" height="92"></canvas>' : '');
+      + (selected === 'heart' ? '<canvas id="miniEcg" title="最近 4 秒心电图 · 点击查看指标走势" aria-label="最近 4 秒单导联心电图"></canvas>' : '');
     updateOrganValues();
-    drawMini();
+    const canvas = $('#miniEcg');
+    if (canvas) {
+      canvas.addEventListener('click', () => openChart());
+      if (ecg.patient === S) ecg.draw(canvas);
+    }
   } else {
     updateOrganValues();
   }
@@ -170,45 +180,6 @@ function updateOrganValues() {
     const el = document.querySelector('[data-oi="' + i + '"]');
     if (el) el.innerHTML = `${v}${u ? `<span style="font-size:9px;color:#9a9a9a"> ${u}</span>` : ''}`;
   });
-}
-/* ---------------- 迷你心电 ---------------- */
-let miniRAF = null, miniPhase = 0;
-function drawMini() {
-  if (miniRAF) cancelAnimationFrame(miniRAF);
-  const cv = $('#miniEcg'); if (!cv) return;
-  if (!cv.__tap) {
-    cv.__tap = 1;
-    cv.style.cursor = 'pointer';
-    cv.title = '点击查看指标走势';
-    cv.addEventListener('click', (ev) => { ev.stopPropagation(); openChart(); });
-  }
-  const ctx = cv.getContext('2d');
-  const dpr = devicePixelRatio || 1, r = cv.getBoundingClientRect();
-  cv.width = Math.max(120, r.width * dpr); cv.height = Math.max(40, r.height * dpr);
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  const w = cv.width / dpr, h = cv.height / dpr;
-  const gg = (x, mu, s) => Math.exp(-((x - mu) * (x - mu)) / (2 * s * s));
-  const beat = p => 0.10 * gg(p, .17, .024) - 0.09 * gg(p, .268, .008) + 1 * gg(p, .286, .009)
-                  - 0.26 * gg(p, .306, .012) + 0.34 * gg(p, .47, .04);
-  function frame() {
-    const rhythm = S.rhythm;
-    ctx.clearRect(0, 0, w, h);
-    ctx.strokeStyle = 'rgba(211,58,58,.10)'; ctx.lineWidth = 1;
-    for (let x = 0; x < w; x += 14) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); }
-    for (let y = 0; y < h; y += 14) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); }
-    ctx.beginPath();
-    for (let x = 0; x < w; x++) {
-      let y;
-      if (rhythm === 'sinus') { const t = (x / w * 3.4 + miniPhase) % 1; y = h * 0.62 - beat(t) * h * 0.42; }
-      else if (rhythm === 'vf') { const t = x / w * 18 + miniPhase * 40; y = h * 0.55 - (Math.sin(t) * 0.5 + Math.sin(t * 2.7) * 0.3 + Math.sin(t * 5.3) * 0.2) * h * 0.26; }
-      else { y = h * 0.6 + Math.sin((x / w * 6) + miniPhase * 3) * 0.4; }
-      x ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
-    }
-    ctx.strokeStyle = '#d33a3a'; ctx.lineWidth = 1.5; ctx.lineJoin = 'round'; ctx.stroke();
-    miniPhase = (miniPhase + 0.0016) % 1;
-    miniRAF = requestAnimationFrame(frame);
-  }
-  frame();
 }
 /* ---------------- 体征 / 状态 ---------------- */
 function vitalList(s) {
@@ -332,6 +303,7 @@ function openSheet(title, sub, rows, patient) {
   list.querySelectorAll('.drow').forEach(el => {
     el.addEventListener('click', () => {
       if (!list.contains(el) || !$('#sheet').classList.contains('on')) return;
+      if (!hasCurrentSaveEpoch()) return;
       if (patient && !isCurrentPatient(patient)) return;
       rows[+el.dataset.i].run();
     });
@@ -353,8 +325,9 @@ function dismissSheet() {
 
 function closeDetail() {
   $('#detail').classList.remove('on');
-  if (lastCaseReview) {
+  if (lastCaseReview || (returnToLobby && !$('#sheet').classList.contains('on'))) {
     lastCaseReview = false;
+    returnToLobby = false;
     showLobby();
   }
 }
@@ -476,7 +449,7 @@ function openDrugSheet() {
 }
 
 const EFF_NAME = { k:'血钾', na:'血钠', cl:'血氯', ca:'血钙', hco3:'HCO₃⁻', glu:'血糖', lac:'乳酸',
-                   vol:'血容量', hb:'血红蛋白', hr:'心率', svr:'血管张力', sv:'心肌收缩力',
+                   vol:'血容量', freeWater:'自由水', hb:'血红蛋白', hr:'心率', svr:'血管张力', sv:'心肌收缩力',
                    rr:'呼吸频率', spo2:'血氧', temp:'体温', gcs:'意识', uo:'尿量' };
 function describeEff(eff) {
   const parts = [];
@@ -664,7 +637,7 @@ function ensureMentorDOM() {
 function levelRows() {
   return Object.entries(MENTOR.LEVELS).map(([id, L]) => ({
     n: L.name, tag: L.note, amt: id === level ? '当前' : '',
-    run: () => { level = id; try { localStorage.setItem('life.level', id); } catch (e) {} syncLevel(); closeSheet(); showAdvice(true); },
+    run: () => { level = id; try { localStorage.setItem('life.level', id); } catch (e) {} syncLevel(); dismissSheet(); if (S) showAdvice(true); },
   }));
 }
 function syncLevel() {
@@ -733,6 +706,84 @@ function judge(kind, id, assessment) {
 }
 
 /* ---------------- 存档 ---------------- */
+const GAME_STORAGE_KEYS = [
+  'life.save', 'life.records', 'life.handbook', 'life.ach', 'life.signs',
+  'life.level', 'life.caseDiff', 'life.autoHint', 'life.night', 'life.realism',
+  'life.insHelpShown', 'life.sound', 'life.soundVolume', 'life.contact',
+  'life.updateBase', 'life.downloadPage', 'life.remoteBase',
+];
+
+function readSaveEpoch() {
+  try { return localStorage.getItem(RESET_EPOCH_KEY); } catch (e) { return null; }
+}
+
+function newStorageRevision() {
+  return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+}
+
+function reloadForStorage() {
+  if (reloadingForStorage) return;
+  reloadingForStorage = true;
+  silenceMonitor();
+  location.reload();
+}
+
+function hasCurrentSaveEpoch() {
+  const storedEpoch = readSaveEpoch();
+  if (storedEpoch?.startsWith('pending:')) {
+    if (pendingResetRecovery !== storedEpoch) {
+      pendingResetRecovery = storedEpoch;
+      setTimeout(() => {
+        if (readSaveEpoch() !== storedEpoch) return;
+        try { finishSaveReset(storedEpoch); }
+        catch (e) { toast('清空存档未完成，请刷新重试', true); }
+      }, 250);
+    }
+    return false;
+  }
+  if (storedEpoch !== saveEpoch) reloadForStorage();
+  return !reloadingForStorage;
+}
+
+function readWardSave() {
+  try { return JSON.parse(localStorage.getItem('life.save')); } catch (e) { return null; }
+}
+
+function hasCurrentWard() {
+  if (!hasCurrentSaveEpoch()) return false;
+  const stored = readWardSave();
+  const revision = (stored?.resetEpoch ?? null) === saveEpoch ? (stored?.wardRevision ?? null) : null;
+  if (revision !== wardRevision) reloadForStorage();
+  return !reloadingForStorage;
+}
+
+function finishSaveReset(pendingEpoch) {
+  for (const key of GAME_STORAGE_KEYS) {
+    if (readSaveEpoch() !== pendingEpoch) return;
+    localStorage.removeItem(key);
+  }
+  if (readSaveEpoch() !== pendingEpoch) return;
+  localStorage.setItem(RESET_EPOCH_KEY, pendingEpoch.slice('pending:'.length));
+  reloadForStorage();
+}
+
+function confirmSaveReset() {
+  openSheet('重置游戏存档', '此操作无法撤销', [
+    { sec: '清空所有床位、病历档案、行医手册、成就和已见体征，并恢复游戏设置。' },
+    { n: '取消', tag: '保留游戏数据', amt: '', run: dismissSheet },
+    { n: '确认清空游戏数据', tag: '重置后返回空病房大厅', amt: '', run: () => {
+      const pendingEpoch = 'pending:' + newStorageRevision();
+      try {
+        // 清理期间先暂停旧标签页的存档，设置全部删除后再让它们重载。
+        localStorage.setItem(RESET_EPOCH_KEY, pendingEpoch);
+        finishSaveReset(pendingEpoch);
+      } catch (e) {
+        toast('清空存档失败，请检查本地存储权限', true);
+      }
+    } },
+  ]);
+}
+
 function wardRecordId(st) {
   if (!st._wardRecordId) st._wardRecordId = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
   return st._wardRecordId;
@@ -745,26 +796,31 @@ function serState(st) {
   return { s: copy, caseId: st.caseId, seed: st.seed, diff: st.diff, genVersion: st.cas.genVersion };
 }
 
-function saveGame() {
+function writeWard(nextBeds, index, revision) {
   try {
-    if (!beds.length) {
-      localStorage.removeItem('life.save');
-      return;
-    }
-    localStorage.setItem('life.save', JSON.stringify({
-      v: 3, level, caseDiff, activeIdx,
-      beds: beds.map(b => serState(b.S)),
-    }));
-  } catch (e) {}
+    const snapshot = JSON.stringify({
+      v: 3, resetEpoch: saveEpoch, wardRevision: revision, level, caseDiff, activeIdx: index,
+      beds: nextBeds.map(b => serState(b.S)),
+    });
+    if (!hasCurrentWard()) return false;
+    // 同一次写入公布床位及版本，其他标签页会一起读取两者。
+    localStorage.setItem('life.save', snapshot);
+    wardRevision = revision;
+    return true;
+  } catch (e) { return false; }
+}
+
+function saveGame({ empty = false } = {}) {
+  if (beds.length || empty) writeWard(beds, activeIdx, wardRevision);
 }
 
 function loadGame() {
   try {
-    const raw = localStorage.getItem('life.save');
-    if (!raw) return false;
-    const d = JSON.parse(raw);
-    if (!d || !Array.isArray(d.beds) || !d.beds.length) return false;
+    const d = readWardSave();
+    if (!d || !Array.isArray(d.beds) || (d.resetEpoch ?? null) !== saveEpoch) return false;
     if (d.v !== 3) { try { localStorage.removeItem('life.save'); } catch (err) {} window.__saveDiscarded = true; return false; }
+    wardRevision = d.wardRevision ?? null;
+    if (!d.beds.length) return true;
 
     const rebuilt = [];
     const savedActive = Math.min(Math.max(0, d.activeIdx | 0), d.beds.length - 1);
@@ -900,7 +956,7 @@ function loop(ts) {
   if (!lastTs) lastTs = ts;
   const dt = Math.min(0.5, (ts - lastTs) / 1000);
   lastTs = ts;
-  if (paused || !beds.length) { silenceMonitor(); requestAnimationFrame(loop); return; }
+  if (paused || !beds.length) { ecg.pause(); silenceMonitor(); requestAnimationFrame(loop); return; }
   if (beds.length) {
     const adv = observationUntil == null
       ? dt * (ff ? 20 : speed) * (nightMode ? 1.3 : 1)
@@ -925,7 +981,7 @@ function loop(ts) {
       toast('留观快进已结束，请复查病情');
     }
     settleBeds();
-    if (!beds.length) { silenceMonitor(); requestAnimationFrame(loop); return; }
+    if (!beds.length) { ecg.pause(); silenceMonitor(); requestAnimationFrame(loop); return; }
     const warnings = new Set();
     hudAcc += dt;
     if (hudAcc >= 0.25) { hudAcc = 0; renderHUD(); }
@@ -955,13 +1011,20 @@ function loop(ts) {
       const nowSevere = isSevere(S);
       if (nowSevere && !S._wasSevere) {
         /* 只在"由轻转重"那一刻弹；开局即重症不弹（_ready 之前也不弹） */
-        if (S._ready && !severePopup) { showSeverePopup(); warnings.add(S); }
+        if (S._ready && !severePopup && !lobbyIsActive()) { showSeverePopup(); warnings.add(S); }
         S._wasSevere = 1;
       } else if (!nowSevere) {
         S._wasSevere = 0;
       }
     } catch (e) {}
-    pumpSound(ts, warnings);
+    const inLobby = lobbyIsActive();
+    let rPeak = false;
+    if (!document.hidden) {
+      rPeak = ecg.update(S, ts);
+      const canvas = !inLobby && selected === 'heart' && $('#miniEcg');
+      if (canvas) ecg.draw(canvas);
+    }
+    pumpSound(ts, warnings, rPeak, inLobby);
   }
   requestAnimationFrame(loop);
 }
@@ -970,12 +1033,11 @@ function loop(ts) {
 function silenceMonitor() {
   window.SOUND?.stopMonitorAlarm();
   for (const bed of beds) bed.nextVfAlarmAt = 0;
-  lastBeatAt = null;
 }
-document.addEventListener('visibilitychange', () => { if (document.hidden) silenceMonitor(); });
+document.addEventListener('visibilitychange', () => { if (document.hidden) { ecg.pause(); silenceMonitor(); } });
 window.addEventListener('pagehide', silenceMonitor);
 
-function pumpSound(ts, warnings) {
+function pumpSound(ts, warnings, rPeak, inLobby) {
   if (!window.SOUND?.enabled || document.hidden) { silenceMonitor(); return; }
   for (const [i, bed] of beds.entries()) {
     const patient = bed.S;
@@ -991,16 +1053,10 @@ function pumpSound(ts, warnings) {
     } else {
       if (bed.nextVfAlarmAt || SOUND.flatlinePlaying(patient)) SOUND.stopMonitorAlarm(patient);
       bed.nextVfAlarmAt = 0;
-      if (warnings.has(patient)) SOUND.critical(patient, bedIndex);
+      if (!inLobby && warnings.has(patient)) SOUND.critical(patient, bedIndex);
     }
   }
-  if (S.rhythm !== 'sinus' || !(S.hr > 0)) { lastBeatAt = null; return; }
-  const interval = 60000 / S.hr;
-  const elapsed = lastBeatAt == null ? Infinity : ts - lastBeatAt;
-  if (elapsed >= interval) {
-    SOUND.beat();
-    lastBeatAt = elapsed < 2 * interval ? lastBeatAt + interval : ts;
-  }
+  if (!inLobby && rPeak) SOUND.beat();
 }
 
 function renderHUD() {
@@ -1099,22 +1155,39 @@ function buildTimeline(st) {
   return rows.join('\n');
 }
 
-function focusBed(i) {
-  stopObservation();
-  activeIdx = i;
-  S = beds[i].S;
-  lastBeatAt = null;
-  lastCrit = '';
-  organBuiltFor = null;
+function closePatientOverlays() {
   lastCaseReview = false;
   closeSheet();
   $('#detail').classList.remove('on');
   if (severePopup) { severePopup.remove(); severePopup = null; }
+}
+
+function focusBed(i) {
+  stopObservation();
+  activeIdx = i;
+  S = beds[i].S;
+  lastCrit = '';
+  organBuiltFor = null;
+  closePatientOverlays();
   if (realism && !S.ins) initInsurance();
   drawBody();
   renderAll();
   showAdvice(false);
   flashBedBar(4200);
+}
+
+function clearActiveBed() {
+  stopObservation();
+  activeIdx = 0;
+  S = null;
+  ecg.clear();
+  silenceMonitor();
+  paused = false;
+  ff = false;
+  speed = 1;
+  syncSpeedUI();
+  closePatientOverlays();
+  renderAll();
 }
 
 function switchBed(patient) {
@@ -1132,8 +1205,9 @@ function switchBed(patient) {
 
 function settleBeds() {
   const finished = beds.filter(b => !b.S.running);
-  if (!finished.length) return;
+  if (!finished.length || !hasCurrentWard()) return;
 
+  const inLobby = lobbyIsActive();
   const wardCount = beds.length;
   let review;
   for (const b of finished) {
@@ -1149,24 +1223,24 @@ function settleBeds() {
   const nextBed = beds.slice(activeIdx + 1).find(b => b.S.running);
   beds = beds.filter(b => b.S.running);
   if (review) {
-    hideLobby();
     if (beds.length) {
       focusBed(nextBed ? beds.indexOf(nextBed) : beds.length - 1);
     } else {
-      activeIdx = 0;
-      closeSheet();
-      if (severePopup) { severePopup.remove(); severePopup = null; }
-      renderAll();
-      lastCaseReview = true;
+      clearActiveBed();
     }
-    showCaseReview(review.st, review);
+    if (inLobby) {
+      showLobby();
+    } else {
+      lastCaseReview = !beds.length;
+      showCaseReview(review.st, review);
+    }
   } else {
     activeIdx = beds.findIndex(b => b.S === S);
     renderBedBar();
     if ($('#sheet').classList.contains('on') && $('#sheetTitle').dataset.view === 'beds') openBeds();
+    if ($('#lobby').style.display === 'flex') showLobby();
   }
-  if (document.getElementById('lobby')?.style.display === 'flex') showLobby();
-  saveGame();
+  saveGame({ empty: true });
 }
 
 /* ---------------- 统计面板 ---------------- */
@@ -1290,6 +1364,7 @@ function mountBedBar() {
 function renderBedBar() {
   const el = document.getElementById('bedBar');
   if (!el) return;
+  if (!beds.length) { el.style.display = 'none'; return; }
   /* 抽屉或详情打开时让位 */
   const maskOn = document.getElementById('mask');
   const detailOn = document.getElementById('detail');
@@ -1430,6 +1505,10 @@ function showCaseReview(st, { ok, score, min, achNames }) {
 
 /* ---------------- 指标走势图 ---------------- */
 function openChart(gid) {
+  if (!S) {
+    openSheet('指标走势', '接诊患者后可查看指标走势', []);
+    return;
+  }
   if (!window.CHART) { openDetail('指标走势', '', [['状态', '图表模块未加载']], ''); return; }
   const groups = window.CHART.GROUPS;
   const cur = groups.find(x => x.id === gid) || groups[0];
@@ -1658,7 +1737,7 @@ function openFeedback() {
 }
 
 /* ---------------- 版本 / 更新检查 ---------------- */
-const APP_VERSION = '1.51.0';
+const APP_VERSION = '1.52.0';
 const releaseRoot = document.querySelector('meta[name="xuanhu-release-root"]')?.content;
 const releaseBase = releaseRoot ? new URL(releaseRoot, location.href).href.replace(/\/$/, '') : '';
 const platformName = location.protocol === 'file:' ? '离线 HTML' :
@@ -1944,8 +2023,8 @@ function openConsult() {
       '<div style="font-size:12px;color:#8a8078;margin-bottom:8px">会诊码包含：病例来源、病人身份、全部处置与结局。对方粘贴后可以查看你的思路，也可以接手重来。</div>' +
       '<textarea id="cShareOut" readonly style="width:100%;height:88px;padding:10px;border-radius:10px;border:1px solid #e8e4e2;font:12px/1.5 monospace;background:#faf9f8;resize:none"></textarea>' +
       '<div style="display:flex;gap:8px;margin-top:8px">' +
-        '<button id="cMake" class="pill" style="flex:1;padding:10px;cursor:pointer">生成本例会诊码</button>' +
-        '<button id="cCopy" class="pill" style="flex:1;padding:10px;cursor:pointer">复制</button>' +
+        '<button id="cMake" class="pill" style="flex:1;padding:10px;cursor:pointer"' + (patient ? '' : ' disabled') + '>生成本例会诊码</button>' +
+        '<button id="cCopy" class="pill" style="flex:1;padding:10px;cursor:pointer"' + (patient ? '' : ' disabled') + '>复制</button>' +
       '</div>' +
     '</div>' +
     '<div class="sec">我要接手别人的病例</div>' +
@@ -1959,7 +2038,8 @@ function openConsult() {
 
   const out = list.querySelector('#cShareOut');
   list.querySelector('#cMake').addEventListener('click', () => {
-    const code = window.SHARE.make(S);
+    if (!isCurrentPatient(patient)) return;
+    const code = window.SHARE.make(patient);
     if (!code) { toast('无法生成会诊码', true); return; }
     out.value = code;
     toast('会诊码已生成（' + code.length + ' 字）');
@@ -2063,7 +2143,7 @@ function checkSigns() {
   if (!list.length) return;
   let fresh = [];
   try { fresh = window.SIGNS.newOnes(list) || []; } catch (e) { return; }
-  if (!fresh.length) return;
+  if (!fresh.length || !hasCurrentSaveEpoch()) return;
   try { window.SIGNS.markSeen(fresh); } catch (e) {}
   const critical = fresh.some(x => x.level === 'critical');
   const names = fresh.slice(0, 3).map(x => x.name).join('、')
@@ -2137,6 +2217,10 @@ function bind() {
   $('#btnBlood').addEventListener('click', bloodReport);
   $('#btnMenu').addEventListener('click', () => openSheet('菜单', '', [
     {n:'音效设置', tag:SOUND.enabled ? SOUND.volume + '%' : '静音', amt:'调节', run:openSoundSettings},
+    {sec:'存档与测试'},
+    {n:'重置游戏存档', tag:'清空游戏进度及设置', amt:'', run:confirmSaveReset},
+    {n:'强制移除当前患者（测试用）', tag:'释放当前床位', amt:'', run:confirmRemovePatient},
+    {sec:'设置与工具'},
     {n:'会诊', tag:'分享 / 接手病例', amt:'查看', run: () => openConsult()},
     {n:'费用与医保', tag: realism ? '查看明细' : '现实模式才计费', amt:'查看', run: () => openCostSheet()},
     {n:'检查更新', tag:'在线 · v' + APP_VERSION, amt:'查看', run: () => checkUpdate()},
@@ -2193,7 +2277,7 @@ function bind() {
 function setCaseDiff(v) {
   caseDiff = Math.max(1, Math.min(5, v | 0));
   try { localStorage.setItem('life.caseDiff', String(caseDiff)); } catch (e) {}
-  closeSheet();
+  dismissSheet();
   toast('病例难度：' + caseDiff);
 }
 function caseDiffRows() {
@@ -2238,6 +2322,7 @@ function startCase(spec, replace) {
 }
 
 function installCase(st, replace) {
+  if (!hasCurrentWard()) return;
   prepareCase(st);
   if (replace && isCurrentPatient(S)) {
     window.SOUND?.stopMonitorAlarm(S);
@@ -2252,6 +2337,7 @@ function installCase(st, replace) {
     activeIdx = beds.length - 1;
   }
   focusBed(activeIdx);
+  hideLobby();
   syncLevel();
   saveGame();
 }
@@ -2263,6 +2349,32 @@ function confirmRestart() {
     { n: '确认重新开始', tag: '', amt: '重启',
       run: () => startCase({ ...patient.cas, patient: patient.patient }, true) },
     { n: '继续当前病例', tag: '', amt: '取消', run: closeSheet },
+  ], patient);
+}
+
+function confirmRemovePatient() {
+  const patient = S;
+  if (!isCurrentPatient(patient)) return;
+  openSheet('强制移除当前患者（测试用）', `床位 ${activeIdx + 1} · ${patient.patient.name}`, [
+    { sec: '立即释放当前床位，保留其他患者。此操作跳过结算，病历、手册、成就和统计保持原样。' },
+    { n: '取消', tag: '保留当前患者', amt: '', run: dismissSheet },
+    { n: '确认移除当前患者', tag: '此操作无法撤销', amt: '', run: () => {
+      const remaining = beds.filter(b => b.S !== patient);
+      const next = Math.max(0, Math.min(activeIdx, remaining.length - 1));
+      if (!writeWard(remaining, next, newStorageRevision())) {
+        if (!reloadingForStorage) toast('保存床位变更失败，请检查本地存储权限', true);
+        return;
+      }
+      window.SOUND?.stopMonitorAlarm(patient);
+      beds = remaining;
+      if (beds.length) {
+        focusBed(next);
+      } else {
+        clearActiveBed();
+        showLobby();
+      }
+      toast('已移除患者，床位已释放');
+    } },
   ], patient);
 }
 
@@ -2397,6 +2509,13 @@ function renderAll() {
   renderPatient();
   mountBedBar();
   renderBedBar();
+  if (!S) {
+    for (const id of ['#vitals', '#states', '#anat', '#opTitle', '#opan']) $(id).replaceChildren();
+    delete $('#states').dataset.labels;
+    $('#mentorCard').style.display = 'none';
+    $('#clock').textContent = '—';
+    return;
+  }
   renderVitals();
   renderStates();
   renderOrganPanel();
@@ -2407,6 +2526,10 @@ function renderAll() {
 
 /* 更新公告：每次发版在这里加一条（新的放最前面） */
 const RELEASES = [
+  { v: '1.52.0', notes: [
+    '床旁心电图按真实心率走纸，心搏音与 R 峰同步；大厅只播高优先级报警',
+    '新增重置游戏存档，以及跳过结局统计的测试用患者移除功能',
+  ] },
   { v: '1.51.0', notes: [
     '合并社区贡献：多出血点记账、撤机流程、器官图重绘、心音按实时心率',
     '低钠/高渗判定更严谨；操作增加适应症检查',
@@ -2503,22 +2626,31 @@ function bindLobby() {
     ach: openAchievements, about: openAbout, download: openGetLatest, sound: openSoundSettings,
     diff: () => openSheet('难度设置', '病例与指导', difficultyRows()),
     tutorial: () => TUTORIAL.open(0),
+    reset: confirmSaveReset,
   };
   lobby.addEventListener('click', event => {
     const button = event.target.closest('button');
-    if (!button || button.disabled) return;
+    if (!button || button.disabled || !hasCurrentSaveEpoch()) return;
     if (button.hasAttribute('data-new')) {
       startCase(CASEGEN.generate(diffFromLevel()));
-      hideLobby();
     } else if (button.dataset.mode) {
       if (button.dataset.mode === 'night') toggleNight(); else toggleRealism();
-      showLobby();
+      if ($('#sheet').classList.contains('on')) {
+        hideLobby({ keepMode: true });
+        returnToLobby = true;
+      } else {
+        showLobby();
+      }
     } else if (actions[button.dataset.act]) {
-      hideLobby();
+      hideLobby({ keepMode: true });
       returnToLobby = true;
       actions[button.dataset.act]();
     }
   });
+}
+
+function lobbyIsActive() {
+  return returnToLobby || $('#lobby').style.display === 'flex';
 }
 
 function showLobby() {
@@ -2545,11 +2677,12 @@ function showLobby() {
   const guidance = MENTOR.LEVELS[level] || MENTOR.LEVELS.intern;
   lobby.querySelector('.foot').textContent = `指导级别 · ${guidance.name}　 病例难度 · ${caseDiff}`;
   lobby.style.display = 'flex';
+  window.SOUND?.setLobbyMode?.(true);
 }
 
-function hideLobby() {
-  const el = document.getElementById('lobby');
-  if (el) el.style.display = 'none';
+function hideLobby({ keepMode = false } = {}) {
+  $('#lobby').style.display = 'none';
+  if (!keepMode) window.SOUND?.setLobbyMode?.(false);
 }
 
 function bindDialogFocus() {
@@ -2594,6 +2727,11 @@ function bindDialogFocus() {
 }
 
 /* ---------------- 启动 ---------------- */
+window.addEventListener('storage', event => {
+  if (event.key === RESET_EPOCH_KEY || event.key === null) hasCurrentSaveEpoch();
+  else if (event.key === 'life.save') hasCurrentWard();
+});
+if (!hasCurrentSaveEpoch()) return;
 ensureMentorDOM();
 try { autoHint = localStorage.getItem('life.autoHint') === '1'; } catch (e) {}
 try {
@@ -2603,19 +2741,19 @@ try {
 applyTheme();
 const _loaded = loadGame();
 document.addEventListener('click', () => { if (window.SOUND) SOUND.unlock(); }, { once: true });
-if (!_loaded) {
+if (!_loaded && !saveEpoch) {
   const spec = window.CASEGEN ? CASEGEN.generate(diffFromLevel()) : 'hyperkalemia';
   S = prepareCase(ensurePresentation(E.create(spec)));
   activeIdx = 0;
   beds = [{ S }];
 }
-if (realism && !S.ins) initInsurance();
+if (realism && S && !S.ins) initInsurance();
 bind();
-drawBody();
+if (S) drawBody();
 bindBedSwipe();
 renderAll();
 syncLevel();
-showAdvice(false);
+if (S) showAdvice(false);
 if (beds.length > 1) flashBedBar(3000);
 showLobby();
 bindDialogFocus();

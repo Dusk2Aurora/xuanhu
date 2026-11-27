@@ -1,15 +1,10 @@
 ﻿/* 全界面遍历：把所有可点的入口都点一遍，捕捉任何脚本错误
  * 用法：node tools/ui-sweep.js
  */
-const { chromium } = require('playwright-core');
-const { pathToFileURL } = require('url');
-const path = require('path');
+const { launchBrowser, gameUrl, enterWard } = require('./browser');
 
 (async () => {
-  const b = await chromium.launch({
-    executablePath: 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
-    headless: true,
-  });
+  const b = await launchBrowser();
   const p = await b.newPage({ viewport: { width: 1600, height: 1000 } });
   const errs = [];
   /* 重症弹窗会挡住点击：每次操作前先关掉 */
@@ -24,9 +19,9 @@ const path = require('path');
     errs.push('CONSOLE: ' + t);
   });
 
-  await p.goto(pathToFileURL(path.resolve('prototype', 'ui-v4.html')).href);
+  await p.goto(gameUrl);
   await p.evaluate(() => { try { localStorage.clear(); } catch (e) {} });
-  await p.reload();
+  await p.reload(); await enterWard(p);
   await p.waitForTimeout(1500);
 
   const visited = [];
@@ -110,7 +105,7 @@ const path = require('path');
              tl: (S.tl || []).length, given: (S.given || []).length };
   });
   if (!st) {
-    await p.reload();
+    await p.reload(); await enterWard(p);
     await p.waitForTimeout(1600);
     st = await p.evaluate(() => {
       const G = window.__LIFE_GAME;

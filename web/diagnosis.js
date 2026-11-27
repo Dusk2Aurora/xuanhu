@@ -543,13 +543,11 @@ const RULES = [
         ['morphine', 'fentanyl', 'oxycodone', 'hydrocodone', 'codeine', 'tramadol', 'heroin', 'methadone'],
         ['吗啡', '芬太尼', '羟考酮', '可待因', '曲马多', '海洛因', '美沙酮'])
         || c.S.opioidTox === true;
-      const benzoExp = (num(c.tox.benzo) || 0) > 0 || c.givenAny(
-        ['diazepam', 'lorazepam', 'midazolam', 'phenobarbital', 'clonazepam', 'alprazolam'],
-        ['地西泮', '劳拉西泮', '咪达唑仑', '苯巴比妥']);
+      const sedated = root.LIFE?.benzodiazepineExposure?.(c.S).sedated;
       const pattern = s.rr <= 10 && s.gcs <= 9;
       if (!exp && !pattern) return null;
       /* 有苯二氮卓暴露、又没有阿片暴露时，不要把镇静引起的呼吸抑制算成阿片过量 */
-      if (pattern && !exp && benzoExp) return null;
+      if (pattern && !exp && sedated) return null;
       let sc = 0.55 + (pattern ? 0.25 : 0) + (exp ? 0.08 : 0)
              + (spo2Below(s, 90) ? 0.05 : 0) + (s.rr < 6 ? 0.05 : 0);
       const ev = [`呼吸 ${s.rr} 次/分，意识 GCS ${s.gcs}`];
@@ -587,16 +585,9 @@ const RULES = [
     diff: ['阿片类药物过量', '酒精中毒', '低血糖', '脑血管意外'],
     test(c) {
       const s = c.s;
-      const dose = num(c.tox.benzo) || 0;
-      const exp = dose > 0 || c.givenAny(
-        ['diazepam', 'lorazepam', 'midazolam', 'phenobarbital', 'clonazepam', 'alprazolam'],
-        ['地西泮', '劳拉西泮', '咪达唑仑', '苯巴比妥']);
-      if (!exp) return null;
-      let sc = 0.58 + clamp(dose / 20, 0, 0.20)
-             + (s.gcs < 10 ? 0.10 : 0) + (s.rr < 10 ? 0.05 : 0);
-      const ev = [`意识 GCS ${s.gcs}，呼吸 ${s.rr} 次/分`];
-      if (dose > 0) ev.push(`苯二氮卓类累积剂量 ${Math.round(dose)} mg`);
-      else ev.push('用药记录提示苯二氮卓类暴露');
+      if (!root.LIFE?.benzodiazepineExposure?.(c.S).overdose) return null;
+      const sc = 0.75 + (s.gcs < 10 ? 0.10 : 0) + (s.rr < 10 ? 0.05 : 0);
+      const ev = ['当前苯二氮卓镇静负荷偏高', `意识 GCS ${s.gcs}，呼吸 ${s.rr} 次/分`];
       return { score: clamp(sc, 0, 0.94), evidence: ev };
     },
   },

@@ -605,7 +605,7 @@ function create(caseId) {
     t: 0, speed: 1, running: true, patient,
     rhythm: 'sinus',
     drugs: [], eff: { insulin: 0, norepi: 0, amio: 0, furo: 0, ppi: 0 },
-    pk: [], mod: makeMod(), modBase: makeMod(),
+    pk: [], benzoPkVersion: 1, mod: makeMod(), modBase: makeMod(),
     log: [], tests: {}, score: 100, death: null, discharged: false,
     caProtectUntil: -1, dialysisUntil: -1, o2: 0, fio2: 0.21, mapBoost: 0,
     bleedStopped: false, cost: 0, events: [], arrests: 0, infection: 0,
@@ -866,6 +866,57 @@ function acetaminophenExposure(S) {
   };
 }
 
+const BENZODIAZEPINES = new Set(['diazepam', 'lorazepam', 'midazolam', 'clonazepam']);
+
+// Normalized single-dose activity in the game's PK model; different drugs' mg are not additive.
+function bolusActivity(p, now) {
+  const elapsed = (now - p.t) / 60;
+  const lag = (p.onset || 0) * 0.35;
+  if (elapsed <= lag || elapsed > p.dur * 1.8) return 0;
+  const age = elapsed - lag;
+  const ramp = Math.min(1, age / Math.max(1, (p.onset || 1) * 0.8));
+  return ramp * Math.exp(-Math.LN2 * age / Math.max(1, p.dur / 4.5));
+}
+
+function flumazenilBlock(S) {
+  let block = 0;
+  for (const p of S.pk || []) if (p.id === 'flumazenil') block += p.scale * bolusActivity(p, S.t);
+  return Math.min(1, block);
+}
+
+function benzodiazepineExposure(S) {
+  let load = (S.tox?.benzo || 0) / 5; // Legacy admission exposure, separate from ward administrations.
+  let barbiturate = false;
+  for (const p of S.pk || []) {
+    if (BENZODIAZEPINES.has(p.id)) load += p.scale * bolusActivity(p, S.t);
+    if (p.id === 'phenobarbital' && p.scale * bolusActivity(p, S.t) > 0.1) barbiturate = true;
+  }
+  load *= 1 - flumazenilBlock(S);
+  const baseline = S.benzoBaseline;
+  const depressed = (S.gcs <= 10 && (!baseline || S.gcs <= baseline.gcs - 2)) ||
+    (S.rr < 10 && (!baseline || S.rr <= baseline.rr - 2));
+  // The seizure scenario permits two rescue doses of twice the reference dose.
+  // This is a game activity threshold, not a clinical toxic dose.
+  const high = load > 4;
+  return { load, high, overdose: high && depressed, sedated: load > 0.1 || barbiturate };
+}
+
+function restoreBenzodiazepines(S, saved) {
+  if (saved.benzoPkVersion === 1) return;
+  // Older saves counted ward doses twice (and even added phenobarbital) in this pool.
+  if ((S.given || []).some(p => BENZODIAZEPINES.has(p.id) || p.id === 'phenobarbital')) {
+    const admission = S.cas?.init?.tox?.benzo || 0;
+    S.tox.benzo = Math.min(S.tox.benzo || 0, admission * Math.exp(-S.t / 3600));
+  }
+  for (const p of S.pk || []) {
+    if (BENZODIAZEPINES.has(p.id)) {
+      const drug = root.SUBSTANCES?.byId(p.id);
+      if (drug) p.eff = drug.eff;
+    }
+  }
+  S.benzoPkVersion = 1;
+}
+
 function give(S, drugId, dose, route) {
   const SUB = root.SUBSTANCES;
   if (SUB) {
@@ -881,6 +932,9 @@ function give(S, drugId, dose, route) {
       const scale = (d / (refDose || 1)) * wScale;
       const pkMul = S.pkScale || 1;
       S.pk = S.pk || [];
+      if (BENZODIAZEPINES.has(s.id) && benzodiazepineExposure(S).load <= 0.1) {
+        S.benzoBaseline = { gcs: S.gcs, rr: S.rr };
+      }
       S.pk.push({ id: s.id, n: s.n, t: S.t, route: selectedRoute?.r || s.route,
                   onset: on, dur: du * pkMul, eff: s.eff, scale });
       S.given = S.given || [];
@@ -910,8 +964,6 @@ function give(S, drugId, dose, route) {
       } catch (err) {}
       /* —— 特殊机制 —— */
       if (s.cls === '阿片') { S.lastOpioidAt = S.t; S.addict = clamp((S.addict || 0) + d / 60, 0, 1); }
-      if (['diazepam', 'lorazepam', 'midazolam', 'phenobarbital'].includes(s.id)) S.tox.benzo += d;
-      if (s.id === 'flumazenil') S.tox.benzo = 0;
       if (s.id === 'paracetamol' || s.id === 'acetaminophen') S.tox.apap += d;
       if (s.id === 'nacetylcysteine') S.tox.apap = 0;
       if (s.id === 'organophosphate') S.tox.op += d;
@@ -977,9 +1029,10 @@ function tick(S, dtSec) {
   const tox = S.tox || {};
 
   /* ---------- 0. 体质 / 中毒（沿用旧钩子，只作为驱动） ---------- */
-  /* 苯二氮卓代谢：效应室半衰期约 60 min（原来只加不减，5 mg 地西泮 3 h 后 GCS 仍 7） */
+  /* 病例原有的苯二氮卓负荷沿用 60 min 衰减时间常数，病房给药由下方 PK 单独推进。 */
   if (tox.benzo > 0) tox.benzo *= Math.exp(-dtMin / 60);
-  const benzoF = Math.min(1, (tox.benzo || 0) / 12);
+  const benzoAvailable = 1 - flumazenilBlock(S);
+  const benzoF = Math.min(1, (tox.benzo || 0) / 12) * benzoAvailable;
   const opF = Math.min(1, (tox.op || 0) / 5);
   if (root.TRAITS) root.TRAITS.tick(S, dtMin);
   const tm = root.TRAITS ? root.TRAITS.modifiers(S) : { svr: 0, rr: 0, spo2: 0, hr: 0 };
@@ -1020,7 +1073,7 @@ function tick(S, dtSec) {
        那是去甲肾上腺素 32 μg/min 只升 4 mmHg 的原因。 */
     const ramp = Math.min(1, (el - lag) / Math.max(1, (p.onset || 1) * 0.8));
     const plateau = el <= lag + p.dur ? 1 : Math.exp(-ke * (el - lag - p.dur));
-    const cMod = Math.max(0, ramp) * plateau;
+    const cMod = BENZODIAZEPINES.has(p.id) ? bolusActivity(p, S.t) * benzoAvailable : Math.max(0, ramp) * plateau;
     concOf[p.n] = Math.max(concOf[p.n] || 0, p.scale * cMod);
     if (p.id === 'levothyroxine') S.thyroidReplacement = Math.max(S.thyroidReplacement, p.scale * cMod);
     if (inAsystole && p.id === 'epi' && p.route === '静推' && el <= p.dur) {
@@ -1780,6 +1833,7 @@ function finalScore(S) {
 const API = {
   setIdentity(p) { IDENTITY = p || null; }, CASES, DRUGS, ACTIONS, TESTS, create, tick, give, acetaminophenExposure, setEnv, finalScore, bp, snapshot,
               dischargeCheck, orderTest, pollTests, testValue, computeMap, fmt, endCase, setBleedingRate, restoreBleeding,
+              benzodiazepineExposure, restoreBenzodiazepines,
               hill, computePh, computePcwp, roomAirSaturation, restoreCardiorespiratory, restoreDischargeObservation };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 root.LIFE = API;

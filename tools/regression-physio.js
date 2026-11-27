@@ -49,9 +49,10 @@ for (const id of ['hyperkalemia', 'dka', 'bleed', 'sepsis', 'opioid']) {
   const S = E.create('hyperkalemia');   /* 会自然死亡的病例会让 tick 停摆 */
   E.give(S, 'diazepam', 5);
   for (let i = 0; i < 30; i++) E.tick(S, 30);
-  const mid = S.tox.benzo;
+  const mid = E.benzodiazepineExposure(S).load;
   for (let i = 0; i < 30; i++) E.tick(S, 60);   /* 30 min = 半个半衰期 */
-  check('苯二氮卓代谢', S.tox.benzo < mid * 0.8, `${mid.toFixed(1)} → ${S.tox.benzo.toFixed(1)}`);
+  const late = E.benzodiazepineExposure(S).load;
+  check('苯二氮卓代谢', mid > 0 && late < mid * 0.8, `${mid.toFixed(1)} → ${late.toFixed(1)}`);
 }
 
 /* 5. 等渗盐水不显著改变血钠 */
@@ -129,6 +130,49 @@ for (const id of ['hyperkalemia', 'dka', 'bleed', 'sepsis', 'opioid']) {
   check('旧剂量不计入当天', E.acetaminophenExposure(S).mg24h === 0 && !hasPoisoning(), '已过 24 小时');
   S.tags = ['apap'];
   check('入院过量病例仍识别', E.acetaminophenExposure(S).known && hasPoisoning(), '有入院病史');
+}
+{
+  const dx = require('../prototype/diagnosis');
+  const cas = E.CASES.hyperkalemia;
+  const create = () => E.create({ ...cas, init: { ...cas.init, k: 4, gcs: 15, rr: 16 } });
+  const minutes = (s, n) => { for (let i = 0; i < n * 6; i++) E.tick(s, 10); };
+  const diagnosed = s => dx.classifyAll(s).some(d => d.primaryId === 'benzoOD');
+  for (const [id, dose, route] of [
+    ['diazepam', 5], ['midazolam', 5], ['clonazepam', 1],
+    ['lorazepam', 0.5, '口服'], ['lorazepam', 2, '静推'],
+  ]) {
+    const s = create();
+    E.give(s, id, dose, route);
+    const initially = diagnosed(s);
+    minutes(s, route === '口服' ? 35 : 5);
+    const exposure = E.benzodiazepineExposure(s);
+    check('常规镇静 ' + id + (route || ''), !initially && !diagnosed(s) && exposure.load > 0 &&
+      !exposure.high && s.gcs < 15, dose + ' mg');
+  }
+  const seizure = create(); seizure.seizure = 0.9; seizure.gcs = 7;
+  E.give(seizure, 'diazepam', 10); E.give(seizure, 'diazepam', 10);
+  minutes(seizure, 5);
+  check('游戏内两次止惊处置', !E.benzodiazepineExposure(seizure).high && !diagnosed(seizure), '保留止惊疗程');
+
+  const excessive = create();
+  for (let i = 0; i < 6; i++) E.give(excessive, 'midazolam', 5);
+  minutes(excessive, 3);
+  check('重复暴露伴意识抑制', E.benzodiazepineExposure(excessive).overdose && diagnosed(excessive), '风险标签与诊断一致');
+  E.give(excessive, 'flumazenil', 0.2);
+  minutes(excessive, 7);
+  check('拮抗后效应减退', !diagnosed(excessive) && excessive.gcs > 8, '有效负荷减退');
+  minutes(excessive, 180);
+  check('既往镇静史不持续触发诊断', !E.benzodiazepineExposure(excessive).sedated && !diagnosed(excessive), '作用已消退');
+
+  const barbiturate = create();
+  E.give(barbiturate, 'phenobarbital', 100);
+  barbiturate.tox.benzo = 100; // Old v3 recorded the barbiturate mg a second time.
+  E.restoreBenzodiazepines(barbiturate, {});
+  const matched = JSON.parse(JSON.stringify(barbiturate));
+  E.give(barbiturate, 'flumazenil', 0.2);
+  minutes(barbiturate, 7); minutes(matched, 7);
+  check('旧存档的苯巴比妥独立起效', barbiturate.tox.benzo === 0 && !diagnosed(barbiturate) &&
+    barbiturate.gcs < 15 && barbiturate.gcs === matched.gcs, '拮抗剂不清除苯巴比妥作用');
 }
 const fails = out.filter(x => !x.ok);
 const pad = s => s + ' '.repeat(Math.max(0, 26 - s.length));

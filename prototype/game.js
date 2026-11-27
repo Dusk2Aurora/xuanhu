@@ -255,7 +255,9 @@ function renderStates() {
   if ((S.tca || 0) > 0.2) out.push('QRS 增宽');
   if ((S.hematoma || 0) > 0.2) out.push('颅内压升高');
   const tox = S.tox || {};
-  if ((tox.benzo || 0) > 0) out.push('苯二氮卓过量');
+  const benzo = E.benzodiazepineExposure(S);
+  if (benzo.overdose) out.push('疑似苯二氮卓过量');
+  else if (benzo.high) out.push('苯二氮卓镇静负荷偏高');
   if ((tox.op || 0) > 0) out.push('有机磷中毒');
   const apap = E.acetaminophenExposure(S);
   if (apap.known || apap.highRisk) out.push('对乙酰氨基酚过量');
@@ -839,6 +841,7 @@ function loadGame() {
       }
       const cas = base.cas;
       const st = Object.assign(base, item.s, { cas });
+      E.restoreBenzodiazepines(st, item.s);
       E.restoreBleeding(st, item.s);
       E.restoreCardiorespiratory(st, item.s);
       E.restoreDischargeObservation(st, item.s);
@@ -2532,6 +2535,7 @@ const RELEASES = [
     '床旁心电图按真实心率走纸，心搏音与 R 峰同步；大厅只播高优先级报警',
     '新增重置游戏存档，以及跳过结局统计的测试用患者移除功能',
     '修复常规对乙酰氨基酚给药触发过量提示和中毒诊断的问题',
+    '修复常规镇静和止惊给药的苯二氮卓过量误报，分开计算苯巴比妥的药效',
   ] },
   { v: '1.51.0', notes: [
     '合并社区贡献：多出血点记账、撤机流程、器官图重绘、心音按实时心率',

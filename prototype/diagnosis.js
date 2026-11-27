@@ -56,7 +56,7 @@ function getSnapshot(S) {
     cr: Math.round(num(S.cr) || 0),
     bun: Math.round((num(S.bun) || 0) * 10) / 10,
     hb: Math.round(num(S.hb) || 0),
-    uo: Math.round((num(S.uo) || 0) * 10) / 10,
+    uo: num(S.uo) || 0, uoHourly: round2((num(S.uo) || 0) * 60),
     rhythm: S.rhythm || 'sinus',
     ef: Math.round((num(S.cEff) != null ? num(S.cEff) : num(S.contractility) || 0) * 100),
   };
@@ -207,7 +207,7 @@ const RULES = [
       if (c.s.ph < 7.30) { sc += 0.03; ev.push(`pH ${c.s.ph}，酸中毒促进钾向细胞外转移`); }
       if (c.s.cr > 200 || c.s.uo < 0.5) {
         sc += 0.03;
-        ev.push(`肌酐 ${c.s.cr} µmol/L，尿量 ${c.s.uo} mL/min，肾脏排钾减少`);
+        ev.push(`肌酐 ${c.s.cr} µmol/L，尿量 ${c.s.uoHourly} mL/h，肾脏排钾减少`);
       }
       if (c.s.rhythm !== 'sinus' && k >= 6.5) {
         sc = Math.max(sc, 0.96);
@@ -242,7 +242,7 @@ const RULES = [
       return {
         score: clamp(0.55 + (na - 145) * 0.02, 0.55, 0.88),
         evidence: [`血钠 ${na} mmol/L（> 145）`,
-                   `意识 GCS ${c.s.gcs}，尿量 ${c.s.uo} mL/min`],
+                   `意识 GCS ${c.s.gcs}，尿量 ${c.s.uoHourly} mL/h`],
       };
     },
   },
@@ -435,7 +435,7 @@ const RULES = [
       if (s.ef >= 45 || s.sys >= 90) return null;
       let sc = 0.68 + (s.ef < 35 ? 0.08 : 0) + (spo2Below(s, 90) ? 0.05 : 0);
       const ev = [`射血分数 ${s.ef}%（< 45%）`, `收缩压 ${s.sys} mmHg（< 90）`,
-                 `意识 GCS ${s.gcs}，尿量 ${s.uo} mL/min`];
+                 `意识 GCS ${s.gcs}，尿量 ${s.uoHourly} mL/h`];
       return { score: clamp(sc, 0, 0.9), evidence: ev };
     },
   },
@@ -458,7 +458,7 @@ const RULES = [
       }
       ev.push(`射血分数 ${s.ef}%`, `${spo2Evidence(s)}，呼吸 ${s.rr} 次/分`,
               `收缩压 ${s.sys} mmHg`);
-      if (s.uo < 0.5) ev.push(`尿量 ${s.uo} mL/min，容量负荷可能过重`);
+      if (s.uo < 0.5) ev.push(`尿量 ${s.uoHourly} mL/h，容量负荷可能过重`);
       return { score: clamp(sc, 0, 0.94), evidence: ev.slice(0, 5) };
     },
   },
@@ -696,7 +696,7 @@ const RULES = [
       const s = c.s;
       if (s.cr < 200) return null;
       let sc = 0.52 + (s.cr > 300 ? 0.10 : 0) + (s.uo < 0.5 ? 0.06 : 0);
-      const ev = [`肌酐 ${s.cr} µmol/L（> 200）`, `尿量 ${s.uo} mL/min`];
+      const ev = [`肌酐 ${s.cr} µmol/L（> 200）`, `尿量 ${s.uoHourly} mL/h`];
       if (s.k > 5.0) ev.push(`血钾 ${s.k} mmol/L，排钾受影响`);
       return { score: clamp(sc, 0, 0.8), evidence: ev };
     },

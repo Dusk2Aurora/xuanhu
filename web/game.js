@@ -132,7 +132,7 @@ const ORGAN_META = {
     ['尿潴留', state.tags.includes('bph') ? (state.urineDrained ? '已行导尿' : '排尿受阻') : '病例未记录', ''],
     ['年龄风险', (state.patient && state.patient.age >= 55) ? '偏高' : '低', '']]},
   bladder: {n:'膀胱', f: (s, state) => [
-    ['尿量', s.uo, 'mL/min'], ['导尿管', state.urineDrained ? '已留置' : '未留置', '']]},
+    ['尿量', s.uoHourly, 'mL/h'], ['导尿管', state.urineDrained ? '已留置' : '未留置', '']]},
   brain:   {n:'脑',   f: s => [['意识', s.gcs, 'GCS'], ['脑灌注', s.map < 60 ? '不足' : '正常', ''], ['瞳孔', s.gcs < 6 ? '散大' : '等大', '']]},
   lung:    {n:'肺',   f: s => [['SpO₂', s.spo2 ?? '无信号', s.spo2 == null ? '' : '%'], ['PaO₂', s.pao2, 'mmHg'], ['FiO₂', Math.round(s.fio2 * 100), '%'], ['PaCO₂', s.paco2, 'mmHg'], ['RR', s.rr, s.vent ? 'rpm · 机械通气' : 'rpm']]},
   heart:   {n:'心脏', f: s => [['HR', s.hr, 'bpm'], ['EF', s.rhythm === 'sinus' ? s.ef : '—', s.rhythm === 'sinus' ? '%' : ''], ['MAP', s.map, 'mmHg'], ['心律', s.rhythm === 'sinus' ? '窦性' : (s.rhythm === 'vf' ? '室颤' : '心静止'), '']]},
@@ -140,7 +140,7 @@ const ORGAN_META = {
   stomach: {n:'胃',   f: (s, state) => [['上消化道出血', bleedingStatus(state, 'bleed'), '']]},
   spleen:  {n:'脾',   f: (s, state) => [['脾脏出血', bleedingStatus(state, 'spleen'), '']]},
   pancreas:{n:'胰腺', f: s => [['血糖', s.glu, 'mmol/L']]},
-  kidney:  {n:'肾脏', f: s => [['血钾', s.k, 'mmol/L'], ['肌酐', s.cr, 'µmol/L'], ['尿量', s.uo, 'mL/min'], ['GFR', s.gfr, 'mL/min']]},
+  kidney:  {n:'肾脏', f: s => [['血钾', s.k, 'mmol/L'], ['肌酐', s.cr, 'µmol/L'], ['尿量', s.uoHourly, 'mL/h'], ['GFR', s.gfr, 'mL/min']]},
   gut:     {n:'肠道与直肠', f: () => [['肠道功能', '无独立监测数据', '']]},
 };
 
@@ -2983,6 +2983,7 @@ function renderAll() {
 /* 更新公告：每次发版在这里加一条（新的放最前面） */
 const RELEASES = [
   { v: '1.54.4', notes: [
+    '床旁尿量、病例目标和出院评估均按小时显示（mL/h）',
     '血管加压素支持持续泵入、调速和停泵；撤除全部循环支持后需稳定观察 15 个模拟分钟',
     '出院评估统一显示血钾读数和目标范围，合并病例也只提示一次',
     '底部「报告」集中显示本床的化验、胸片和 12 导联心电图结果，以及待回报检查',

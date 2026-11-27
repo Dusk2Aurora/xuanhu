@@ -60,6 +60,7 @@
       v: V,
       c: isGen ? 'gen' : (S.caseId || S.cas.id),
       s: isGen ? (S.seed != null ? S.seed : (S.cas.seed || 0)) : 0,
+      g: isGen ? (S.cas.genVersion || 1) : undefined,
       d: S.diff || (S.cas.diff || 3),
       p: { n: p.name || '', x: p.sex || '男', a: p.age || 45, w: p.weight || 70, h: p.height || 170 },
       t: Math.round((S.t || 0) / 60),
@@ -97,7 +98,10 @@
     let base;
     if (data.c === 'gen') {
       if (!root.CASEGEN) return null;
-      base = E.create(root.CASEGEN.generate(data.d || 3, data.s || 0));
+      const gen = root.CASEGEN;
+      const generate = (data.g || 1) === 1 ? gen.generateLegacy : gen.generate;
+      if (data.g > gen.VERSION) return null;
+      base = E.create(generate(data.d || 3, data.s || 0));
     } else {
       base = E.create(data.c);
     }

@@ -60,7 +60,7 @@ function snapshot(S) {
   }
   return {
     hr: Math.round(num(S.hr) || 0), sys: sys || 0, dia: dia || 0, map: map || 0,
-    rr: Math.round(num(S.rr) || 0), spo2: Math.round(num(S.spo2) || 0),
+    rr: Math.round(num(S.rr) || 0), spo2: S.rhythm && S.rhythm !== 'sinus' ? null : num(S.spo2),
     temp: Math.round((num(S.temp) || 0) * 10) / 10, gcs: Math.round(num(S.gcs) || 0),
     k: Math.round((num(S.k) || 0) * 10) / 10, na: Math.round(num(S.na) || 0),
     ca: Math.round((num(S.ca) || 0) * 100) / 100,
@@ -97,7 +97,7 @@ const SIGNS = [
     id: 'severe_hypoxemia', name: '重度低氧血症', level: 'critical',
     brief: 'SpO₂ 低于 80%，组织氧供严重不足，随时可能心跳停止。',
     causes: '气道梗阻、肺水肿、肺栓塞、阿片过量、严重肺炎',
-    test: s => s.spo2 < 80,
+    test: s => s.spo2 != null && s.spo2 < 80,
   },
   {
     id: 'severe_hyperkalemia', name: '极重度高钾血症', level: 'critical',
@@ -249,7 +249,7 @@ const SIGNS = [
     id: 'respiratory_failure_pattern', name: '呼吸衰竭模式', level: 'warning',
     brief: '低氧血症合并呼吸过速，提示呼吸衰竭正在发生。',
     causes: '重症肺炎、肺水肿、肺栓塞、哮喘持续状态',
-    test: s => s.spo2 < 90 && s.rr > 28,
+    test: s => s.spo2 != null && s.spo2 < 90 && s.rr > 28,
   },
 
   /* ===== 循环 ===== */

@@ -5,7 +5,7 @@
 一个**机制驱动**的医学临床思维模拟游戏。你不是在选选项，你是在算剂量。
 
 <p align="center">
-  <i>纯前端实现 · 无框架 · 9700 行代码 · 33 个病例 · 215 种物质</i>
+  <i>纯前端实现 · 无框架 · 约 1 万行代码 · 33 个病例 · 200+ 种物质</i>
 </p>
 
 ---
@@ -27,8 +27,9 @@
 |---|---|
 | **生理引擎** | 血流动力学、氧合分流、酸碱、电解质、体温、肾功能的微分方程模型 |
 | **33 个病例** | 高钾血症、DKA、STEMI、感染性休克、有机磷中毒、肺栓塞、张力性气胸…… |
-| **215 种物质** | 药物、血制品、病毒、食物；88 条别名；42 对药物相互作用 |
+| **200+ 种物质** | 药物、血制品、病毒、食物；别名索引；药物相互作用 |
 | **多床位** | 四张床同步流逝，可随时切换 |
+| **撤机流程** | 插管 → 自主呼吸评估 → 撤机 → 撤氧 → 室内空气血氧达标 |
 | **难度体系** | 五档难度 × 昼夜模式 × 现实模式（医保结算） |
 | **辅助系统** | 行医手册、病例档案、指标走势、会诊分享（分享码）、成就 |
 
@@ -58,29 +59,24 @@ S.sao2 = clamp((1 - S.shunt) * hill(S.pao2) + S.shunt * svo2Prev, 0.15, 1);
 
 这带来一个免费的真实现象：**同样的分流，循环越差血氧越低**。
 
-### 测试：配对差分
+### 出血按部位记账
 
 ```js
-// 同一个操作，在不同病理下必须有相反的后果
-const ed = diff('edema', S => give(S, 'nacl', 1500), 22);   // 肺水肿：SpO₂ 必须↓
-const bl = diff('bleed', S => give(S, 'nacl', 1500), 40);   // 失血：MAP 必须↑
+// 每个出血点独立计速率，止血只影响对应部位，其余仍在失血
+S.bleedingSites[site] = rate;
+S.bleedRate = Object.values(S.bleedingSites).reduce((a, b) => a + b, 0);
 ```
-
-完整技术剖析见 [docs/技术剖析.md](docs/技术剖析.md)。
 
 ## 运行
 
-### 网页版
-
 ```bash
-# 任意静态服务器
 python -m http.server 8000
 # 打开 http://localhost:8000/prototype/ui-v4.html
 ```
 
-或直接双击 `web/index.html`（单文件版本）。
+或直接打开 `web/index.html`。
 
-### 测试
+## 测试
 
 ```bash
 node tools/monotonic.js        # 单调性：剂量越大效应越强
@@ -90,19 +86,24 @@ node tools/science-audit.js    # 数值合理性：有没有超出生理范围
 node tools/drug-audit.js       # 药物齐全性：提示里的药是否都存在
 ```
 
+> **关于测试脚本的保留说明**
+>
+> 这些脚本不参与游戏运行，打包时也不会进入 APK 或网页版，
+> 对游玩没有任何影响。保留它们是为了在修改生理引擎后能快速回归，
+> 避免"改了 A 坏了 B"。如果你只想发布，可以整目录删除 `tools/`。
+
 ## 项目结构
 
 ```
 prototype/
   engine.js       生理引擎（无依赖，浏览器/Node 双跑）
   generator.js    33 个病理模块 + 随机病例生成
-  substances.js   215 种物质、别名、相互作用
+  substances.js   200+ 种物质、别名、相互作用
   game.js         UI 与交互
-  diagnosis.js    诊断推理
-  handbook.js     病例档案
-  mentor.js       上级医师规则
+  organs.js       器官示意图（自绘 SVG）
+  sound.js        心音与报警
   ...
-tools/            测试与构建脚本
+tools/            测试与构建脚本（不参与运行）
 docs/             设计文档
 web/              构建好的网页版
 ```
@@ -117,7 +118,3 @@ web/              构建好的网页版
 ## 许可
 
 代码采用 MIT 许可证。游戏内的医学内容仅作教学用途。
-
----
-
-<p align="center"><i>Built with a lot of iteration, and quite a few bugs that taught me things.</i></p>

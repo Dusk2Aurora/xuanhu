@@ -17,6 +17,8 @@
 const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
 const num = v => (typeof v === 'number' && isFinite(v)) ? v : null;
 const round2 = x => Math.round(x * 100) / 100;
+const spo2Below = (s, threshold) => s.spo2 != null && s.spo2 < threshold;
+const spo2Evidence = s => s.spo2 == null ? 'SpO₂ 无信号' : `SpO₂ ${s.spo2}%`;
 
 /* ---------------- 状态读取 ---------------- */
 function getSnapshot(S) {
@@ -38,7 +40,7 @@ function getSnapshot(S) {
     dia: dia == null ? Math.round(S.dia || 0) : dia,
     map: map == null ? Math.round(S.map || 0) : map,
     rr: Math.round(num(S.rr) || 0),
-    spo2: Math.round(num(S.spo2) || 0),
+    spo2: S.rhythm && S.rhythm !== 'sinus' ? null : num(S.spo2),
     temp: Math.round((num(S.temp) || 0) * 10) / 10,
     gcs: Math.round(num(S.gcs) || 0),
     k: Math.round((num(S.k) || 0) * 10) / 10,
@@ -286,7 +288,7 @@ const RULES = [
       return {
         score: clamp(0.40 + 0.42 * ab.ra, 0, 0.85),
         evidence: [`PaCO₂ ${c.s.paco2} mmHg（> 45）`, `pH ${c.s.ph}（< 7.35）`,
-                   `呼吸 ${c.s.rr} 次/分，SpO₂ ${c.s.spo2}%`],
+                   `呼吸 ${c.s.rr} 次/分，${spo2Evidence(c.s)}`],
       };
     },
   },
@@ -381,12 +383,34 @@ const RULES = [
       const s = c.s;
       if (s.hb >= 95) return null;
       if (!(s.sys < 95 || s.hr > 110 || s.hb < 80)) return null;
+      const activeBleeding = c.S.bleedRate > 0;
+      const bleedingHistory = c.logHas(/呕血|黑便|内镜下止血成功|出血点已控制|外出血明显减少/);
+      if (!activeBleeding && !bleedingHistory) return null;
       let sc = 0.62 + (s.hb < 80 ? 0.10 : 0) + (s.sys < 90 ? 0.08 : 0)
              + (s.lac > 2 ? 0.05 : 0);
-      const ev = [`血红蛋白 ${s.hb} g/L（< 90）`, `收缩压 ${s.sys} mmHg，心率 ${s.hr} 次/分`,
+      const ev = [`血红蛋白 ${s.hb} g/L（< 95）`, `收缩压 ${s.sys} mmHg，心率 ${s.hr} 次/分`,
                  `乳酸 ${s.lac} mmol/L`];
-      if (c.logHas(/呕血|黑便|出血/)) ev.push('病史/记录提示活动性出血');
+      ev.push(activeBleeding ? '存在持续失血' : '病史或处置记录有近期失血证据');
       return { score: clamp(sc, 0, 0.95), evidence: ev.slice(0, 5) };
+    },
+  },
+  {
+    id: 'tamponade', name: '急性心包填塞', priority: 88,
+    tags: ['tamponade', 'shock'], diff: ['张力性气胸', '急性肺栓塞'],
+    test(c) {
+      const { s, S } = c;
+      if (!(S.tamponade > 0.3 && S.cvp > 9 && (s.sys < 95 || s.sys - s.dia < 25))) return null;
+      return { score: 0.90, evidence: ['心包内压升高', `中心静脉压 ${Math.round(S.cvp)} mmHg`,
+        `收缩压 ${s.sys} mmHg，脉压 ${s.sys - s.dia} mmHg`] };
+    },
+  },
+  {
+    id: 'intracranialHematoma', name: '颅内血肿伴颅压升高', priority: 88,
+    tags: ['tbi', 'icp'], diff: ['其他颅内占位', '弥漫性脑水肿'],
+    test(c) {
+      const { s, S } = c;
+      if (!(S.hematoma > 0.25 && S.icp > 0.6 && s.gcs < 14)) return null;
+      return { score: 0.90, evidence: ['存在颅内血肿，颅内压升高', `意识 GCS ${s.gcs}`] };
     },
   },
   {
@@ -396,7 +420,7 @@ const RULES = [
     test(c) {
       const s = c.s;
       if (s.ef >= 45 || s.sys >= 90) return null;
-      let sc = 0.68 + (s.ef < 35 ? 0.08 : 0) + (s.spo2 < 90 ? 0.05 : 0);
+      let sc = 0.68 + (s.ef < 35 ? 0.08 : 0) + (spo2Below(s, 90) ? 0.05 : 0);
       const ev = [`射血分数 ${s.ef}%（< 45%）`, `收缩压 ${s.sys} mmHg（< 90）`,
                  `意识 GCS ${s.gcs}，尿量 ${s.uo} mL/min`];
       return { score: clamp(sc, 0, 0.9), evidence: ev };
@@ -411,15 +435,15 @@ const RULES = [
       const lw = num(s.lungWater), inter = num(s.interstitium);
       const edema = (lw != null && lw > 0.30) || (inter != null && inter > 11.5);
       if (!edema && s.ef >= 48) return null;
-      if (!(edema || s.spo2 < 93 || s.rr > 26)) return null;
-      let sc = (edema ? 0.78 : 0.72) + (s.spo2 < 88 ? 0.08 : 0)
+      if (!(edema || spo2Below(s, 93) || s.rr > 26)) return null;
+      let sc = (edema ? 0.78 : 0.72) + (spo2Below(s, 88) ? 0.08 : 0)
              + (s.rr > 30 ? 0.04 : 0) + (s.sys < 100 ? 0.03 : 0);
       const ev = [];
       if (edema) {
         if (lw != null) ev.push(`肺水 ${lw.toFixed(2)}（> 0.30），提示肺水肿`);
         if (inter != null) ev.push(`肺间质液体 ${inter.toFixed(1)} mL/kg`);
       }
-      ev.push(`射血分数 ${s.ef}%`, `SpO₂ ${s.spo2}%，呼吸 ${s.rr} 次/分`,
+      ev.push(`射血分数 ${s.ef}%`, `${spo2Evidence(s)}，呼吸 ${s.rr} 次/分`,
               `收缩压 ${s.sys} mmHg`);
       if (s.uo < 0.5) ev.push(`尿量 ${s.uo} mL/min，容量负荷可能过重`);
       return { score: clamp(sc, 0, 0.94), evidence: ev.slice(0, 5) };
@@ -435,7 +459,7 @@ const RULES = [
       const src = (c.S && c.S.shuntSrc) || {};
       const clotShunt = num(src.clot) || 0;
       const direct = (pvr != null && pvr > 6) || clotShunt > 0.10;
-      const pattern = s.spo2 < 90 && s.hr > 115 && s.sys < 95
+      const pattern = spo2Below(s, 90) && s.hr > 115 && s.sys < 95
         && s.ef >= 45 && s.ef <= 68 && s.temp < 38 && s.rr > 24;
       if (!direct && !pattern) return null;
       let sc = direct ? 0.80 : 0.76;
@@ -443,7 +467,7 @@ const RULES = [
       if (pvr != null && pvr > 10) sc += 0.03;
       if (clotShunt > 0.15) sc += 0.04;
       if (!direct) sc += (s.ef <= 58 ? 0.05 : 0) + (s.lac > 2 ? 0.03 : 0);
-      const ev = [`SpO₂ ${s.spo2}%，呼吸 ${s.rr} 次/分`,
+      const ev = [`${spo2Evidence(s)}，呼吸 ${s.rr} 次/分`,
                   `心率 ${s.hr} 次/分，收缩压 ${s.sys} mmHg`];
       if (pvr != null) ev.push(`肺血管阻力 ${pvr}（> 6，提示肺循环梗阻）`);
       if (shunt != null && shunt > 0) ev.push(`肺内分流 ${(shunt * 100).toFixed(0)}%`);
@@ -457,12 +481,12 @@ const RULES = [
     diff: ['急性肺栓塞', '气胸', '哮喘持续状态', '阿片类药物过量'],
     test(c) {
       const s = c.s;
-      const hypox = s.spo2 < 90 || s.pao2 < 60;
+      const hypox = spo2Below(s, 90) || s.pao2 < 60;
       if (!(hypox && (s.rr > 28 || s.pao2 < 60))) return null;
-      let sc = 0.62 + (s.spo2 < 85 ? 0.08 : 0) + (s.rr > 32 ? 0.05 : 0);
+      let sc = 0.62 + (spo2Below(s, 85) ? 0.08 : 0) + (s.rr > 32 ? 0.05 : 0);
       return {
         score: clamp(sc, 0, 0.85),
-        evidence: [`SpO₂ ${s.spo2}%，PaO₂ ${s.pao2} mmHg`, `呼吸 ${s.rr} 次/分`,
+        evidence: [`${spo2Evidence(s)}，PaO₂ ${s.pao2} mmHg`, `呼吸 ${s.rr} 次/分`,
                    `PaCO₂ ${s.paco2} mmHg，pH ${s.ph}`],
       };
     },
@@ -473,7 +497,7 @@ const RULES = [
     diff: ['急性左心衰', '急性肺栓塞', '异物吸入', 'COPD 急性加重'],
     test(c) {
       const s = c.s;
-      if (s.spo2 >= 92 || s.rr < 24) return null;
+      if (!spo2Below(s, 92) || s.rr < 24) return null;
       if (s.ef < 65 || s.temp >= 38.5) return null;
       /* 肺循环梗阻或肺水肿时，喘鸣样表现不应误判为单纯气道痉挛 */
       if (num(s.pvr) != null && num(s.pvr) > 6) return null;
@@ -485,9 +509,9 @@ const RULES = [
         || (vdvt != null && vdvt > 0.55)
         || c.logHas(/喘鸣|哮鸣|喘息|哮喘|COPD/);
       if (!airwayEvidence) return null;   // 没有气道痉挛证据时，归入急性呼吸衰竭而不是哮喘
-      let sc = 0.65 + (s.rr >= 30 ? 0.08 : 0) + (s.spo2 < 88 ? 0.08 : 0)
+      let sc = 0.65 + (s.rr >= 30 ? 0.08 : 0) + (spo2Below(s, 88) ? 0.08 : 0)
              + (ob != null && ob > 0.30 ? 0.10 : 0);
-      const ev = [`SpO₂ ${s.spo2}%，呼吸 ${s.rr} 次/分`, `射血分数 ${s.ef}%（心功能不支持肺水肿）`,
+      const ev = [`${spo2Evidence(s)}，呼吸 ${s.rr} 次/分`, `射血分数 ${s.ef}%（心功能不支持肺水肿）`,
                  `体温 ${s.temp}℃`];
       if (ob != null) ev.push(`气道痉挛程度 ${Math.round(ob * 100)}%`);
       return { score: clamp(sc, 0, 0.93), evidence: ev.slice(0, 5) };
@@ -527,10 +551,10 @@ const RULES = [
       /* 有苯二氮卓暴露、又没有阿片暴露时，不要把镇静引起的呼吸抑制算成阿片过量 */
       if (pattern && !exp && benzoExp) return null;
       let sc = 0.55 + (pattern ? 0.25 : 0) + (exp ? 0.08 : 0)
-             + (s.spo2 < 90 ? 0.05 : 0) + (s.rr < 6 ? 0.05 : 0);
+             + (spo2Below(s, 90) ? 0.05 : 0) + (s.rr < 6 ? 0.05 : 0);
       const ev = [`呼吸 ${s.rr} 次/分，意识 GCS ${s.gcs}`];
       if (exp) ev.push('用药/暴露记录提示阿片类物质');
-      if (s.spo2 < 92) ev.push(`SpO₂ ${s.spo2}%，存在低氧`);
+      if (spo2Below(s, 92)) ev.push(`${spo2Evidence(s)}，存在低氧`);
       return { score: clamp(sc, 0, 0.97), evidence: ev };
     },
   },
@@ -544,14 +568,14 @@ const RULES = [
                              ['有机磷', '敌敌畏', '乐果', '对硫磷'])
         || (num(c.tox.op) || 0) > 0
         || (c.flag('opTox') != null && c.flag('opTox') > 0.25);
-      const cholinergic = s.hr < 62 && s.spo2 < 93 && s.gcs < 15
+      const cholinergic = s.hr < 62 && spo2Below(s, 93) && s.gcs < 15
         && s.rr >= 12 && s.temp < 38.5;
       if (!exp && !cholinergic) return null;
       let sc = exp ? 0.72 : 0.55;
-      sc += (s.hr < 55 ? 0.08 : 0) + (s.spo2 < 88 ? 0.06 : 0)
+      sc += (s.hr < 55 ? 0.08 : 0) + (spo2Below(s, 88) ? 0.06 : 0)
           + (c.flag('opTox') != null && c.flag('opTox') > 0.40 ? 0.08 : 0)
           + (cholinergic ? 0.06 : 0);
-      const ev = [`心率 ${s.hr} 次/分，SpO₂ ${s.spo2}%，意识 GCS ${s.gcs}`];
+      const ev = [`心率 ${s.hr} 次/分，${spo2Evidence(s)}，意识 GCS ${s.gcs}`];
       if (exp) ev.push('暴露记录/毒物检测提示有机磷');
       ev.push('毒蕈碱样表现（推演）：分泌物增多、瞳孔缩小、支气管痉挛');
       return { score: clamp(sc, 0, 0.96), evidence: ev.slice(0, 5) };
@@ -630,9 +654,9 @@ const RULES = [
       if (a == null || a <= 0.15) return null;
       const s = c.s;
       let sc = 0.66 + clamp(a, 0, 1) * 0.18
-             + (s.sys < 90 ? 0.06 : 0) + (s.spo2 < 92 ? 0.04 : 0);
+             + (s.sys < 90 ? 0.06 : 0) + (spo2Below(s, 92) ? 0.04 : 0);
       const ev = [`过敏反应程度 ${Math.round(a * 100)}%`,
-                 `收缩压 ${s.sys} mmHg，SpO₂ ${s.spo2}%`];
+                 `收缩压 ${s.sys} mmHg，${spo2Evidence(s)}`];
       return { score: clamp(sc, 0, 0.94), evidence: ev };
     },
   },
@@ -655,16 +679,16 @@ const RULES = [
 
 /* ---------------- 分级 ---------------- */
 function severityOf(s) {
-  if (s.rhythm !== 'sinus' || s.k > 7 || s.sys < 70 || s.spo2 < 80
+  if (s.rhythm !== 'sinus' || s.k > 7 || s.sys < 70 || spo2Below(s, 80)
       || s.gcs <= 6 || s.ph < 6.95) return 'critical';
-  if (s.k > 6.0 || s.k < 2.8 || s.na < 120 || s.sys < 85 || s.spo2 < 88
+  if (s.k > 6.0 || s.k < 2.8 || s.na < 120 || s.sys < 85 || spo2Below(s, 88)
       || s.gcs <= 9 || s.ph < 7.15 || s.hco3 < 10 || s.lac > 4 || s.temp >= 39.5
       || s.hb < 80 || s.cr > 350
       || (num(s.gsh) != null && num(s.gsh) < 0.25)
       || (num(s.napqi) != null && num(s.napqi) > 0.50)
       || (num(s.hepato) != null && num(s.hepato) > 0.40)) return 'severe';
   if (s.k > 5.5 || s.k < 3.2 || s.na > 148 || s.na < 130
-      || s.ph < 7.32 || s.ph > 7.46 || s.hco3 < 20 || s.spo2 < 94
+      || s.ph < 7.32 || s.ph > 7.46 || s.hco3 < 20 || spo2Below(s, 94)
       || s.sys < 100 || s.gcs < 14 || s.glu < 3.9 || s.glu > 13
       || s.lac > 2.5 || s.temp > 38.5 || s.cr > 200 || s.hb < 100
       || s.uo < 0.5 || s.hr > 130 || s.hr < 50 || s.rr > 28 || s.rr < 10
@@ -750,10 +774,10 @@ function classify(S) {
       confidence: abName ? 0.45 : 0.30,
       evidence: abName
         ? [`pH ${c.s.ph}，HCO₃⁻ ${c.s.hco3} mmol/L，PaCO₂ ${c.s.paco2} mmHg`]
-        : ['生命体征与实验室指标未见明确的急性紊乱'],
+        : ['现有体征与化验尚未匹配到具体诊断'],
       differential: abName ? (c.ab.primary.diff || []).slice(0, 3) : ['早期中毒', '代偿期电解质紊乱'],
       severity: sev,
-      tags: abName ? (c.ab.tags || []).slice() : ['stable'],
+      tags: abName ? (c.ab.tags || []).slice() : (sev === 'mild' ? ['stable'] : []),
       acidBase: abSummary(c.ab),
     };
   }

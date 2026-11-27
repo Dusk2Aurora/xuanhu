@@ -11,18 +11,18 @@ const PAGES = [
     id: 'basics', title: '三个动作', html: `
       <div class="tut-h">先记住三件事</div>
       <div class="tut-row"><b>点器官</b><span>中间的器官图，点哪个就看哪个的参数</span></div>
-      <div class="tut-row"><b>给药</b><span>底部最右边的按钮，开药、选途径、调剂量</span></div>
+      <div class="tut-row"><b>给药</b><span>在底栏点「给药」，核对患者后选择药物、途径和剂量</span></div>
       <div class="tut-row"><b>加速</b><span>右上角 4× / 16×，让时间走快一点，观察病情变化</span></div>
       <div class="tut-note">看数据 → 做处理 → 看变化。这就是全部。</div>`,
   },
   {
     id: 'layout', title: '屏幕上是什么', html: `
       <div class="tut-h">五个区域</div>
-      <div class="tut-row"><b>左侧上方</b><span>当前选中器官的参数：HR 心率、EF 射血分数、MAP 平均动脉压、心律</span></div>
-      <div class="tut-row"><b>左侧下方</b><span>六个体征：心率、血压、呼吸、血氧、体温、意识</span></div>
-      <div class="tut-row"><b>右上</b><span>系统判定的异常状态，红色代表危急</span></div>
-      <div class="tut-row"><b>中间</b><span>全身器官，红色的是当前选中的</span></div>
-      <div class="tut-row"><b>底部</b><span>血检 · 菜单 · 状态 · 操作 · 给药（从左到右五个）</span></div>`,
+      <div class="tut-row"><b>生命体征</b><span>查看心率、血压、呼吸、血氧、体温和意识</span></div>
+      <div class="tut-row"><b>人体视图</b><span>点选器官，与旁边的器官参数对照</span></div>
+      <div class="tut-row"><b>临床状态</b><span>点击状态标签可查阅相关解释</span></div>
+      <div class="tut-row"><b>器官参数</b><span>随选中的器官切换，选中心脏可查看心电图</span></div>
+      <div class="tut-row"><b>底部操作</b><span>血液报告、检查、操作、给药、菜单。办理出院在「检查」中</span></div>`,
   },
   {
     id: 'vitals', title: '指标怎么看', html: `
@@ -48,7 +48,7 @@ const PAGES = [
       <div class="tut-note">剂量给多了会中毒，给少了没效果——游戏允许你给错，也允许你治死人。</div>`,
   },
   {
-    id: 'tools', title: '三个随身工具', html: `
+    id: 'tools', title: '随身工具', html: `
       <div class="tut-h">都在菜单里</div>
       <div class="tut-row"><b>行医手册</b><span>你自己遇到过的诊断、用过的疗法、结局和踩过的坑。系统不会替你补全。</span></div>
       <div class="tut-row"><b>指标走势</b><span>血压、心率、血钾、血糖等随时间的变化曲线，用来判断"在变好还是变坏"。</span></div>
@@ -56,7 +56,7 @@ const PAGES = [
       <div class="tut-row"><b>病房床位</b><span>最多同时管 4 张床，时间同步流逝。底部胶囊显示床位状态，点一下就能切换；哪个床出院或死亡，床位就空出来。</span></div>
       <div class="tut-row"><b>统计</b><span>治愈率、平均耗时费用、最常遇到的诊断与最常犯的错。</span></div>
       <div class="tut-row"><b>暂停</b><span>菜单里可以暂停，所有床位同时停住——想清楚再继续。</span></div>
-      <div class="tut-note">拿不准某个指标是什么意思时，先查这三个，再动手。</div>`,
+      <div class="tut-note">可以随时从「病房」返回大厅查看床位。</div>`,
   },
   {
     id: 'critical', title: '危急情况', html: `
@@ -72,11 +72,11 @@ const CSS = `
 .tut-h{font-size:15px;font-weight:700;margin:6px 0 12px;}
 .tut-row{display:flex;gap:10px;padding:9px 0;border-bottom:1px solid #f2eeec;font-size:13.5px;line-height:1.55;}
 .tut-row b{flex:0 0 84px;color:#a33;font-weight:600;}
-.tut-row span{flex:1;color:#3a3532;}
+.tut-row span{flex:1;color:var(--ink);}
 .tut-note{margin-top:14px;padding:11px 13px;background:#faf7f5;border-radius:10px;font-size:12.5px;color:#6b625d;line-height:1.6;}
 .tut-tb{width:100%;border-collapse:collapse;font-size:12.5px;}
 .tut-tb th{text-align:left;color:#9a8f89;font-weight:500;padding:7px 6px;border-bottom:1px solid #ece7e4;}
-.tut-tb td{padding:8px 6px;border-bottom:1px solid #f4f0ee;color:#3a3532;}
+.tut-tb td{padding:8px 6px;border-bottom:1px solid var(--line);color:var(--ink);}
 .tut-tb td:first-child{font-weight:600;}
 .tut-pager{display:flex;gap:7px;justify-content:center;padding:14px 0 4px;}
 .tut-pager i{width:6px;height:6px;border-radius:50%;background:#ded7d3;display:block;}
@@ -100,8 +100,8 @@ function open(i) {
   list.innerHTML = p.html + `
     <div class="tut-pager">${PAGES.map((_, k) => `<i class="${k === i ? 'on' : ''}"></i>`).join('')}</div>
     <div style="display:flex;gap:8px;padding:10px 0 4px">
-      <div class="drow" data-pg="${i - 1}" style="flex:1;justify-content:center;${i === 0 ? 'opacity:.35;pointer-events:none' : ''}">上一页</div>
-      <div class="drow" data-pg="${i + 1}" style="flex:1;justify-content:center;${i === PAGES.length - 1 ? 'opacity:.35;pointer-events:none' : ''}">下一页</div>
+      <button type="button" class="drow" data-pg="${i - 1}" style="flex:1;justify-content:center" ${i === 0 ? 'disabled' : ''}>上一页</button>
+      <button type="button" class="drow" data-pg="${i + 1}" style="flex:1;justify-content:center" ${i === PAGES.length - 1 ? 'disabled' : ''}>下一页</button>
     </div>`;
   list.querySelectorAll('[data-pg]').forEach(el => {
     el.addEventListener('click', () => open(+el.dataset.pg));

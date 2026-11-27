@@ -397,6 +397,23 @@ for (const id of ['hyperkalemia', 'dka', 'bleed', 'sepsis', 'opioid']) {
     'DKA 与通用判据均要求已知血糖');
 }
 {
+  const cases = [E.create('hyperkalemia'), ...[['highK'], ['aki'], ['bph'], ['highK', 'aki']].map(ids =>
+    E.create(G.generate(3, 13, ids))), E.create(G.generateVersion(3, 13, 1, ['highK', 'aki']))];
+  const potassiumReasons = (bed, k) => E.dischargeCheck({ ...bed, k }).reasons.filter(reason => reason.startsWith('血钾'));
+  check('高低血钾各只提示一次并显示目标', cases.every(bed =>
+    [3.4, 5.7, 7.1].every(k => {
+      const reasons = potassiumReasons(bed, k);
+      return reasons.length === 1 && reasons[0].includes(`${k} mmol/L`) && reasons[0].includes('3.5–5.5');
+    }) && [3.5, 4.4, 5.5].every(k => potassiumReasons(bed, k).length === 0)),
+    '覆盖固定、生成、复合和旧版病例，两个边界值都达标');
+  const combined = E.create(G.generate(3, 13, ['highK', 'dka']));
+  check('血钾和血糖同时异常时各提示一次', [5.7, 7.1].every(k => [10.9, 11, 11.6, 12.1].every(glu => {
+    const { reasons } = E.dischargeCheck({ ...combined, k, glu });
+    return reasons.filter(r => r.startsWith('血钾')).length === 1 &&
+      reasons.filter(r => r.startsWith('血糖')).length === (glu >= 11 ? 1 : 0);
+  })), '高钾合并 DKA');
+}
+{
   const edema = E.create(G.generate(2, 101, ['edema']));
   E.ACTIONS.oxygen.apply(edema);
   const samplingAt = E.TESTS.abg.min * 60;

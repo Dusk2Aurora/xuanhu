@@ -1,6 +1,6 @@
 ﻿/* 药物相互作用的 PK 时程回归测试 */
 require('../prototype/substances.js');
-require('../prototype/generator.js');
+const CASEGEN = require('../prototype/generator.js');
 const E = require('../prototype/engine.js');
 const SHARE = require('../prototype/share.js');
 
@@ -100,6 +100,7 @@ const ok = (name, cond, detail) => { if (cond) { pass++; } else { fail++; consol
 /* 持续泵入沿模拟时钟生效，调速和停泵沿用当时的药物浓度。 */
 for (const [id, rate, unit, halfLife] of [
   ['dobutamine', 5, 'μg/kg/min', 2], ['isoproterenol', 1, 'μg/min', 3],
+  ['vasopressin', 0.03, 'U/min', 5],
 ]) {
   const S = E.create('dka');
   const otherBed = E.create('dka');
@@ -118,7 +119,8 @@ for (const [id, rate, unit, halfLife] of [
   for (let i = 0; i < 40; i++) E.tick(S, 60);
   const effect = E.pumpEffect(S, id);
   ok(`${sub.n} 连续泵入超过既往单次疗程后仍生效`, S.t === 2400 &&
-    effect > 0.99 && Math.abs(S.mod.sv - sub.eff.sv * effect) < 1e-9);
+    effect > 0.99 && Object.entries(sub.eff).every(([key, value]) =>
+      Math.abs(S.mod[key] - S.modBase[key] - value * effect) < 1e-9));
 
   const restored = { ...JSON.parse(JSON.stringify(S)), cas: S.cas };
   ok(`${sub.n} 存档续接原泵速和药效，调速没有瞬时跳变`,
@@ -144,6 +146,43 @@ for (const [id, rate, unit, halfLife] of [
   const residual = E.pumpEffect(restored, id);
   ok(`${sub.n} 重新开泵时延续停泵后的残余浓度`,
     E.give(restored, id) === rate && E.pumpEffect(restored, id) === residual);
+}
+
+/* 血管加压素和其他循环支持泵共用撤除支持后的观察窗口。 */
+{
+  const S = E.create({ id: 'vasopressin-test', init: { ...CASEGEN.BASE } });
+  const observe = () => E.dischargeCheck(S).circulationObservation;
+  E.give(S, 'norepi');
+  E.give(S, 'vasopressin', 0.03, '泵入');
+  E.stopPump(S, 'norepi');
+  ok('仅剩血管加压素仍不符合出院条件', !E.dischargeCheck(S).ok &&
+    observe()?.phase === 'active' && observe().reason.includes('血管加压素'));
+  E.stopPump(S, 'vasopressin');
+  const justStopped = observe();
+  for (let i = 0; i < 14; i++) E.tick(S, 60);
+  E.tick(S, 59);
+  const oneSecondLeft = !E.dischargeCheck(S).ok && observe()?.remainingSeconds === 1;
+  E.tick(S, 1);
+  ok('停完循环支持泵后稳定满 15 分钟方可出院', justStopped?.remainingSeconds === 900 &&
+    oneSecondLeft && observe()?.phase === 'complete' && E.dischargeCheck(S).ok);
+}
+
+/* 旧版血管加压素泵入医嘱仍按原定时程结束。 */
+{
+  const S = E.create({ id: 'vasopressin-test', init: { ...CASEGEN.BASE } });
+  const order = { id: 'vasopressin', n: '血管加压素', route: '泵入', t: 187, onset: 2,
+                  dur: 20, eff: { svr: 4, hr: 2 }, scale: 1 };
+  const saved = { t: 187, pk: [order] };
+  Object.assign(S, saved);
+  E.restoreDischargeObservation(S, saved);
+  for (let i = 0; i < 10; i++) E.tick(S, 60);
+  const legacy = E.dischargeCheck(S).circulationObservation;
+  const legacyEffect = S.mod.svr;
+  for (let i = 0; i < 27; i++) E.tick(S, 60);
+  ok('旧版血管加压素记录维持药效并自动结束，无需手动停泵',
+    legacy?.phase === 'legacy' && legacy.remainingSeconds === 1560 && legacyEffect === 4 &&
+    E.pumpRate(S, 'vasopressin') === 0 && S.pk.length === 0 && S.mod.svr === 0 &&
+    E.dischargeCheck(S).circulationObservation?.phase === 'observing');
 }
 
 /* 既有静推存档走原 PK 时程，到期清除。 */

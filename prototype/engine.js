@@ -37,6 +37,9 @@ const WARMING_TARGET = 36.1;
 const DISCHARGE_GLUCOSE_MIN = 4;
 const DISCHARGE_GLUCOSE_MAX = 12;
 const DKA_DISCHARGE_GLUCOSE_MAX_EXCLUSIVE = 11;
+const DISCHARGE_K_MIN = 3.5;
+const DISCHARGE_K_MAX = 5.5;
+const potassiumTarget = `${DISCHARGE_K_MIN}–${DISCHARGE_K_MAX} mmol/L`;
 
 function glucoseDischargeTarget(hasDka, includeDkaMinimum = false) {
   if (!hasDka) return `${DISCHARGE_GLUCOSE_MIN}–${DISCHARGE_GLUCOSE_MAX} mmol/L`;
@@ -68,7 +71,7 @@ const CASES = {
       kProd: 0.160, lactProd: 0.02, insulinBase: 0.55, contractility: 0.74,
       ecfVd: 12, renalFactor: 0.30,
     },
-    goals: ['血钾降至 5.5 以下', '收缩压维持 ≥ 90', '避免心脏骤停'],
+    goals: [`血钾维持 ${potassiumTarget}`, '收缩压维持 ≥ 90', '避免心脏骤停'],
     hint: '高钾的心电图改变先于症状。先保护心肌，再想办法把钾挪走。',
   },
   dka: {
@@ -85,7 +88,7 @@ const CASES = {
       uo: 1.6, kProd: 0.012, lactProd: 0.03, insulinBase: 0.12,
       contractility: 0.8, ketoneProd: 0.16, ecfVd: 11,
     },
-    goals: [`血糖 ${glucoseDischargeTarget(true)}`, 'pH 升至 7.30 以上', '血钾维持 3.5–5.5'],
+    goals: [`血糖 ${glucoseDischargeTarget(true)}`, 'pH 升至 7.30 以上', `血钾维持 ${potassiumTarget}`],
     hint: '补液是第一位的。胰岛素要小剂量持续，补钾要跟得上——治着治着血钾会掉。',
   },
   bleed: {
@@ -820,8 +823,8 @@ const ROOM_AIR_OBSERVATION = 5 * 60;
 const CIRCULATION_OBSERVATION = 15 * 60;
 const CIRCULATION_MIN_SYSTOLIC = 90;
 const CIRCULATION_MIN_MAP = 65;
-const CIRCULATORY_PUMPS = new Set(['norepi', 'dobutamine', 'isoproterenol']);
-const TIMED_PRESSORS = new Set(['epi', 'dopamine', 'vasopressin', 'phenylephrine']);
+const CIRCULATORY_PUMPS = new Set(['norepi', 'dobutamine', 'isoproterenol', 'vasopressin']);
+const TIMED_PRESSORS = new Set(['epi', 'dopamine', 'phenylephrine']);
 const DAY = 24 * 60 * 60;
 /* 游戏观察窗口，用近期超限拦截出院；超限提示风险，保留旧病历的既有损伤记录。 */
 const SODIUM_RISK_OBSERVATION = 2 * DAY;
@@ -2149,7 +2152,11 @@ function dischargeCheck(S) {
   if (S.na < 120) bad.push(`血钠 ${Math.round(S.na)}`);
   if (S.hco3 < 14) bad.push(`HCO₃ ${S.hco3.toFixed(1)}`);
   if (S.ph < 7.28) bad.push(`pH ${S.ph.toFixed(2)}`);
-  if (S.k < 3.5 || S.k > 5.5) bad.push(`血钾 ${S.k.toFixed(1)}`);
+  const potassium = Number.isFinite(S.k) ? r1(S.k) : null;
+  if (potassium == null) bad.push(`血钾需复测，出院目标 ${potassiumTarget}`);
+  else if (potassium < DISCHARGE_K_MIN || potassium > DISCHARGE_K_MAX) {
+    bad.push(`血钾 ${potassium.toFixed(1)} mmol/L，出院目标 ${potassiumTarget}`);
+  }
   const hasDka = S.caseId === 'dka' || S.tags?.includes('dka');
   const glucoseTarget = glucoseDischargeTarget(hasDka, true);
   const glucose = Number.isFinite(S.glu) ? r1(S.glu) : null;  /* 与监护快照的血糖精度一致。 */
@@ -2400,7 +2407,7 @@ function finalScore(S) {
 
 const API = {
   setIdentity(p) { IDENTITY = p || null; }, CASES, DRUGS, ACTIONS, TESTS, DELIVERY_DURATION, create, restorePatient, tick, give, acetaminophenExposure, setEnv, finalScore, scoreBreakdown, bp, snapshot,
-              dischargeCheck, glucoseDischargeTarget, auscultate, orderTest, pollTests, testValue, chestXrayReports, restoreChestXrayReports,
+              dischargeCheck, glucoseDischargeTarget, potassiumTarget, auscultate, orderTest, pollTests, testValue, chestXrayReports, restoreChestXrayReports,
               computeMap, fmt, endCase, setBleedingRate, restoreBleeding,
               benzodiazepineExposure, restoreBenzodiazepines, temperatureStatus, restoreTemperature, infusionDetails, insulinActivity,
               pumpRate, pumpOrder, pumpEffect, stopPump,

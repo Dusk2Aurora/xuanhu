@@ -546,6 +546,9 @@ function openGiveConfig(it, patient) {
     const rt = routes[ri];
     const infusion = rt.infusionMinutes;
     const pump = rt.pumpHalfLife;
+    const minimum = rt.pumpStep ?? 0.01;
+    const precision = String(minimum).split('.')[1]?.length ?? 0;
+    const roundDose = value => +value.toFixed(precision);
     const currentRate = pump ? E.pumpRate(patient, it.id) : 0;
     const sameRate = pump && currentRate === dose;
     const order = pump ? (sameRate ? '维持当前泵速' : E.pumpOrder(it.n, currentRate ? 'adjust' : 'start', dose, it.unit))
@@ -568,7 +571,7 @@ function openGiveConfig(it, patient) {
         <div style="display:flex;align-items:center;gap:10px;padding:6px 0 10px">
           <button id="dMinus" class="pill" style="width:46px;height:46px;font-size:22px;cursor:pointer">−</button>
           <div style="flex:1;text-align:center">
-            <span style="font-family:var(--mono);font-size:28px;font-weight:600">${fmt(dose)}</span>
+            <span style="font-family:var(--mono);font-size:28px;font-weight:600">${pump ? dose : fmt(dose)}</span>
             <span style="font-size:13px;color:#9a9a9a"> ${it.unit}</span>
           </div>
           <button id="dPlus" class="pill" style="width:46px;height:46px;font-size:22px;cursor:pointer">+</button>
@@ -593,12 +596,12 @@ function openGiveConfig(it, patient) {
       el.addEventListener('click', () => { ri = +el.dataset.ri; dose = routes[ri].d; render(); });
     });
     $('#sheetList').querySelectorAll('[data-mul]').forEach(el => {
-      el.addEventListener('click', () => { dose = Math.max(0.01, +(routes[ri].d * +el.dataset.mul).toFixed(2)); render(); });
+      el.addEventListener('click', () => { dose = Math.max(minimum, roundDose(rt.d * +el.dataset.mul)); render(); });
     });
-    const step = Math.max(0.01, +(routes[ri].d / 4).toFixed(2));
+    const step = rt.pumpStep ?? Math.max(minimum, roundDose(rt.d / 4));
     const mi = $('#sheetList').querySelector('#dMinus'), pl = $('#sheetList').querySelector('#dPlus');
-    if (mi) mi.addEventListener('click', () => { dose = Math.max(0.01, +(dose - step).toFixed(2)); render(); });
-    if (pl) pl.addEventListener('click', () => { dose = Math.min(hi, +(dose + step).toFixed(2)); render(); });
+    if (mi) mi.addEventListener('click', () => { dose = Math.max(Math.min(dose, minimum), roundDose(dose - step)); render(); });
+    if (pl) pl.addEventListener('click', () => { dose = Math.min(hi, roundDose(dose + step)); render(); });
     const execute = (event, stop) => {
       if (!$('#sheetList').contains(event.currentTarget) || !$('#sheet').classList.contains('on') || !isCurrentPatient(patient)) return;
       const result = stop ? E.stopPump(patient, it.id) : E.give(patient, it.id, dose, rt.r);
@@ -1180,8 +1183,8 @@ function openAchievements() {
   }));
   openSheet('成就', `${un.size} / ${A.list.length} 已解锁`, rows);
 }
-/* ---------------- 血液报告 ---------------- */
-function bloodReport() {
+/* ---------------- 本床检查报告 ---------------- */
+function openReports() {
   const metrics = {
     ph: ['pH', '', value => value < 7.35 ? ' ↓' : ''],
     paco2: ['PaCO₂', 'mmHg'],
@@ -1218,9 +1221,20 @@ function bloodReport() {
   const rows = [];
   for (const [id, order] of Object.entries(S.tests)) {
     const test = E.TESTS[id];
-    if (test?.fields.some(isBloodField) && !order.done) {
+    if (test && !order.done) {
       rows.push([test.name + ' · 待回报', '预计 ' + caseTime(order.readyAt) + ' 出报告']);
     }
+  }
+  const films = E.chestXrayReports(S);
+  if (films.length) rows.push(['床旁胸片', films.reverse().map(report =>
+    filmDetails('查看报告 · ' + caseTime(report.reportedAt), report)).join('')]);
+  const ecgReport = S.labSnap?.ecg;
+  if (ecgReport?.s) {
+    const { rhythm, hr } = ecgReport.s;
+    const rhythmText = { sinus: '窦性心律', vf: '心室颤动', asystole: '心静止' }[rhythm] || '未记录';
+    rows.push(['<strong>12 导联心电图</strong>', '记录于 ' + caseTime(ecgReport.t)],
+      ['心律', rhythmText]);
+    if (rhythm === 'sinus' && Number.isFinite(hr)) rows.push(['心率', hr + ' 次/分']);
   }
   const monitor = isSevere(S) ? E.snapshot(S) : null;
   if (monitor) {
@@ -1246,12 +1260,13 @@ function bloodReport() {
       rows.push(row);
     }
   }
-  if (!reports.length && !Object.values(S.tests).some(t => !t.done)) rows.push(['开立化验', '在「检查」开单，结果回报后可在这里查看。']);
-  const subtitle = S.patient.name + (reports.length ? ' · ' + reports.length + ' 项已回报' : ' · 暂无已回报化验');
+  const reportCount = reports.length + films.length + (ecgReport?.s ? 1 : 0);
+  if (!reportCount && !Object.values(S.tests).some(t => !t.done)) rows.push(['暂无报告', '在「检查」开单，结果回报后可在这里查看。']);
+  const subtitle = S.patient.name + (reportCount ? ' · ' + reportCount + ' 份报告可查' : ' · 暂无已回报检查');
   const potassium = reports.find(({ values, fields }) => fields.includes('k') && Number.isFinite(values.k))?.values.k;
   const warning = monitor?.k > 6.5 ? '监护快照中的血钾达到危急值。' :
     potassium > 6.5 ? '最近一次血钾结果达到危急值。' : '';
-  openDetail('血液报告', subtitle, rows, warning);
+  openDetail('报告', subtitle, rows, warning);
 }
 
 /* ---------------- 时钟 / 主循环 ---------------- */
@@ -2174,7 +2189,7 @@ function openFeedback() {
 }
 
 /* ---------------- 版本 / 更新检查 ---------------- */
-const APP_VERSION = '1.54.3';
+const APP_VERSION = '1.54.4';
 const releaseRoot = document.querySelector('meta[name="xuanhu-release-root"]')?.content;
 const releaseBase = releaseRoot ? new URL(releaseRoot, location.href).href.replace(/\/$/, '') : '';
 const platformName = location.protocol === 'file:' ? '离线 HTML' :
@@ -2637,7 +2652,7 @@ function bind() {
     if (isCurrentPatient(S)) openSheet('操作', S.patient.name + ' · 急救与介入', actionRows(), S);
   });
   $('#btnBody').addEventListener('click', () => openChecks(S));
-  $('#btnBlood').addEventListener('click', bloodReport);
+  $('#btnBlood').addEventListener('click', openReports);
   $('#btnMenu').addEventListener('click', () => openSheet('菜单', '', [
     {n:'音效设置', tag:SOUND.enabled ? SOUND.volume + '%' : '静音', amt:'调节', run:openSoundSettings},
     {sec:'存档与测试'},
@@ -2967,6 +2982,11 @@ function renderAll() {
 
 /* 更新公告：每次发版在这里加一条（新的放最前面） */
 const RELEASES = [
+  { v: '1.54.4', notes: [
+    '血管加压素支持持续泵入、调速和停泵；撤除全部循环支持后需稳定观察 15 个模拟分钟',
+    '出院评估统一显示血钾读数和目标范围，合并病例也只提示一次',
+    '底部「报告」集中显示本床的化验、胸片和 12 导联心电图结果，以及待回报检查',
+  ] },
   { v: '1.54.3', notes: [
     '出院评估区分循环支持中和撤药后稳定观察，显示血压和剩余观察时间',
     '床旁胸片开单项旁新增「查看上次报告」，此前报告和结算日志也可展开影像所见',

@@ -71,6 +71,11 @@ function glucoseGoal(hasDka) {
   return `血糖 ${engine.glucoseDischargeTarget(hasDka)}`;
 }
 
+function potassiumGoal() {
+  const engine = root.LIFE || require('./engine.js');
+  return `血钾维持 ${engine.potassiumTarget}`;
+}
+
 function observeAfter(startTime, duration, reason, check) {
   const observation = S => {
     const start = startTime(S);
@@ -98,9 +103,7 @@ const MODULES = [
       [2880, '病史回顾', '近两日尿量减少。'],
       [360, '病史回顾', '突发心悸、乏力，逐渐加重。'],
     ],
-    goal:['血钾降至 5.5 以下','收缩压维持 ≥90','避免心脏骤停'],
-    /* 只留疾病特异判据；spo2/rr/temp/na/hr/sys 已由全局出院标准覆盖 */
-    check:S=>[ S.k<3.5||S.k>5.5 ? `血钾 ${S.k.toFixed(1)}` : null ].filter(Boolean),
+    get goal() { return [potassiumGoal(), '收缩压维持 ≥90', '避免心脏骤停']; },
     hint:'高钾的心电图改变先于症状。先保护心肌，再想办法把钾挪走。',
   },
   {
@@ -113,7 +116,7 @@ const MODULES = [
       [4320, '病史回顾', '近期停用胰岛素，三天前开始多饮、多尿。'],
       [1440, '病史回顾', '开始恶心、呕吐。'],
     ],
-    get goal() { return [glucoseGoal(true), 'pH 升至 7.30 以上', '血钾维持 3.5–5.5']; },
+    get goal() { return [glucoseGoal(true), 'pH 升至 7.30 以上', potassiumGoal()]; },
     hint:'补液是第一位的。胰岛素要小剂量持续，补钾要跟得上。',
     /* 无 advance：酮体生成 → HCO₃ 消耗、渗透性利尿、胰岛素清除酮体，
        全部由引擎的机制方程表达（替代原来只覆盖 hco3Base 的做法） */
@@ -553,9 +556,8 @@ const MODULES = [
            contractility:0.86, renalFactor:0.08 },
     drivers:{ kProd:0.075, lactProd:0.03 },
     history:[[4320, '病史回顾', '开始恶心、呕吐，尿量明显减少，并出现眼睑及下肢水肿。']],
-    goal:['血钾降至 5.5 以下','肌酐下降','尿量恢复'],
-    check:S=>[ S.k > 5.5 ? `血钾 ${S.k.toFixed(1)}` : null,
-               (S.cr || 0) > 400 ? `肌酐 ${Math.round(S.cr)}` : null ].filter(Boolean),
+    get goal() { return [potassiumGoal(), '肌酐下降', '尿量恢复']; },
+    check:S=> (S.cr || 0) > 400 ? [`肌酐 ${Math.round(S.cr)}`] : [],
     hint:'利尿药对这种肾衰是无效的——该透析了。先保护心肌，再安排血透。',
   },
 
@@ -849,9 +851,8 @@ const MODULES = [
       [2880, '病史回顾', '逐渐出现排尿困难、下腹胀痛。'],
       [null, '院前病史', '送医前已无法自行排尿。'],
     ],
-    goal:['尿量恢复','血钾 < 5.5','肌酐下降'],
+    get goal() { return ['尿量恢复', potassiumGoal(), '肌酐下降']; },
     check:S=>[ (S.cr || 0) > 180 ? `肌酐 ${Math.round(S.cr)}` : null,
-               S.k > 5.5 ? `血钾 ${S.k.toFixed(1)}` : null,
                (S.vol || 5) > 5.7 ? '容量负荷过重' : null ].filter(Boolean),
     hint:'急性尿潴留先导尿——膀胱减压后肾后性肾损伤才有机会恢复；高钾要同时处理。',
     advance(S, dtMin){

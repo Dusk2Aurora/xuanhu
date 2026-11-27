@@ -358,6 +358,7 @@ const INTERACTIONS = [
 /* ---------- 多途径：同一种药合并成一条，给药时再选途径 ---------- */
 const ROUTE_MAP = {
   norepi:     [{ r:'持续静脉泵入', on:1, pumpHalfLife:2 }],
+  vasopressin: [{ r:'持续静脉泵入', pumpHalfLife:5, pumpStep:0.005 }],
   dobutamine: [{ r:'持续静脉泵入', on:2, pumpHalfLife:2 }],
   isoproterenol: [{ r:'持续静脉泵入', on:0, pumpHalfLife:3 }],
   epi:         [{ r:'泵入', d:1, on:1, du:8 }, { r:'静推', d:1, on:1, du:5 }],
@@ -481,6 +482,7 @@ function build() {
         du: x.du != null ? x.du : item.dur,
         ...(x.infusionMinutes ? { infusionMinutes: x.infusionMinutes } : {}),
         ...(x.pumpHalfLife ? { pumpHalfLife: x.pumpHalfLife } : {}),
+        ...(x.pumpStep ? { pumpStep: x.pumpStep } : {}),
       }));
       item.route = item.routes[0].r;
       item.dose = item.routes[0].d;

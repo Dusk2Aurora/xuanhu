@@ -22,6 +22,7 @@ const ecg = new EcgMonitor();
 let speed = 1, ff = false;
 let observation = null;
 const GLUCOSE_REVIEW_MINUTES = 30;
+const MAX_OBSERVATION_SECONDS = 6 * 3600;
 let lastCaseReview = false;
 let paused = false;
 let bigFont = false;
@@ -209,7 +210,8 @@ function updateOrganValues() {
   if (t) { t.value = selected; t.dataset.state = st; }
   const waitButton = selected === 'pancreas' && $('#glucoseWait');
   if (waitButton) {
-    const label = observation?.glucose != null ? '结束等待' : `等待血糖变化 · 最多 ${GLUCOSE_REVIEW_MINUTES} 分钟`;
+    const label = observation?.kind === 'glucose' ? '结束等待' : `等待血糖变化 · 最多 ${GLUCOSE_REVIEW_MINUTES} 分钟`;
+    waitButton.disabled = !!observation && observation.kind !== 'glucose';
     if (waitButton.textContent !== label) waitButton.textContent = label;
     const result = $('#glucoseReviewResult');
     const message = S.lastGlucoseReview || '';
@@ -1324,10 +1326,10 @@ function loop(ts) {
     for (const b of beds) { try { E.pollTests(b.S); } catch (e) {} }
     if (pendingFilm && S.tests.cxr.done && $('#sheet').classList.contains('on') &&
         $('#sheetTitle').dataset.view === 'checks' && isCurrentPatient(S)) openChecks(S);
-    let glucoseMessage = '';
-    if (observation && (observationEnd || (observation.glucose == null && E.dischargeCheck(S).ok))) {
-      if (observation.glucose != null) {
-        glucoseMessage = finishGlucoseReview(observationEnd);
+    let reviewMessage = '';
+    if (observation && (observationEnd || (observation.kind === 'steady' && E.dischargeCheck(S).ok))) {
+      if (observation.kind !== 'steady') {
+        reviewMessage = finishReview(observationEnd);
       } else {
         stopObservation();
         saveGame();
@@ -1336,7 +1338,7 @@ function loop(ts) {
     }
     settleBeds();
     if (!beds.length) {
-      if (glucoseMessage) toast(glucoseMessage, observationEnd?.urgent);
+      if (reviewMessage) toast(reviewMessage, observationEnd?.urgent);
       ecg.pause(); silenceMonitor(); requestAnimationFrame(loop); return;
     }
     const warnings = new Set();
@@ -1382,9 +1384,9 @@ function loop(ts) {
       if (canvas) ecg.draw(canvas);
     }
     pumpSound(ts, warnings, rPeak, inLobby);
-    if (glucoseMessage) {
+    if (reviewMessage) {
       renderHUD();
-      toast(glucoseMessage, observationEnd?.urgent);
+      toast(reviewMessage, observationEnd?.urgent);
     }
   }
   requestAnimationFrame(loop);
@@ -1482,15 +1484,21 @@ function syncSpeedUI() {
   const f = $('#ff');
   f.classList.toggle('on', ff);
   f.setAttribute('aria-pressed', ff);
-  f.textContent = paused ? '继续模拟' : observation?.glucose != null ? '结束等待' :
-    observation ? '结束留观' : ff ? '20× 快进中' : '快进 20×';
+  f.textContent = paused ? '继续模拟' : observation?.kind === 'steady' ? '结束留观' :
+    observation ? '结束等待' : ff ? '20× 快进中' : '快进 20×';
+  const wardWait = $('#conditionWait');
+  const waiting = observation?.kind === 'ward';
+  wardWait.textContent = waiting ? '结束等待' : '等病情变化';
+  wardWait.disabled = !!observation && !waiting;
+  wardWait.setAttribute('aria-pressed', String(waiting));
+  wardWait.classList.toggle('on', waiting);
   if (S && selected === 'pancreas' && $('#glucoseWait')) updateOrganValues();
 }
 
 function stopObservation() {
   if (!observation) return;
-  if (observation.glucose != null) {
-    toast(finishGlucoseReview({ message: '已手动结束等待' }));
+  if (observation.kind !== 'steady') {
+    toast(finishReview({ message: '已手动结束等待' }));
     return;
   }
   ff = false;
@@ -1498,9 +1506,17 @@ function stopObservation() {
   syncSpeedUI();
 }
 
-function needsAttention(st) {
-  return !st.running || isSevere(st) || E.bp(st).sys < 70 ||
-    st.glu < 3.9 || st.k < 3 || st.rr < 10 || st.rr > 30 || st.ph < 7.2;
+function attentionReason(st, wardReview = false) {
+  if (!st.running) return '病例已结束';
+  const pressure = E.bp(st);
+  const severe = severeCondition(st, pressure, !wardReview);
+  if (severe) return severe;
+  if (pressure.sys < 70) return '收缩压过低';
+  if (st.glu < 3.9) return '低血糖';
+  if (st.k < 3) return '低血钾';
+  if (st.rr < 10 || st.rr > 30) return '呼吸频率异常';
+  if (st.ph < 7.2) return '严重酸中毒';
+  return '';
 }
 
 function canStartObservation(patient, assessment) {
@@ -1510,16 +1526,36 @@ function canStartObservation(patient, assessment) {
 
 function observationStopReason() {
   if (!observation) return null;
-  const danger = beds.findIndex(b => needsAttention(b.S));
+  const wardReview = observation.kind === 'ward';
+  const danger = beds.findIndex(b => attentionReason(b.S, wardReview));
   if (danger >= 0) {
-    return { message: attentionMessage(danger), urgent: true };
+    return { message: attentionMessage(danger, wardReview), patient: beds[danger].S, urgent: true };
   }
   for (const [index, bed] of beds.entries()) {
     for (const [id, test] of Object.entries(bed.S.tests)) {
-      if (!test.done && bed.S.t >= test.readyAt) return { message: `床位 ${index + 1} 的${E.TESTS[id]?.name ?? '检查'}已回报` };
+      if (!test.done && bed.S.t >= test.readyAt) return { message: `床位 ${index + 1} 的${E.TESTS[id]?.name ?? '检查'}已回报`, patient: bed.S };
     }
   }
-  if (observation.glucose != null) {
+  if (observation.kind === 'ward') {
+    const reassess = S.t >= observation.nextAssessment;
+    if (reassess) observation.nextAssessment = S.t + 5;
+    for (const [index, bed] of beds.entries()) {
+      const previous = observation.baselines.get(bed.S);
+      if (!previous) return { patient: bed.S, message: `床位 ${index + 1} 新收患者，请复评` };
+      const change = E.conditionReviewChange(bed.S, previous.vitals);
+      if (change) return { patient: bed.S, message: `床位 ${index + 1}：${change}` };
+      if (previous.deadline != null && bed.S.t + 1e-7 >= previous.deadline) {
+        return { patient: bed.S, message: `床位 ${index + 1} 已到预定复评时间` };
+      }
+      if (reassess) {
+        const assessment = E.dischargeCheck(bed.S);
+        if (!previous.ready && assessment.ok) return { patient: bed.S, message: `床位 ${index + 1} 已达到出院条件` };
+        previous.ready = assessment.ok;
+        previous.deadline = assessment.observationEndsAt;
+      }
+    }
+    if (S.t + 1e-7 >= observation.until) return { message: '已满 6 个模拟小时，未见明显病情变化' };
+  } else if (observation.kind === 'glucose') {
     const { reason } = E.glucoseReviewStatus(S, observation.glucose);
     if (reason === 'target') return { message: '血糖已进入本病例目标范围' };
     if (reason === 'worse') return { message: '血糖进一步偏离本病例目标，请复评', urgent: true };
@@ -1529,20 +1565,27 @@ function observationStopReason() {
   return null;
 }
 
-function attentionMessage(index) {
-  const st = beds[index].S;
-  const condition = !st.running ? '病例已结束' : st.rhythm === 'vf' ? '室颤' :
-    st.rhythm === 'asystole' ? '心静止' : st.glu < 3.9 ? '低血糖' : '病情需要连续处置';
-  return `床位 ${index + 1}：${condition}`;
+function attentionMessage(index, wardReview = false) {
+  return `床位 ${index + 1}：${attentionReason(beds[index].S, wardReview)}`;
 }
 
-function finishGlucoseReview(event) {
+function finishReview(event) {
   const minutes = Math.round((S.t - observation.startedAt) / 6) / 10;
-  const glucose = E.glucoseReviewStatus(S, observation.glucose).glucose;
-  const change = `${observation.glucose.toFixed(1)} → ${glucose == null ? '缺测' : glucose.toFixed(1)} mmol/L`;
-  const message = `床位 ${activeIdx + 1} 血糖复评 · 已过 ${minutes} 分钟，${change}。${event.message}`;
-  S.log.push([E.fmt(S.t), message, event.urgent ? 'warn' : 'info', S.t]);
-  S.lastGlucoseReview = message;
+  let patient = S;
+  let message;
+  if (observation.kind === 'glucose') {
+    const glucose = E.glucoseReviewStatus(S, observation.glucose).glucose;
+    const change = `${observation.glucose.toFixed(1)} → ${glucose == null ? '缺测' : glucose.toFixed(1)} mmol/L`;
+    message = `床位 ${activeIdx + 1} 血糖复评 · 已过 ${minutes} 分钟，${change}。${event.message}`;
+    S.lastGlucoseReview = message;
+  } else {
+    patient = event.patient ?? S;
+    message = `病情复评 · 已过 ${minutes} 分钟。${event.message}`;
+    const result = $('#conditionReviewResult');
+    result.hidden = false;
+    result.textContent = message;
+  }
+  patient.log.push([E.fmt(patient.t), message, event.urgent ? 'warn' : 'info', patient.t]);
   paused = true;
   ff = false;
   speed = 1;
@@ -1553,22 +1596,35 @@ function finishGlucoseReview(event) {
 
 function startGlucoseReview() {
   if (!isCurrentPatient(S)) return;
-  if (observation?.glucose != null) { stopObservation(); return; }
-  const danger = beds.findIndex(b => needsAttention(b.S));
+  if (observation) { stopObservation(); return; }
+  const danger = beds.findIndex(b => attentionReason(b.S));
   if (danger >= 0) { toast(attentionMessage(danger) + '，请先处理', true); return; }
   const status = E.glucoseReviewStatus(S);
   if (status.glucose == null) { toast('血糖读数缺失，请先复测', true); return; }
   if (status.inTarget) { toast(`当前血糖已在本病例目标范围（${status.target}）`); return; }
-  beginObservation({ glucose: status.glucose, startedAt: S.t, until: S.t + GLUCOSE_REVIEW_MINUTES * 60 });
+  beginObservation({ kind: 'glucose', glucose: status.glucose, startedAt: S.t, until: S.t + GLUCOSE_REVIEW_MINUTES * 60 });
   toast(`等待血糖变化，目标 ${status.target}，最多 ${GLUCOSE_REVIEW_MINUTES} 个模拟分钟`);
+}
+
+function startConditionReview() {
+  if (!isCurrentPatient(S)) return;
+  if (observation) { stopObservation(); return; }
+  const danger = beds.findIndex(b => attentionReason(b.S, true));
+  if (danger >= 0) { toast(attentionMessage(danger, true) + '，请先处理', true); return; }
+  const baselines = new Map(beds.map(({ S: patient }) => {
+    const assessment = E.dischargeCheck(patient);
+    return [patient, { vitals: E.conditionReviewBaseline(patient), deadline: assessment.observationEndsAt, ready: assessment.ok }];
+  }));
+  beginObservation({ kind: 'ward', startedAt: S.t, until: S.t + MAX_OBSERVATION_SECONDS, baselines, nextAssessment: S.t + 5 });
+  toast('全病房等待病情变化，最多 6 个模拟小时');
 }
 
 function startObservation() {
   if (!isCurrentPatient(S)) return;
   const assessment = E.dischargeCheck(S);
   if (!canStartObservation(S, assessment)) return;
-  if (beds.some(b => needsAttention(b.S))) { toast('有床位需要连续处置，请先稳定病情', true); return; }
-  beginObservation({ until: Math.min(S.t + 6 * 3600, assessment.observationEndsAt ?? Infinity) });
+  if (beds.some(b => attentionReason(b.S))) { toast('有床位需要连续处置，请先稳定病情', true); return; }
+  beginObservation({ kind: 'steady', until: Math.min(S.t + MAX_OBSERVATION_SECONDS, assessment.observationEndsAt ?? Infinity) });
   toast('全病房留观快进中，可随时点「结束留观」');
 }
 
@@ -2792,6 +2848,7 @@ function bind() {
 
   $('#speed').addEventListener('click', e => {
     const p = e.target.closest('.pill'); if (!p) return;
+    if (p.id === 'conditionWait') { startConditionReview(); return; }
     if (p.id === 'ff') {
       if (observation) { stopObservation(); return; }
       if (paused) { paused = false; syncSpeedUI(); return; }
@@ -3043,8 +3100,18 @@ function openCostSheet() {
 function isSevere(S) {
   if (!S) return false;
   const b = (E.bp ? E.bp(S) : { map: S.map || 90 });
-  return !!(S.rhythm !== 'sinus' || S.vent || S.gcs < 12 || (b.map ?? 90) < 65 ||
-            S.spo2 < 90 || S.hr > 130 || S.hr < 45 || S.k > 6.5 || E.temperatureStatus(S.temp) === 'crit');
+  return !!severeCondition(S, b);
+}
+
+function severeCondition(st, pressure, includeVentilation = true) {
+  if (st.rhythm !== 'sinus') return st.rhythm === 'vf' ? '室颤' : st.rhythm === 'asystole' ? '心静止' : '心律异常';
+  if (st.gcs < 12) return '意识障碍';
+  if ((pressure.map ?? 90) < 65) return '平均动脉压过低';
+  if (st.spo2 < 90) return '血氧过低';
+  if (st.hr > 130 || st.hr < 45) return '心率异常';
+  if (st.k > 6.5) return '严重高血钾';
+  if (E.temperatureStatus(st.temp) === 'crit') return '体温危急';
+  return includeVentilation && st.vent ? '机械通气中' : '';
 }
 
 function renderPatient() {
@@ -3078,6 +3145,7 @@ function renderAll() {
 /* 更新公告：每次发版在这里加一条（新的放最前面） */
 const RELEASES = [
   { v: '1.54.6', notes: [
+    '病房顶部可点「等病情变化」，任一床出现明显改善或恶化、检查回报或需复评时自动暂停',
     '胰腺面板可等待血糖复评：达标、进一步恶化、任一床出现危情或报告回报时自动暂停，最长 30 个模拟分钟',
   ] },
   { v: '1.54.5', notes: [

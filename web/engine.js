@@ -54,9 +54,17 @@ function glucoseTargetSide(glucose, hasDka) {
   return aboveTarget ? 1 : 0;
 }
 
+function usesDkaGlucoseTarget(S) {
+  return S.caseId === 'dka' || S.tags?.includes('dka');
+}
+
+function monitoredGlucose(S) {
+  return Number.isFinite(S.glu) ? r1(S.glu) : null;
+}
+
 function assessDischargeGlucose(S) {
-  const hasDka = S.caseId === 'dka' || S.tags?.includes('dka');
-  const glucose = Number.isFinite(S.glu) ? r1(S.glu) : null;  /* 与监护快照的血糖精度一致。 */
+  const hasDka = usesDkaGlucoseTarget(S);
+  const glucose = monitoredGlucose(S);
   return { glucose, target: glucoseDischargeTarget(hasDka, true), side: glucoseTargetSide(glucose, hasDka), hasDka };
 }
 
@@ -2225,6 +2233,82 @@ function convulsionSigns(S) {
   return activity > visibleThreshold ? '间断可见肢体抽动' : null;
 }
 
+/* 与床旁读数使用同一精度。跨过监护阈值也需达到最小幅度，避免卡在阈值附近反复复评。 */
+const CONDITION_REVIEW_METRICS = [
+  { key: 'hr', label: '心率', unit: '次/分', read: S => S.hr, delta: 15, thresholds: [50, 121], edgeDelta: 3 },
+  { key: 'rr', label: '呼吸频率', unit: '次/分', read: S => S.rr, delta: 5, thresholds: [8, 25], edgeDelta: 2 },
+  { key: 'sys', label: '收缩压', unit: 'mmHg', read: S => bp(S).sys, delta: 15, thresholds: [CIRCULATION_MIN_SYSTOLIC], edgeDelta: 3 },
+  { key: 'spo2', label: '血氧 SpO₂', unit: '%', read: pulseOximetry, delta: 4, thresholds: [92], edgeDelta: 2 },
+  { key: 'temp', label: '体温', unit: '℃', read: S => S.temp, precision: 1, delta: 0.5, thresholds: [35, 39.5], edgeDelta: 0.2 },
+  { key: 'gcs', label: 'GCS', unit: '分', read: S => S.gcs, delta: 2, thresholds: [12], edgeDelta: 1 },
+  { key: 'k', label: '血钾', unit: 'mmol/L', read: S => S.k, precision: 1, delta: 0.5,
+    thresholds: [DISCHARGE_K_MIN, DISCHARGE_K_MAX + 0.1], edgeDelta: 0.2 },
+];
+const CONDITION_REVIEW_RHYTHMS = { sinus: '窦性心律', vf: '心室颤动', asystole: '心静止' };
+const CONDITION_REVIEW_BLEEDING_SITES = [
+  ['bleed', '上消化道出血'], ['trauma', '创伤出血'], ['ectopic', '盆腔出血'], ['spleen', '脾脏出血'],
+];
+
+function conditionReviewReading(S, metric) {
+  const value = metric.read(S);
+  if (!Number.isFinite(value)) return null;
+  return metric.precision ? r1(value) : Math.round(value);
+}
+
+function conditionReviewBaseline(S) {
+  const baseline = { rhythm: S.rhythm, convulsions: convulsionSigns(S), delivered: !!S.delivered,
+    bleeding: {}, glu: monitoredGlucose(S) };
+  for (const [site] of CONDITION_REVIEW_BLEEDING_SITES) baseline.bleeding[site] = S.bleedingSites?.[site] > 0;
+  for (const metric of CONDITION_REVIEW_METRICS) baseline[metric.key] = conditionReviewReading(S, metric);
+  return baseline;
+}
+
+function conditionReviewChange(S, baseline) {
+  if (S.rhythm !== baseline.rhythm) {
+    return `心律 ${CONDITION_REVIEW_RHYTHMS[baseline.rhythm] ?? '未记录'} → ${CONDITION_REVIEW_RHYTHMS[S.rhythm] ?? '未记录'}`;
+  }
+  const convulsions = convulsionSigns(S);
+  if (convulsions !== baseline.convulsions) {
+    return `抽搐征象 ${baseline.convulsions ?? '未见抽搐'} → ${convulsions ?? '未见抽搐'}`;
+  }
+  if (S.delivered && !baseline.delivered) return '分娩已完成，胎盘已娩出，进入产后观察';
+  for (const [site, label] of CONDITION_REVIEW_BLEEDING_SITES) {
+    const active = S.bleedingSites?.[site] > 0;
+    if (active !== baseline.bleeding[site]) {
+      return `${label} ${active ? '未见活动性出血 → 活动性出血' : '活动性出血 → 已止血'}`;
+    }
+  }
+
+  const glucose = monitoredGlucose(S), startGlucose = baseline.glu;
+  if (glucose !== startGlucose) {
+    const hasDka = usesDkaGlucoseTarget(S);
+    const side = glucoseTargetSide(glucose, hasDka);
+    const startSide = glucoseTargetSide(startGlucose, hasDka);
+    if (side !== startSide || r1(Math.abs(glucose - startGlucose)) >= 2) {
+      const before = startGlucose == null ? '缺测' : `${startGlucose.toFixed(1)} mmol/L`;
+      const current = glucose == null ? '缺测' : `${glucose.toFixed(1)} mmol/L`;
+      let result = `血糖 ${before} → ${current}`;
+      if (side === 0 && startSide !== 0) result += `，进入本病例目标范围（${glucoseDischargeTarget(hasDka, true)}）`;
+      if (startSide === 0 && side) result += `，偏离本病例目标范围（${glucoseDischargeTarget(hasDka, true)}）`;
+      return result;
+    }
+  }
+
+  for (const metric of CONDITION_REVIEW_METRICS) {
+    const start = baseline[metric.key], current = conditionReviewReading(S, metric);
+    if (start == null || current == null || start === current) continue;
+    const absoluteChange = Math.abs(current - start);
+    const difference = metric.precision ? r1(absoluteChange) : absoluteChange;
+    const crossedThreshold = difference >= metric.edgeDelta &&
+      metric.thresholds.some(threshold => (start < threshold) !== (current < threshold));
+    if (difference >= metric.delta || crossedThreshold) {
+      const digits = metric.precision ?? 0;
+      return `${metric.label} ${start.toFixed(digits)} → ${current.toFixed(digits)} ${metric.unit}`;
+    }
+  }
+  return null;
+}
+
 /* --- 主动听诊、开检验 --- */
 function auscultate(S) {
   const sounds = [];
@@ -2451,7 +2535,8 @@ function finalScore(S) {
 
 const API = {
   setIdentity(p) { IDENTITY = p || null; }, CASES, DRUGS, ACTIONS, TESTS, DELIVERY_DURATION, create, restorePatient, tick, give, acetaminophenExposure, setEnv, finalScore, scoreBreakdown, bp, snapshot,
-              dischargeCheck, glucoseDischargeTarget, glucoseReviewStatus, potassiumTarget, convulsionSigns, auscultate, orderTest, pollTests, testValue, chestXrayReports, restoreChestXrayReports,
+              dischargeCheck, glucoseDischargeTarget, glucoseReviewStatus, potassiumTarget, convulsionSigns, conditionReviewBaseline, conditionReviewChange,
+              auscultate, orderTest, pollTests, testValue, chestXrayReports, restoreChestXrayReports,
               computeMap, fmt, endCase, setBleedingRate, restoreBleeding,
               benzodiazepineExposure, restoreBenzodiazepines, temperatureStatus, restoreTemperature, infusionDetails, insulinActivity,
               pumpRate, pumpOrder, pumpEffect, stopPump,

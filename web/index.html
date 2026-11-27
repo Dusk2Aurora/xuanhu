@@ -314,7 +314,8 @@ svg.anat{
     grid-template-columns:auto auto minmax(0,1fr) auto;
     grid-template-areas:
       "who meta . clock"
-      "level ask . speed";
+      "level ask . speed"
+      "budget budget budget budget";
     align-items:center;gap:3px 6px;
     padding:calc(var(--safe-t) + 5px) max(10px,var(--safe-r)) 2px max(10px,var(--safe-l));
     font-size:10.5px;
@@ -575,6 +576,21 @@ body.night #lobby{background:rgba(8,10,13,.96)}
 body.night #lobby .bed{background:#14181e;border-color:#252b34}
 body.night #lobby .links button{background:#14181e;border-color:#252b34;color:#ddd8d3}
 
+
+/* 医保自付标签：不允许撑破顶栏，超出省略 */
+#budgetChip{
+  flex:0 0 auto;min-width:0;max-width:34vw;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  font-size:clamp(10px,1.4vmin,12px);
+}
+@media (orientation:portrait) and (max-width:760px){
+  #budgetChip{
+    grid-area:budget;
+    justify-self:end;align-self:center;
+    max-width:100%;margin:0 0 2px;
+    font-size:10px;
+  }
+}
 </style>
 </head>
 <body>

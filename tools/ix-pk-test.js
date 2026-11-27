@@ -97,6 +97,68 @@ const ok = (name, cond, detail) => { if (cond) { pass++; } else { fail++; consol
     action?.[4]?.minutes === 60 && action[4].unit === 'U');
 }
 
+/* 持续泵入沿模拟时钟生效，调速和停泵沿用当时的药物浓度。 */
+for (const [id, rate, unit, halfLife] of [
+  ['dobutamine', 5, 'μg/kg/min', 2], ['isoproterenol', 1, 'μg/min', 3],
+]) {
+  const S = E.create('dka');
+  const otherBed = E.create('dka');
+  const sub = globalThis.SUBSTANCES.byId(id);
+  ok(`${sub.n} 默认持续静脉泵入，开泵时没有瞬时药效`,
+    E.give(S, id, undefined, '静推') == null &&
+    [0, -1, NaN, Infinity].every(invalid => E.give(S, id, invalid) == null) &&
+    E.give(S, id) === rate && E.pumpEffect(S, id) === 0 &&
+    S.given[0].route === '持续静脉泵入' &&
+    S.log[0][1] === `开始持续静脉泵入 ${sub.n}（${rate} ${unit}）`);
+  const cost = S.cost;
+  ok(`${sub.n} 重复同速医嘱不叠加，也不影响其他床位`,
+    E.give(S, id, rate) == null && E.pumpRate(S, id) === rate && E.pumpRate(otherBed, id) === 0 &&
+    S.cost === cost && S.given.length === 1 && S.pk.length === 0 &&
+    E.dischargeCheck(S).reasons.some(reason => reason.includes(`泵入${sub.n}`)));
+  for (let i = 0; i < 40; i++) E.tick(S, 60);
+  const effect = E.pumpEffect(S, id);
+  ok(`${sub.n} 连续泵入超过既往单次疗程后仍生效`, S.t === 2400 &&
+    effect > 0.99 && Math.abs(S.mod.sv - sub.eff.sv * effect) < 1e-9);
+
+  const restored = { ...JSON.parse(JSON.stringify(S)), cas: S.cas };
+  ok(`${sub.n} 存档续接原泵速和药效，调速没有瞬时跳变`,
+    E.pumpRate(restored, id) === rate && E.pumpEffect(restored, id) === effect &&
+    E.give(restored, id, rate / 2) === rate / 2 && E.pumpEffect(restored, id) === effect &&
+    E.pumpRate(restored, id) === rate / 2 && restored.cost === cost);
+  E.tick(restored, halfLife * 60);
+  const adjusted = E.pumpEffect(restored, id);
+  ok(`${sub.n} 降低泵速后药效逐渐减弱`, adjusted < effect && adjusted > 0.57);
+  ok(`${sub.n} 停泵记录实际速率，出院评估识别泵已停`,
+    E.stopPump(restored, id) === rate / 2 && E.pumpRate(restored, id) === 0 &&
+    E.stopPump(restored, id) == null && E.pumpEffect(restored, id) === adjusted &&
+    !E.dischargeCheck(restored).reasons.some(reason => reason.includes(`泵入${sub.n}`)));
+  E.tick(restored, halfLife * 60);
+  const concentration = effect => 3 * effect / (4 - effect);
+  ok(`${sub.n} 停泵一个半衰期后浓度减半`,
+    Math.abs(concentration(E.pumpEffect(restored, id)) - concentration(adjusted) / 2) < 1e-9);
+  const shared = SHARE.parse(SHARE.make(restored));
+  const orders = shared.data?.a || [];
+  ok(`${sub.n} 会诊码保留开始、改速与停泵`, shared.ok && orders.length === 3 &&
+    orders.every((order, i) => order[4]?.pumpAction === ['start', 'adjust', 'stop'][i] && order[4].unit === unit) &&
+    orders[2][3] === rate / 2);
+  const residual = E.pumpEffect(restored, id);
+  ok(`${sub.n} 重新开泵时延续停泵后的残余浓度`,
+    E.give(restored, id) === rate && E.pumpEffect(restored, id) === residual);
+}
+
+/* 既有静推存档走原 PK 时程，到期清除。 */
+{
+  const S = E.create('dka');
+  const { id, n, eff } = globalThis.SUBSTANCES.byId('dobutamine');
+  S.pk.push({ id, n, route: '静推', t: 0, dur: 20, onset: 3, eff, scale: 1 });
+  delete S.pumps;
+  for (let i = 0; i < 10; i++) E.tick(S, 60);
+  const legacyEffect = S.mod.sv;
+  for (let i = 0; i < 27; i++) E.tick(S, 60);
+  ok('旧版多巴酚丁胺保留暂时药效，到期清除', legacyEffect === 16 &&
+    E.pumpRate(S, id) === 0 && S.pk.length === 0 && S.mod.sv === 0);
+}
+
 /* 静推仍即时生效，旧泵入记录缺少时长时不会重新启动泵。 */
 {
   const S = E.create('sepsis');

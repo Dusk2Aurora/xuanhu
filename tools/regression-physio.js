@@ -306,11 +306,16 @@ for (const id of ['hyperkalemia', 'dka', 'bleed', 'sepsis', 'opioid']) {
   const low = E.roomAirSaturation(support, support.spontaneousCO2);
   E.ACTIONS.extubate.apply(support);
   const refused = support.vent;
+  E.ACTIONS.oxygen_off.apply(support);
+  check('机械通气中降低氧浓度只改变 FiO₂', support.vent && support.fio2 === 0.21 &&
+    support.log.at(-1)[1].includes('继续机械通气') && E.dischargeCheck(support).reasons.includes('仍需机械通气'),
+    support.log.at(-1)[1]);
   support.shunt = 0;
   E.ACTIONS.extubate.apply(support);
   E.ACTIONS.oxygen_off.apply(support);
+  const onRoomAir = support.log.at(-1)[1].includes('改室内空气');
   E.tick(support, 1);
-  check('撤机与撤氧使用室内空气估算和观察', low < 92 && refused && !support.vent &&
+  check('撤机与撤氧使用室内空气估算和观察', low < 92 && refused && !support.vent && onRoomAir &&
     support.fio2 === 0.21 && E.roomAirSaturation(support) >= 94 &&
     E.dischargeCheck(support).reasons.some(reason => reason.includes('室内空气血氧需稳定')),
     `高分流室气估计 ${low.toFixed(1)}%，解除分流后允许撤机`);

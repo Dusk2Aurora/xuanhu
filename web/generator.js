@@ -240,10 +240,11 @@ const MODULES = [
     hint:'支气管痉挛要靠解痉药打开，吸氧只能买时间。激素要早给。',
     advance(S, dtMin, E) {
       const beta = activeAny(S, ['salbutamol','salmeterol','epi','isoproterenol','theophylline']);
+      const betaEffect = beta ? 1 : Math.min(1, E.pumpEffect(S, 'isoproterenol'));
       const anti = active(S,'ipratropium');
       const steroid = activeAny(S, ['hydrocortisone','dexamethasone']);
       let rate = 0.004;                 // 未处理：气道痉挛持续加重
-      if (beta) rate -= 0.055;          // β₂ 激动剂：解痉主力
+      rate -= 0.055 * betaEffect;      // β₂ 激动剂：解痉主力
       if (anti) rate -= 0.012;          // 抗胆碱能：协同
       if (steroid) rate -= 0.010;       // 激素：压基础炎症张力
       const field = S.burnAirwayResistance == null ? 'airwayResistance' : 'asthmaResistance';

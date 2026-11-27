@@ -9,7 +9,7 @@
  *   node tools/content-test.js [--verbose] [--module=asthma] [--trace=asthma] [--seeds=5]
  * ========================================================================== */
 const assert = require('node:assert/strict');
-require('../prototype/substances.js');
+const substances = require('../prototype/substances.js');
 require('../prototype/mentor.js');
 const E = require('../prototype/engine.js');
 
@@ -79,25 +79,20 @@ const TREAT = {
     if (!S._p) { S._p = 1; E.give(S, 'naloxone', 0.4); S._nAt = t; return; }
     if (poor && t >= (S._nAt || 0) + 180) { E.give(S, 'naloxone', 0.4); S._nAt = t; }
   },
-  edema(S, t) {
-    if (!S._p) { S._p = 1; o2(S); E.give(S, 'furosemide', 40); S._fuAt = t; }
-    /* 利尿要盯着容量：容量已经不高时再利尿会脱成休克 */
-    if ((S.lungWater || 0) > 0.42 && S.vol > 4.3 && t >= (S._fuAt || 0) + 900) {
-      E.give(S, 'furosemide', 40); S._fuAt = t;
-    }
-    if (bp(S).map < 62 && !has(S, 'norepi')) E.give(S, 'norepi', 8);
+  edema(S) {
+    if (!S._p) { S._p = 1; o2(S); E.give(S, 'furosemide', 30); }
+    const pressure = bp(S);
+    if (pressure.map < 62 && !has(S, 'norepi')) E.give(S, 'norepi', 8);
     /* 肺水消了就把氧撤掉，否则永远卡在"仍在吸氧" */
     if ((S.lungWater || 0) <= 0.44 && S.spo2 >= 95 && ((S.fio2 || 0.21) > 0.21 || S.o2)) {
       E.ACTIONS.oxygen_off.apply(S);
     }
-    /* 降低后负荷：硝酸甘油 / 硝普钠（后负荷下降 → 衰竭心肌每搏量上升 → CO 上升 → 心率回落） */
-    if (bp(S).sys > 110 && !has(S, 'nitroglycerin')) E.give(S, 'nitroglycerin', 0.5);
-    if (bp(S).sys > 110 && !has(S, 'nitroprusside')) E.give(S, 'nitroprusside', 0.5);
-    /* 利尿减容：看肺水与容量，而不是"到点就给" */
-    if ((S.lungWater > 0.40 || S.vol > 4.9) && !has(S, 'furosemide')) E.give(S, 'furosemide', 40);
+    if (S.lungWater > 0.45 && pressure.sys >= 140 && !has(S, 'nitroglycerin')) E.give(S, 'nitroglycerin', 0.5);
+    if (S.lungWater > 0.42 && S.vol > 4.9 && !has(S, 'furosemide')) E.give(S, 'furosemide', 20);
     if (S.spo2 < 94) o2(S);
-    /* 只在真性低心排（收缩压 <90）时用正性肌力药，避免心率被堆上去 */
-    if (bp(S).sys < 90 && t >= (S._dobAt || 0) + 900) { E.give(S, 'dobutamine', 5); S._dobAt = t; }
+    const pump = E.pumpRate(S, 'dobutamine');
+    if (!pump && S.lungWater > 0.44 && pressure.sys < 90) E.give(S, 'dobutamine');
+    if (pump && S.lungWater < 0.40 && pressure.sys >= 90) E.stopPump(S, 'dobutamine');
     if (S.k < 3.8 && !has(S, 'kcl')) E.give(S, 'kcl', 20);
   },
   thyroid(S) {
@@ -315,7 +310,7 @@ function runOne(mod, seed, mode) {
     E.tick(S, DT);
     G.step(S, DT, E);                    // 与 game.js 主循环一致：先 tick 再推进病程
     E.pollTests(S);
-    if (!S.death && E.dischargeCheck(S).ok) {
+    if (!S.death && E.dischargeCheck(S).ok && E.pumpEffect(S, 'dobutamine') < 0.02) {
       E.endCase(S, 'discharge', '达到出院标准');
       break;
     }
@@ -350,6 +345,11 @@ function traceOne(mod, mode, seed) {
 }
 
 if (require.main === module) {
+  assert.deepEqual(substances.search('罗氏芬').map(s => s.id), ['ceftriaxone']);
+  for (const [brand, generic] of [['先锋必', '头孢哌酮'], ['泰能', '亚胺培南/西司他丁']]) {
+    assert.deepEqual(substances.search(brand), [], brand + ' 不可代开其他药物');
+    assert.deepEqual(substances.searchUnlistedDrugs(brand), [generic]);
+  }
   // 这两个种子在生成器 v3 分别会抽到不相符的老年与 2 型糖尿病体质。
   const young = G.generate(5, 331);
   assert.deepEqual([young.patient.age, young.traits.length, young.traits.some(t => t.id === 'elderly_renal')], [34, 2, false]);

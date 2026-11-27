@@ -436,12 +436,21 @@ function openDrugSheet() {
   };
 
   let curTab = 'all';
-  const rowOf = (it) => `
+  const drugName = (name) => {
+    const aliases = SUB.aliasesFor(name).slice(0, 2);
+    return `${escapeHtml(name)}${aliases.length ? `<span style="font-size:10px;color:#c8a0a0">（${escapeHtml(aliases.join('/'))}）</span>` : ''}`;
+  };
+  const rowOf = (it) => {
+    const pump = it.routes?.[0]?.pumpHalfLife;
+    const rate = pump ? E.pumpRate(patient, it.id) : 0;
+    const amount = pump ? `${rate ? '当前' : '默认'} ${rate || it.dose} ${it.unit}` : `${it.dose}${it.unit}`;
+    return `
         <button type="button" class="drow" data-id="${it.id}">
-          <span class="nm">${it.n}${(window.SUBSTANCES.ALIASES && Object.keys(window.SUBSTANCES.ALIASES).some(a => window.SUBSTANCES.ALIASES[a] === it.n)) ? `<span style="font-size:10px;color:#c8a0a0">（${Object.keys(window.SUBSTANCES.ALIASES).filter(a => window.SUBSTANCES.ALIASES[a] === it.n).slice(0,2).join('/')}）</span>` : ''}${it.note ? `<span style="font-size:10px;color:#b3a6a6"> · ${it.note}</span>` : ''}</span>
+          <span class="nm">${drugName(it.n)}${it.note ? `<span style="font-size:10px;color:#b3a6a6"> · ${it.note}</span>` : ''}</span>
           <span class="tag">${it.route}${(it.routes && it.routes.length > 1) ? ' 等' + it.routes.length + ' 途径' : ''}</span>
-          <span class="amt">${it.dose}${it.unit}</span>
+          <span class="amt">${amount}</span>
         </button>`;
+  };
 
   const drawTabs = () => {
     const host = list.querySelector('#drugTabs');
@@ -480,10 +489,15 @@ function openDrugSheet() {
       <div class="sec">${cls} <span style="opacity:.6">${groups[cls].length}</span></div>
       ${groups[cls].map(rowOf).join('')}
     `).join('');
-    host.innerHTML = (pinnedHtml + body) ||
+    const unlisted = SUB.searchUnlistedDrugs(q).map(name => `
+      <div class="drow" style="cursor:default">
+        <span class="nm">${drugName(name)}</span>
+        <span class="tag">游戏暂未收录</span>
+      </div>`).join('');
+    host.innerHTML = (pinnedHtml + unlisted + body) ||
       `<div style="padding:18px;color:#9a9a9a;font-size:13px">没有匹配的物质</div>`;
 
-    host.querySelectorAll('.drow').forEach(el => {
+    host.querySelectorAll('button.drow').forEach(el => {
       el.addEventListener('click', () => {
         if (!list.contains(el) || !$('#sheet').classList.contains('on') || !isCurrentPatient(patient)) return;
         openGiveConfig(SUB.byId(el.dataset.id), patient);
@@ -519,21 +533,24 @@ function describeEff(eff) {
 function openGiveConfig(it, patient) {
   const routes = (it.routes && it.routes.length) ? it.routes : [{ r: it.route, d: it.dose, on: it.onset, du: it.dur }];
   let ri = 0;
-  let dose = routes[0].d;
+  let dose = E.pumpRate(patient, it.id) || routes[0].d;
   const fmt = v => (Math.round(v * 100) / 100).toString();
 
   const render = () => {
     if (!isCurrentPatient(patient)) return;
     const rt = routes[ri];
     const infusion = rt.infusionMinutes;
-    const order = infusion
-      ? `开始泵入 ${it.n}（${E.infusionDetails(dose, it.unit, infusion)}）`
-      : `给予 ${it.n} ${fmt(dose)}${it.unit}`;
-    const lo = it.doseRange ? it.doseRange[0] : rt.d * 0.2;
+    const pump = rt.pumpHalfLife;
+    const currentRate = pump ? E.pumpRate(patient, it.id) : 0;
+    const sameRate = pump && currentRate === dose;
+    const order = pump ? (sameRate ? '维持当前泵速' : E.pumpOrder(it.n, currentRate ? 'adjust' : 'start', dose, it.unit))
+      : infusion ? `开始泵入 ${it.n}（${E.infusionDetails(dose, it.unit, infusion)}）`
+        : `给予 ${it.n} ${fmt(dose)}${it.unit}`;
     const hi = it.doseRange ? it.doseRange[1] : rt.d * 10;
     const over = dose > rt.d * 2.5, under = dose < rt.d * 0.4;
-    const warn = over ? '⚠ 剂量明显高于常规，注意中毒风险'
-                : under ? '⚠ 剂量偏低，可能达不到治疗浓度' : '';
+    const doseLabel = pump ? '泵速' : '剂量';
+    const warn = over ? `⚠ ${doseLabel}明显高于常规，注意中毒风险`
+                : under ? `⚠ ${doseLabel}偏低，可能达不到治疗浓度` : '';
     $('#sheetTitle').innerHTML = `${it.n} <small>${escapeHtml(patient.patient.name)} · ${it.cls}</small>`;
     $('#sheetList').innerHTML = `
       <div style="padding:2px 14px 14px">
@@ -541,7 +558,8 @@ function openGiveConfig(it, patient) {
           <div style="display:flex;gap:8px;flex-wrap:wrap;padding:0 0 14px">
             ${routes.map((x, i) => `<span class="pill" data-ri="${i}" style="cursor:pointer;${i === ri ? 'background:#f7e6e6;color:#a33;font-weight:700' : ''}">${x.r}</span>`).join('')}
           </div>` : ''}
-        <div class="sec">${infusion ? '输注总量' : '剂量'}</div>
+        ${pump ? `<div class="sec">${rt.r} · ${currentRate ? `当前泵速 ${currentRate} ${it.unit}` : '未泵入'}</div>` : ''}
+        <div class="sec">${pump ? (currentRate ? '调整泵速' : '起始泵速') : infusion ? '输注总量' : '剂量'}</div>
         <div style="display:flex;align-items:center;gap:10px;padding:6px 0 10px">
           <button id="dMinus" class="pill" style="width:46px;height:46px;font-size:22px;cursor:pointer">−</button>
           <div style="flex:1;text-align:center">
@@ -556,12 +574,14 @@ function openGiveConfig(it, patient) {
         ${warn ? `<div class="note" style="margin-bottom:10px;color:#a33;background:#fdf3f2">${warn}</div>` : ''}
         <div class="note" style="margin-bottom:12px;font-size:11.5px">
           ${infusion ? `输注时长 ${infusion} 分钟<br>` : ''}
-          起效 ${rt.on} min · ${infusion ? '药效' : ''}维持 ${rt.du} min · 效应 ${describeEff(it.eff) || '—'}
+          ${pump ? `持续至手动停泵 · 模拟血药浓度半衰期约 ${pump} 分钟`
+            : `起效 ${rt.on} min · ${infusion ? '药效' : ''}维持 ${rt.du} min`} · 效应 ${describeEff(it.eff) || '—'}
           ${it.note ? '<br>' + it.note : ''}
         </div>
-        <button id="dGo" class="pill" style="width:100%;padding:14px;font-size:16px;font-weight:700;cursor:pointer;background:${over ? '#f7e6e6' : '#fff'}">
+        <button id="dGo" class="pill" ${sameRate ? 'disabled' : ''} style="width:100%;padding:14px;font-size:16px;font-weight:700;cursor:${sameRate ? 'default' : 'pointer'};background:${over ? '#f7e6e6' : '#fff'}">
           ${order}
         </button>
+        ${currentRate ? '<button type="button" id="dStop" class="pill" style="width:100%;margin-top:8px;padding:14px;font-size:16px;font-weight:700;cursor:pointer">停止泵入</button>' : ''}
       </div>`;
 
     $('#sheetList').querySelectorAll('[data-ri]').forEach(el => {
@@ -574,19 +594,22 @@ function openGiveConfig(it, patient) {
     const mi = $('#sheetList').querySelector('#dMinus'), pl = $('#sheetList').querySelector('#dPlus');
     if (mi) mi.addEventListener('click', () => { dose = Math.max(0.01, +(dose - step).toFixed(2)); render(); });
     if (pl) pl.addEventListener('click', () => { dose = Math.min(hi, +(dose + step).toFixed(2)); render(); });
-    const go = $('#sheetList').querySelector('#dGo');
-    if (go) go.addEventListener('click', () => {
-      if (!$('#sheetList').contains(go) || !$('#sheet').classList.contains('on') || !isCurrentPatient(patient)) return;
-      if (E.give(patient, it.id, dose, rt.r) == null) return;
+    const execute = (event, stop) => {
+      if (!$('#sheetList').contains(event.currentTarget) || !$('#sheet').classList.contains('on') || !isCurrentPatient(patient)) return;
+      const result = stop ? E.stopPump(patient, it.id) : E.give(patient, it.id, dose, rt.r);
+      if (result == null) return;
       const entry = patient.log[patient.log.length - 1];
       checkBudget();
-      if (window.SOUND) SOUND.drug();
-      judge('drug', it.id, null, entry);
+      if (window.SOUND && !stop) SOUND.drug();
+      if (currentRate) markEvent(entry);
+      else judge('drug', it.id, null, entry);
       saveGame();
       closeSheet();
-      toast(infusion ? order : `已${order}（${rt.r}）`);
+      toast(pump || infusion ? entry[1] : `已${order}（${rt.r}）`);
       renderAll();
-    });
+    };
+    $('#sheetList').querySelector('#dGo').addEventListener('click', event => execute(event, false));
+    $('#sheetList').querySelector('#dStop')?.addEventListener('click', event => execute(event, true));
   };
   render();
 }
@@ -691,7 +714,8 @@ function actionRows() {
       n: S.delivered || S.deliveryStartedAt != null ? '查看产科进程' : a.name,
       tag: deliveryStatus(S), amt: '查看', run: () => reviewDelivery(S),
     };
-    return { n: a.name, tag: '', amt: a.cost ? '¥' + a.cost : '—', run: () => performAction(id, a) };
+    const name = id === 'oxygen_off' && S.vent ? '将呼吸机 FiO₂ 调至 21%' : a.name;
+    return { n: name, tag: '', amt: a.cost ? '¥' + a.cost : '—', run: () => performAction(id, a) };
   });
 }
 
@@ -1930,9 +1954,11 @@ function buildFeedbackText() {
       ' K ' + S.k.toFixed(1) + ' GCS ' + S.gcs);
     const tail = (S.log || []).slice(-12).map(l => '  ' + l[0] + ' ' + l[1]).join('\n');
     if (tail) lines.push('最近记录：\n' + tail);
-    const given = (S.given || []).slice(-10).map(g => g.infusionMinutes
-      ? `  ${g.n}（${g.route} · ${E.infusionDetails(g.d, g.unit, g.infusionMinutes)}）`
-      : '  ' + g.n + ' ' + g.d + (g.unit || ''));
+    const given = (S.given || []).slice(-10).map(g => {
+      if (g.pumpAction) return '  ' + E.pumpOrder(g.n, g.pumpAction, g.d, g.unit);
+      if (g.infusionMinutes) return `  ${g.n}（${g.route} · ${E.infusionDetails(g.d, g.unit, g.infusionMinutes)}）`;
+      return '  ' + g.n + ' ' + g.d + (g.unit || '');
+    });
     if (given.length) lines.push('最近用药：\n' + given.join('\n'));
     /* 会诊码：作者拿到可以原样复现这一例 */
     try {
@@ -2004,7 +2030,7 @@ function openFeedback() {
 }
 
 /* ---------------- 版本 / 更新检查 ---------------- */
-const APP_VERSION = '1.54.1';
+const APP_VERSION = '1.54.2';
 const releaseRoot = document.querySelector('meta[name="xuanhu-release-root"]')?.content;
 const releaseBase = releaseRoot ? new URL(releaseRoot, location.href).href.replace(/\/$/, '') : '';
 const platformName = location.protocol === 'file:' ? '离线 HTML' :
@@ -2328,6 +2354,10 @@ function openConsult() {
     })() : '随机病例') : ((E.CASES && E.CASES[d.c] && E.CASES[d.c].name) || d.c);
     const p = d.p || {};
     const acts = (d.a || []).map(([kind, , id, dose, infusion]) => {
+      if (kind === 'd' && ['start', 'adjust', 'stop'].includes(infusion?.pumpAction)) {
+        const name = window.SUBSTANCES?.byId(id)?.n || id;
+        return E.pumpOrder(name, infusion.pumpAction, dose, infusion.unit);
+      }
       if (kind === 'd' && Number.isFinite(infusion?.minutes) && infusion.minutes > 0) {
         const name = window.SUBSTANCES?.byId(id)?.n || id;
         return `开始泵入 ${name}（${E.infusionDetails(dose, infusion.unit, infusion.minutes)}）`;
@@ -2839,6 +2869,11 @@ function renderAll() {
 
 /* 更新公告：每次发版在这里加一条（新的放最前面） */
 const RELEASES = [
+  { v: '1.54.2', notes: [
+    '修正先锋必、罗氏芬和泰能的商品名归属与搜索结果',
+    '多巴酚丁胺按持续静脉输注运行，给药页可查看速率、调速或停泵',
+    '呼吸机调至 FiO₂ 21% 时，操作回执注明继续机械通气',
+  ] },
   { v: '1.54.1', notes: [
     '病例体质与患者年龄、糖尿病分型相互核对，血糖出院评估与病例目标一致',
     '胰岛素泵入显示输注医嘱，抗感染药详情使用中文指标名称',

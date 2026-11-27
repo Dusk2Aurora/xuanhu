@@ -554,14 +554,15 @@ const ACTIONS = {
   },
   oxygen_off: {
     name: '停止吸氧', cost: 0,
-    desc: '恢复室内空气（FiO₂ 21%）。血氧能维持时尽早撤氧，避免吸收性肺不张。',
+    desc: '将吸入氧浓度调至 21%。使用呼吸机时保留当前通气支持。',
     apply: (S) => {
       if (S.fio2 > 0.21 || S.o2 || S.vent) {
         S.hadOxygenSupport = true;
         S.roomAirStableSince = null;
       }
       S.fio2 = 0.21; S.o2 = 0;
-      S.log.push(['操作', '停止吸氧，改室内空气', 'info']);
+      const message = S.vent ? '呼吸机 FiO₂ 已设为 21%，继续机械通气' : '停止吸氧，改室内空气（FiO₂ 21%）';
+      S.log.push(['操作', message, 'info']);
     },
   },
   hyponatremia_care: {
@@ -636,7 +637,7 @@ function create(caseId, identity = IDENTITY) {
     t: 0, speed: 1, running: true, patient,
     rhythm: 'sinus',
     drugs: [], eff: { insulin: 0, norepi: 0, amio: 0, furo: 0, ppi: 0 },
-    pk: [], benzoPkVersion: 1, mod: makeMod(), modBase: makeMod(),
+    pk: [], pumps: {}, benzoPkVersion: 1, mod: makeMod(), modBase: makeMod(),
     log: [], tests: {}, labSnap: {}, labPrevious: {}, lungExam: { latest: null, previous: null },
     score: 100, death: null, discharged: false,
     delivered: false, deliveryStartedAt: null, deliveryAt: null,
@@ -1038,6 +1039,58 @@ function infusionActivity(elapsed, duration, ke) {
   return -Math.expm1(-ke * supplied) * Math.exp(-ke * timeAfter) / (ke * duration);
 }
 
+function pumpRate(S, drugId) {
+  return S.pumps?.[drugId]?.rate || 0;
+}
+
+function pumpOrder(name, action, rate, unit) {
+  if (action === 'stop') return `停止泵入 ${name}（停泵前 ${rate} ${unit}）`;
+  if (action === 'adjust') return `调整 ${name} 泵速至 ${rate} ${unit}`;
+  return `开始持续静脉泵入 ${name}（${rate} ${unit}）`;
+}
+
+function pumpActivity(pump, route, time) {
+  if (!pump) return 0;
+  // 按默认泵速归一化，各次调速以调整时的实际药物浓度为起点。
+  const decay = -Math.LN2 * Math.max(0, time - pump.t) / (60 * route.pumpHalfLife);
+  return pump.activity * Math.exp(decay) + (pump.rate / route.d) * -Math.expm1(decay);
+}
+
+function pumpEffectScale(activity) {
+  return 4 / (3 / activity + 1);
+}
+
+function changePump(S, sub, route, rate) {
+  const previous = S.pumps?.[sub.id];
+  const oldRate = previous?.rate || 0;
+  if (rate === oldRate) return null;
+  const action = rate === 0 ? 'stop' : oldRate ? 'adjust' : 'start';
+  S.pumps ||= {};
+  S.pumps[sub.id] = { rate, activity: pumpActivity(previous, route, S.t), t: S.t };
+  const recordedRate = rate || oldRate;
+  S.given ||= [];
+  S.given.push({ id: sub.id, n: sub.n, d: recordedRate, unit: sub.unit, route: route.r, t: S.t, pumpAction: action });
+  if (action === 'start') {
+    S.cost += sub.cost || 0;
+    if (root.TRAITS) root.TRAITS.onDrug(S, sub, rate);
+  }
+  if (rate > 0 && S.lastGiven !== undefined) S.lastGiven = sub.id;
+  S.log.push([fmt(S.t), pumpOrder(sub.n, action, recordedRate, sub.unit), 'good']);
+  return recordedRate;
+}
+
+function stopPump(S, drugId) {
+  const sub = root.SUBSTANCES?.byId(drugId);
+  const route = sub?.routes?.find(rt => rt.pumpHalfLife);
+  return route ? changePump(S, sub, route, 0) : null;
+}
+
+function pumpEffect(S, drugId) {
+  const sub = root.SUBSTANCES?.byId(drugId);
+  const route = sub?.routes?.find(rt => rt.pumpHalfLife);
+  return route ? pumpEffectScale(pumpActivity(S.pumps?.[sub.id], route, S.t)) : 0;
+}
+
 const EFFECT_DECAY_MINUTES = 90;
 
 function insulinActivity(S) {
@@ -1055,6 +1108,12 @@ function give(S, drugId, dose, route) {
   if (SUB) {
     const s = SUB.byId(drugId);
     if (s) {
+      const pumpRoute = s.routes?.find(rt => rt.pumpHalfLife);
+      if (pumpRoute) {
+        const rate = dose ?? pumpRoute.d;
+        if ((route && route !== pumpRoute.r && route !== '泵入') || !(Number.isFinite(rate) && rate > 0)) return null;
+        return changePump(S, s, pumpRoute, rate);
+      }
       const selectedRoute = s.routes?.find(x => x.r === route);
       const infusionMinutes = selectedRoute?.infusionMinutes;
       const d = dose ?? (infusionMinutes ? selectedRoute.d : s.dose);
@@ -1219,6 +1278,15 @@ function tick(S, dtSec) {
   const concOf = {};   /* 药名 → 当前有效浓度，供相互作用按 PK 时程缩放 */
   S.thyroidReplacement = 0;
   S.thyroidTherapyActivity = {};
+  for (const [id, pump] of Object.entries(S.pumps || {})) {
+    const sub = root.SUBSTANCES?.byId(id);
+    const route = sub?.routes?.find(rt => rt.pumpHalfLife);
+    if (!route) continue;
+    const activity = pumpActivity(pump, route, S.t);
+    const effectScale = pumpEffectScale(activity);
+    for (const key of MOD_KEYS) drugMod[key] += (sub.eff[key] || 0) * effectScale;
+    concOf[sub.n] = activity;
+  }
   S.pk = S.pk || [];
   for (let i = S.pk.length - 1; i >= 0; i--) {
     const p = S.pk[i];
@@ -1955,6 +2023,9 @@ function dischargeCheck(S) {
   else if (S.hadOxygenSupport && (S.roomAirStableSince == null || S.t - S.roomAirStableSince < ROOM_AIR_OBSERVATION)) {
     bad.push('撤除呼吸支持后，室内空气血氧需稳定至少 5 分钟');
   }
+  for (const [id, pump] of Object.entries(S.pumps || {})) {
+    if (pump.rate > 0) bad.push(`仍在持续静脉泵入${root.SUBSTANCES?.byId(id)?.n || id}，需脱离强心支持后评估`);
+  }
   if (S.rr < 10 || S.rr > 22) bad.push(`呼吸 ${Math.round(S.rr)} 次/分`);
   if (!Number.isFinite(S.temp)) bad.push('需复测体温');
   else if (S.temp < 36 || S.temp > 37.8) bad.push(`体温 ${S.temp.toFixed(1)}℃`);
@@ -2147,6 +2218,7 @@ const API = {
   setIdentity(p) { IDENTITY = p || null; }, CASES, DRUGS, ACTIONS, TESTS, DELIVERY_DURATION, create, restorePatient, tick, give, acetaminophenExposure, setEnv, finalScore, scoreBreakdown, bp, snapshot,
               dischargeCheck, glucoseDischargeTarget, auscultate, orderTest, pollTests, testValue, computeMap, fmt, endCase, setBleedingRate, restoreBleeding,
               benzodiazepineExposure, restoreBenzodiazepines, temperatureStatus, restoreTemperature, infusionDetails, insulinActivity,
+              pumpRate, pumpOrder, pumpEffect, stopPump,
               hill, computePh, computePcwp, roomAirSaturation, restoreCardiorespiratory, restoreDischargeObservation };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 root.LIFE = API;

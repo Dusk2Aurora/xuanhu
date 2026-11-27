@@ -47,6 +47,7 @@
     for (const g of (S.given || [])) {
       const action = ['d', Math.round(g.t), g.id, +g.d];
       if (g.infusionMinutes) action.push({ minutes: g.infusionMinutes, unit: g.unit });
+      else if (g.pumpAction) action.push({ pumpAction: g.pumpAction, unit: g.unit });
       actions.push(action);
     }
     /* 操作记录：日志里的时间戳是 mm:ss 文本，转回秒 */

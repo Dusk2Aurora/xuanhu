@@ -543,13 +543,11 @@ const RULES = [
         ['morphine', 'fentanyl', 'oxycodone', 'hydrocodone', 'codeine', 'tramadol', 'heroin', 'methadone'],
         ['吗啡', '芬太尼', '羟考酮', '可待因', '曲马多', '海洛因', '美沙酮'])
         || c.S.opioidTox === true;
-      const benzoExp = (num(c.tox.benzo) || 0) > 0 || c.givenAny(
-        ['diazepam', 'lorazepam', 'midazolam', 'phenobarbital', 'clonazepam', 'alprazolam'],
-        ['地西泮', '劳拉西泮', '咪达唑仑', '苯巴比妥']);
+      const sedated = root.LIFE?.benzodiazepineExposure?.(c.S).sedated;
       const pattern = s.rr <= 10 && s.gcs <= 9;
       if (!exp && !pattern) return null;
       /* 有苯二氮卓暴露、又没有阿片暴露时，不要把镇静引起的呼吸抑制算成阿片过量 */
-      if (pattern && !exp && benzoExp) return null;
+      if (pattern && !exp && sedated) return null;
       let sc = 0.55 + (pattern ? 0.25 : 0) + (exp ? 0.08 : 0)
              + (spo2Below(s, 90) ? 0.05 : 0) + (s.rr < 6 ? 0.05 : 0);
       const ev = [`呼吸 ${s.rr} 次/分，意识 GCS ${s.gcs}`];
@@ -587,16 +585,9 @@ const RULES = [
     diff: ['阿片类药物过量', '酒精中毒', '低血糖', '脑血管意外'],
     test(c) {
       const s = c.s;
-      const dose = num(c.tox.benzo) || 0;
-      const exp = dose > 0 || c.givenAny(
-        ['diazepam', 'lorazepam', 'midazolam', 'phenobarbital', 'clonazepam', 'alprazolam'],
-        ['地西泮', '劳拉西泮', '咪达唑仑', '苯巴比妥']);
-      if (!exp) return null;
-      let sc = 0.58 + clamp(dose / 20, 0, 0.20)
-             + (s.gcs < 10 ? 0.10 : 0) + (s.rr < 10 ? 0.05 : 0);
-      const ev = [`意识 GCS ${s.gcs}，呼吸 ${s.rr} 次/分`];
-      if (dose > 0) ev.push(`苯二氮卓类累积剂量 ${Math.round(dose)} mg`);
-      else ev.push('用药记录提示苯二氮卓类暴露');
+      if (!root.LIFE?.benzodiazepineExposure?.(c.S).overdose) return null;
+      const sc = 0.75 + (s.gcs < 10 ? 0.10 : 0) + (s.rr < 10 ? 0.05 : 0);
+      const ev = ['当前苯二氮卓镇静负荷偏高', `意识 GCS ${s.gcs}，呼吸 ${s.rr} 次/分`];
       return { score: clamp(sc, 0, 0.94), evidence: ev };
     },
   },
@@ -606,19 +597,19 @@ const RULES = [
     diff: ['病毒性肝炎', '酒精性肝病', '其他药物性肝损伤', '急性肾损伤'],
     test(c) {
       const s = c.s;
-      const dose = num(c.tox.apap) || 0;
-      const given = c.givenAny(['paracetamol', 'acetaminophen'], ['对乙酰氨基酚', '扑热息痛']);
+      const exposure = root.LIFE?.acetaminophenExposure?.(c.S);
       const dmg = c.flag('apapDamage');
       const gsh = num(s.gsh), napqi = num(s.napqi);
       const hepato = num(s.hepato) != null ? num(s.hepato) : num(s.hepatotox);
       const metabolic = (gsh != null && gsh < 0.60) || (napqi != null && napqi > 0.05)
         || (hepato != null && hepato > 0.01);
-      if (!(dose > 0 || given || (dmg != null && dmg > 0.01) || metabolic)) return null;
-      let sc = 0.65 + (given || dose > 0 ? 0.10 : 0) + clamp(dmg || 0, 0, 1) * 0.20
+      const specificInjury = (dmg != null && dmg > 0.01) || (gsh != null && gsh < 0.60 && napqi != null && napqi > 0.05);
+      if (!(exposure?.known || specificInjury || (exposure?.highRisk && metabolic))) return null;
+      const sc = 0.65 + (exposure?.known || exposure?.highRisk ? 0.10 : 0) + clamp(dmg || 0, 0, 1) * 0.20
              + (metabolic ? 0.10 : 0);
       const ev = [];
-      if (dose > 0) ev.push(`对乙酰氨基酚暴露剂量 ${Math.round(dose)} mg`);
-      else if (given) ev.push('用药记录提示对乙酰氨基酚暴露');
+      if (exposure?.known) ev.push('入院病史记录对乙酰氨基酚过量');
+      if (exposure?.mg24h > 0) ev.push(`近 24 小时病房给药 ${Math.round(exposure.mg24h)} mg`);
       else if (metabolic) ev.push('毒物代谢指标提示对乙酰氨基酚肝毒性通路激活');
       if (dmg != null) ev.push(`肝毒性累积 ${Math.round(dmg * 100)}%`);
       if (gsh != null && gsh < 0.60) ev.push(`谷胱甘肽储备 ${gsh.toFixed(2)}（< 0.60，解毒能力耗竭）`);

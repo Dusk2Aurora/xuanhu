@@ -14,6 +14,7 @@ const TRIM = 0.9;         // 压缩后补偿；末端还有一个软限幅器兜
 
 let ctx = null, master = null, busLP = null, comp = null, trim = null, limiter = null, output = null;
 let space = null;         // 混响发送总线（ConvolverNode 输入）
+let effects = null, inLobby = false;
 const monitorAlarms = new Map();
 const bedPan = [-0.55, 0.55, -0.2, 0.2];
 let resumePending = false;
@@ -68,7 +69,7 @@ function buildSpace() {
   ret.gain.value = 0.75;
   conv.connect(damp);
   damp.connect(ret);
-  ret.connect(master);
+  ret.connect(effects);
   space = conv;
 }
 
@@ -87,6 +88,9 @@ function ensure() {
 
   master = ctx.createGain();
   master.gain.value = BUS_LEVEL;
+  effects = ctx.createGain();
+  effects.gain.value = inLobby ? 0 : 1;
+  effects.connect(master);
 
   // 总线低通：削掉合成器的高频毛刺
   busLP = ctx.createBiquadFilter();
@@ -153,7 +157,7 @@ function env(g, t0, peak, atk, dur, shape) {
 }
 
 function voice(o) {
-  if (!enabled) return;
+  if (!enabled || inLobby) return;
   const c = ensure();
   if (!c || (c.state !== 'running' && !c.startRendering)) return;
 
@@ -183,7 +187,7 @@ function voice(o) {
     tail = bq;
   }
   tail.connect(amp);
-  amp.connect(master);
+  amp.connect(effects);
 
   if (o.send && space) {
     const s = c.createGain();
@@ -214,11 +218,22 @@ function stopMonitorAlarm(patient) {
   else for (const key of monitorAlarms.keys()) stopBedAlarm(key);
 }
 
+function setLobbyMode(on) {
+  if (inLobby === on) return;
+  inLobby = on;
+  if (effects) effects.gain.setTargetAtTime(on ? 0 : 1, ctx.currentTime, 0.003);
+  if (on) {
+    for (const [patient, alarm] of monitorAlarms) {
+      if (alarm.kind === 'warning') stopBedAlarm(patient);
+    }
+  }
+}
+
 // 短声参考迈瑞 T1 的 Mode 2 节奏。心静止另用较轻的持续音，由心律调度停止。
 function playMonitorAlarm(kind, patient, bedIndex) {
   const continuous = kind === 'flatline';
   const monitorAlarm = monitorAlarms.get(patient);
-  if (!enabled || (continuous && monitorAlarm?.kind === kind) || (kind === 'warning' && monitorAlarm)) return;
+  if (!enabled || (continuous && monitorAlarm?.kind === kind) || (kind === 'warning' && (inLobby || monitorAlarm))) return;
   const c = ensure();
   if (!c || (c.state !== 'running' && !c.startRendering)) return;
   stopBedAlarm(patient);
@@ -227,11 +242,12 @@ function playMonitorAlarm(kind, patient, bedIndex) {
   osc.connect(amp);
   const pan = bedPan[bedIndex] ?? 0;
   const panner = pan && c.createStereoPanner ? c.createStereoPanner() : null;
+  const bus = kind === 'warning' ? effects : master;
   if (panner) {
     panner.pan.value = pan;
     amp.connect(panner);
-    panner.connect(master);
-  } else amp.connect(master);
+    panner.connect(bus);
+  } else amp.connect(bus);
   // 同种报警在单声道播放时也能听出是两台监护仪。
   osc.detune.value = pan * 16;
   monitorAlarms.set(patient, { kind, osc, gain: amp.gain });
@@ -269,6 +285,7 @@ const S = {
   get volume() { return enabled ? lastVolume : 0; },
   set volume(v) { setVolume(v); },
   unlock() { ensure(); },
+  setLobbyMode,
 
   beat() {
     voice({ freq: 740, dur: 0.065, atk: 0.005, gain: 0.135, type: 'sine', shape: 'beep' });

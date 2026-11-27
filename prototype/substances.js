@@ -36,6 +36,7 @@ const CLS = {
   '兴奋剂':     { r:'口服', on:15, du:180, e:{ hr:+18, svr:+0.9, gcs:+1 } },
   '致幻剂':     { r:'口服', on:30, du:240, e:{ gcs:-3, hr:+12, temp:+0.4 } },
   'NSAID':      { r:'口服', on:30, du:240, e:{ temp:-0.3 } },
+  '解热镇痛':   { r:'口服', on:30, du:240, e:{ temp:-0.3 } },
   '抗血小板':   { r:'口服', on:30, du:360, e:{} },
   '抗凝':       { r:'静推', on:10, du:240, e:{} },
   '抑酸':       { r:'静推', on:15, du:360, e:{} },
@@ -103,7 +104,7 @@ const DRUGS = [
   ['clopidogrel','氯吡格雷',   '抗血小板', 300,'mg',     28, { e:{coag:-0.06} }],
   ['ibuprofen','布洛芬',       'NSAID',    400,'mg',     8,  null],
   ['naproxen', '萘普生',       'NSAID',    500,'mg',     9,  null],
-  ['acetaminophen','对乙酰氨基酚','NSAID', 500,'mg',     6,  null],
+  ['acetaminophen','对乙酰氨基酚','解热镇痛', 500,'mg',   6,  null],
 
   /* —— 电解质 / 酸碱 / 容量 —— */
   ['kcl',      '氯化钾',       '电解质',   20, 'mmol',   12, { r:'静滴', e:{k:+0.95}, note:'禁止静推；外周浓度 ≤40 mmol/L' }],
@@ -169,8 +170,8 @@ const DRUGS = [
   ['oxycodone','羟考酮',       '阿片',     5,  'mg',     14, { r:'口服' }],
   ['hydrocodone','氢可酮',     '阿片',     5,  'mg',     12, { r:'口服' }],
   ['endorphin','内啡肽',       '阿片',     1,  'U',      0,  { r:'静推', e:{rr:-2, gcs:-1}, note:'内源性镇痛物质' }],
-  ['diazepam', '地西泮',       '镇静',     5,  'mg',     9,  { e:{ gcs:0, rr:0, hr:-4 } }],
-  ['lorazepam', '劳拉西泮',    '镇静',     2,  'mg',     12, { e:{ gcs:0, rr:0, hr:-4 } }],
+  ['diazepam', '地西泮',       '镇静',     5,  'mg',     9,  { e:{ gcs:-3, rr:-2, hr:-4 } }],
+  ['lorazepam', '劳拉西泮',    '镇静',     2,  'mg',     12, { e:{ gcs:-3, rr:-2, hr:-4 } }],
   ['phenobarbital','苯巴比妥', '镇静',     100,'mg',     16, { e:{gcs:-5, rr:-4, hr:-8} }],
   ['dexmedetomidine','右美托咪定','镇静',  0.5,'μg/kg',  78, { e:{gcs:-3, hr:-10, rr:-1} }],
   ['chlorpromazine','氯丙嗪',  '抗精神病', 25, 'mg',     18, null],
@@ -329,7 +330,7 @@ const INTERACTIONS = [
   { a:'胺碘酮', b:'美托洛尔', sev:'major', eff:{ hr:-14 }, note:'负性传导叠加，可致严重心动过缓' },
   { a:'万古霉素', b:'呋塞米', sev:'minor', eff:{ cr:35 }, note:'两者均耳肾毒性，合用加重肾损' },
   { a:'纳洛酮', b:'吗啡', sev:'major', eff:{ rr:4 }, note:'拮抗阿片，可诱发急性戒断与躁动' },
-  { a:'氟马西尼', b:'咪达唑仑', sev:'major', eff:{ gcs:5 }, note:'拮抗苯二氮卓，可能诱发癫痫' },
+  { a:'氟马西尼', b:'咪达唑仑', sev:'major', eff:{}, note:'拮抗苯二氮卓，可能诱发癫痫' },
   { a:'头孢曲松', b:'华法林', sev:'minor', eff:{ coag:-0.08 }, note:'抗生素改变肠道菌群，维生素 K 合成减少' },
   { a:'去甲肾上腺素', b:'氯丙嗪', sev:'minor', eff:{ svr:-2 }, note:'α 阻滞削弱升压效果' },
   { a:'复方口服避孕药', b:'尼古丁', sev:'major', eff:{ coag:-0.06 }, note:'雌激素 + 吸烟：血栓风险协同升高（35 岁以上尤其）' },
@@ -371,7 +372,7 @@ const ROUTE_MAP = {
   dexamethasone:[{ r:'静推', d:8,  on:30, du:300 }, { r:'口服', d:8,  on:45, du:360 }],
   omeprazole: [{ r:'静推', d:80, on:15, du:360 }, { r:'口服', d:40, on:60, du:480 }],
   ranitidine: null,
-  paracetamol:[{ r:'口服', d:500,on:30, du:240 }, { r:'栓剂', d:500,on:20, du:240 }],
+  acetaminophen:[{ r:'口服', d:500,on:30, du:240 }, { r:'栓剂', d:500,on:20, du:240 }],
   ceftriaxone:[{ r:'静滴', d:2,  on:20, du:120 }, { r:'肌注', d:1,  on:30, du:180 }],
   levofloxacin:[{ r:'静滴', d:500,on:20, du:120 }, { r:'口服', d:500,on:40, du:240 }],
   octreotide: [{ r:'静推', d:50, on:5,  du:120 }, { r:'泵入', d:25, on:5,  du:240 }],
@@ -597,7 +598,7 @@ const ALIASES = {
 
 const ALL = build();
 
-function byId(id) { return ALL.find(x => x.id === id); }
+function byId(id) { return ALL.find(x => x.id === (id === 'paracetamol' ? 'acetaminophen' : id)); }
 function byClass() {
   const m = {};
   for (const s of ALL) (m[s.cls] = m[s.cls] || []).push(s);

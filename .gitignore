@@ -4,10 +4,9 @@ app/android/.gradle/
 app/android/build/
 app/node_modules/
 app/www/
-dist/*.apk
-dist/*.zip
-dist/部署包/
-dist/web/
+dist/
+node_modules/
+__pycache__/
 shots/
 软著/
 反馈/

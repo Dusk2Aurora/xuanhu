@@ -1,11 +1,13 @@
 """Bundle local scripts and styles into dist/xuanhu-single.html."""
 import re
 
-from site_assets import DIST, ENTRY, PROTO, SINGLE
+from site_assets import DIST, ENTRY, PROTO, ROOT, SINGLE
 
 
 def build_singlefile():
     html = ENTRY.read_text(encoding="utf-8")
+    license_text = (ROOT / "LICENSE").read_text(encoding="utf-8").strip()
+    html = html.replace("</head>", "<!--\n" + license_text + "\n-->\n</head>", 1)
 
     def script(match):
         js = (PROTO / match[1]).read_text(encoding="utf-8-sig")

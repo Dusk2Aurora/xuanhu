@@ -42,6 +42,7 @@ def build():
                 shutil.copyfile(source, directory / name)
     for source in (single, download, privacy):
         shutil.copyfile(source, DEPLOY / source.name)
+    shutil.copyfile(ROOT / "LICENSE", DEPLOY / "LICENSE")
     apk_target = DEPLOY / "xuanhu.apk"
     if apk:
         shutil.copyfile(apk, apk_target)

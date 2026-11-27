@@ -7,7 +7,7 @@ from site_assets import DEPLOY, DIST, SINGLE, web_files
 
 if __name__ == "__main__":
     build()
-    names = ["download.html", "privacy.html", "version.json", SINGLE]
+    names = ["LICENSE", "download.html", "privacy.html", "version.json", SINGLE]
     for _, name in web_files():
         names.extend([name, "web/" + name])
     if (DEPLOY / "xuanhu.apk").is_file():

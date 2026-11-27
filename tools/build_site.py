@@ -1,70 +1,64 @@
-# -*- coding: utf-8 -*-
-"""统一构建网页部署包：
-   index.html          = 游戏本体（打开根路径直接玩游戏）
-   download.html       = 下载页（提供 APK 与单文件版）
-   version.json        = 在线更新清单
-   web/                = 同一份游戏（兼容旧的 /web/ 链接）
-   xuanhu.apk          = 最新安装包
-   xuanhu-single.html  = 单文件版
-"""
-import os, shutil, json, glob, re
+"""Build the static deployment or synchronize the checked-in web preview."""
+import argparse
+import json
+import shutil
+import sys
 
-ROOT = r'D:\文档\deepseek-harness\default-workspace\lifegame'
-PROTO = os.path.join(ROOT, 'prototype')
-DIST = os.path.join(ROOT, 'dist')
-DEP = os.path.join(DIST, '部署包')
+from build_download_page import build_download_page
+from build_privacy import build_privacy
+from build_singlefile import build_singlefile
+from site_assets import DEPLOY, ROOT, SINGLE, latest_apk, version, web_files
 
-# 版本
-ver = '0.0.0'
-bg = open(os.path.join(ROOT, 'app', 'android', 'app', 'build.gradle'), encoding='utf-8').read()
-m = re.search(r'versionName "([^"]+)"', bg)
-if m:
-    ver = m.group(1)
 
-if os.path.exists(DEP):
-    shutil.rmtree(DEP)
-os.makedirs(DEP)
-os.makedirs(os.path.join(DEP, 'web'))
+def sync_web(check):
+    web = ROOT / "web"
+    differences = []
+    for source, name in web_files():
+        target = web / name
+        if check:
+            if not target.is_file() or source.read_bytes() != target.read_bytes():
+                differences.append(name)
+        else:
+            web.mkdir(exist_ok=True)
+            shutil.copyfile(source, target)
+    if differences:
+        sys.exit("web/ 与 prototype/ 不一致：" + ", ".join(differences))
 
-# 1) 游戏文件
-for f in glob.glob(os.path.join(PROTO, '*.js')):
-    shutil.copyfile(f, os.path.join(DEP, os.path.basename(f)))
-    shutil.copyfile(f, os.path.join(DEP, 'web', os.path.basename(f)))
-shutil.copyfile(os.path.join(PROTO, 'ui-v4.html'), os.path.join(DEP, 'index.html'))
-shutil.copyfile(os.path.join(PROTO, 'ui-v4.html'), os.path.join(DEP, 'web', 'index.html'))
 
-# 2) 下载页（放在 download.html）
-dl_src = os.path.join(DIST, 'download.html')
-if os.path.exists(dl_src):
-    shutil.copyfile(dl_src, os.path.join(DEP, 'download.html'))
+def build():
+    single = build_singlefile()
+    apk = latest_apk()
+    release = version()
+    download = build_download_page(release, apk)
+    privacy = build_privacy()
+    (DEPLOY / "web").mkdir(parents=True, exist_ok=True)
+    for source, name in web_files():
+        shutil.copyfile(source, DEPLOY / name)
+        shutil.copyfile(source, DEPLOY / "web" / name)
+    for source in (single, download, privacy):
+        shutil.copyfile(source, DEPLOY / source.name)
+    apk_target = DEPLOY / "xuanhu.apk"
+    if apk:
+        shutil.copyfile(apk, apk_target)
+    elif apk_target.is_file():
+        apk_target.unlink()
+    manifest = {
+        "version": release, "web": "/", "single": "/" + SINGLE,
+        "download": "/download.html", "apk": "/xuanhu.apk" if apk else None,
+        "apkName": apk.name if apk else "", "apkSize": apk.stat().st_size if apk else 0,
+        "at": "build",
+    }
+    (DEPLOY / "version.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(f"v{release}  {DEPLOY}")
 
-# 3) APK 与单文件版
-apks = sorted(glob.glob(os.path.join(DIST, '*.apk')), key=os.path.getmtime, reverse=True)
-apk_size = 0
-if apks:
-    apk_size = os.path.getsize(apks[0])
-    shutil.copyfile(apks[0], os.path.join(DEP, 'xuanhu.apk'))
-single = os.path.join(DIST, 'xuanhu-single.html')
-if os.path.exists(single):
-    shutil.copyfile(single, os.path.join(DEP, 'xuanhu-single.html'))
 
-# 4) 在线更新清单
-manifest = {
-    'version': ver,
-    'web': '/',
-    'apk': '/xuanhu.apk',
-    'apkName': os.path.basename(apks[0]) if apks else '',
-    'apkSize': apk_size,
-    'single': '/xuanhu-single.html',
-    'download': '/download.html',
-    'at': 'build',
-}
-with open(os.path.join(DEP, 'version.json'), 'w', encoding='utf-8') as f:
-    json.dump(manifest, f, ensure_ascii=False, indent=1)
-
-# 5) Netlify 表单识别需要 index.html 里有 form（已内联在游戏页面里）
-idx = open(os.path.join(DEP, 'index.html'), encoding='utf-8').read()
-print('index.html 含反馈表单:', 'data-netlify="true"' in idx)
-print('index.html 是游戏页:', '一键病房' in idx or '悬壶' in idx)
-print('文件数:', len(glob.glob(os.path.join(DEP, '**', '*'), recursive=True)))
-print('版本:', ver, '| APK:', manifest['apkName'], '| 大小: %.2f MB' % (apk_size / 1048576))
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--sync-web", action="store_true", help="从 prototype/ 更新 web/")
+    mode.add_argument("--check-web", action="store_true", help="校验 web/ 是否已同步")
+    args = parser.parse_args()
+    if args.sync_web or args.check_web:
+        sync_web(check=args.check_web)
+    else:
+        build()

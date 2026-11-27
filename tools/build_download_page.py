@@ -1,22 +1,14 @@
 # -*- coding: utf-8 -*-
-"""重建下载页：用根相对路径（/web/、/single、/apk），桥接与静态站根目录都能用。"""
-import os, glob, re
+"""Generate download links for the artifacts included in the release."""
+from site_assets import DIST, latest_apk, version
 
-ROOT = r'D:\文档\deepseek-harness\default-workspace\lifegame'
-DIST = os.path.join(ROOT, 'dist')
 
-ver = '0.0.0'
-try:
-    bg = open(os.path.join(ROOT, 'app', 'android', 'app', 'build.gradle'), encoding='utf-8').read()
-    m = re.search(r'versionName\s+"([^"]+)"', bg)
-    if m: ver = m.group(1)
-except Exception:
-    pass
-
-apks = sorted(glob.glob(os.path.join(DIST, '*.apk')), key=os.path.getmtime, reverse=True)
-apk_mb = (os.path.getsize(apks[0]) / 1048576) if apks else 0
-
-html = f"""<!DOCTYPE html>
+def build_download_page(ver, apk):
+    android = f"""<div class="card">
+    <h2>安卓安装包</h2>
+    <a class="btn primary" href="./xuanhu.apk" download>下载 APK（{apk.stat().st_size / 1048576:.2f} MB）</a>
+  </div>""" if apk else ""
+    html = f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
@@ -46,32 +38,30 @@ html = f"""<!DOCTYPE html>
   <div class="sub">一间病房，四位患者，时间不会等你。</div>
 
   <div class="card">
-    <h2>方式一：直接玩网页版（推荐）</h2>
+    <h2>网页版</h2>
     <p>不用安装，手机或电脑浏览器打开就能玩，进度存在本机。发给朋友最省事的就是发这个链接。</p>
-    <a class="btn primary" href="/">开始游戏 →</a>
-    <a class="btn ghost" href="/xuanhu-single.html">单文件版（一个 HTML，双击即开）</a>
+    <a class="btn primary" href="./web/">开始游戏</a>
+    <a class="btn ghost" href="./xuanhu-single.html" download>下载离线 HTML</a>
   </div>
 
-  <div class="card">
-    <h2>方式二：安装安卓 APK</h2>
-    <p>离线可玩，功能与网页版一致。{('安装包 %.2f MB' % apk_mb) if apks else ''}</p>
-    <a class="btn primary" href="/xuanhu.apk">下载 APK</a>
-    <div class="meta">第一次安装需允许"未知来源应用"</div>
-  </div>
+  {android}
 
   <div class="card">
     <h2>说明</h2>
     <ul>
       <li>本作是教学模拟，<b>不构成医疗建议</b></li>
       <li>存档在浏览器本地，换设备或清缓存会丢</li>
-      <li>网页版始终最新；APK 需要重新下载</li>
     </ul>
   </div>
 </div>
 </body>
 </html>
 """
-for name in ('下载页.html', 'download.html'):
-    with open(os.path.join(DIST, name), 'w', encoding='utf-8') as f:
-        f.write(html)
-print('下载页已重建（根相对路径），版本', ver)
+    DIST.mkdir(exist_ok=True)
+    page = DIST / "download.html"
+    page.write_text(html, encoding="utf-8")
+    return page
+
+
+if __name__ == "__main__":
+    print(build_download_page(version(), latest_apk()))

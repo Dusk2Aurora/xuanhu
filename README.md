@@ -78,7 +78,21 @@ python -m http.server 8000
 # 打开 http://localhost:8000/prototype/ui-v4.html
 ```
 
-或直接双击 `web/index.html`（单文件版本）。
+也可以保留整个 `web/` 目录，双击其中的 `index.html`。进度保存在当前浏览器，继续游戏时请使用相同的入口。
+
+### 构建与分发
+
+使用 Python 3.8 或更新版本，在仓库根目录运行：
+
+```bash
+python tools/build_singlefile.py       # dist/xuanhu-single.html，可单独发送、离线打开
+python tools/build_site.py             # dist/部署包/，可直接作为静态站点根目录
+python tools/build_site_zip.py         # 重新构建并压缩为 dist/悬壶-网站包.zip
+```
+
+部署包包含游戏、离线 HTML、下载页、隐私页和版本清单。若另有已构建的安卓安装包，可先将 APK 放入 `dist/`，构建时会选用最近修改的一份。
+
+开发时编辑 `prototype/`，运行 `python tools/build_site.py --sync-web` 更新仓库内的 `web/` 预览，再用 `--check-web` 检查两份内容是否一致。
 
 ### 测试
 

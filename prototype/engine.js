@@ -2114,6 +2114,10 @@ function assessCirculationObservation(S, pressure) {
 function dischargeCheck(S) {
   const b = bp(S);
   const bad = [];
+  const tags = S.tags ?? [];
+  const opioid = S.opioidTox || tags.includes('opioid');
+  const lowSodium = tags.includes('hypona');
+  const hyperosmolar = tags.includes('hhs');
   const observationDeadlines = S.cas?.observations?.(S).map(window => window.endsAt) ?? [];
   if (S.rhythm !== 'sinus') bad.push('心律异常');
   if (b.sys < CIRCULATION_MIN_SYSTOLIC) bad.push(`收缩压 ${b.sys}`);
@@ -2135,7 +2139,8 @@ function dischargeCheck(S) {
   if (circulationObservation?.phase === 'observing') {
     observationDeadlines.push((S.circulationStableSince ?? S.t) + CIRCULATION_OBSERVATION);
   }
-  if (S.rr < 10 || S.rr > 22) bad.push(`呼吸 ${Math.round(S.rr)} 次/分`);
+  const minRespirations = tags.includes('opioid') ? 12 : 10;
+  if (S.rr < minRespirations || S.rr > 22) bad.push(`呼吸 ${Math.round(S.rr)} 次/分，出院目标 ${minRespirations}–22 次/分`);
   if (!Number.isFinite(S.temp)) bad.push('需复测体温');
   else if (S.temp < 36 || S.temp > 37.8) bad.push(`体温 ${S.temp.toFixed(1)}℃`);
   if (S.odsDamage) bad.push('渗透性脱髓鞘');
@@ -2149,7 +2154,11 @@ function dischargeCheck(S) {
   if ((S.naCorrection || S.na0 < 130) && S.pk?.some(p => p.eff?.na > 0 && S.t - p.t < 30 * 60)) {
     bad.push('最近补钠仍在起效，需复查血钠');
   }
-  if (S.na < 120) bad.push(`血钠 ${Math.round(S.na)}`);
+  const minSodium = lowSodium ? 130 : 120;
+  if (S.na < minSodium || ((lowSodium || hyperosmolar) && S.na > 145)) {
+    const target = lowSodium || hyperosmolar ? `${minSodium}–145` : `≥${minSodium}`;
+    bad.push(`血钠 ${S.na.toFixed(1)} mmol/L，出院目标 ${target} mmol/L`);
+  }
   if (S.hco3 < 14) bad.push(`HCO₃ ${S.hco3.toFixed(1)}`);
   if (S.ph < 7.28) bad.push(`pH ${S.ph.toFixed(2)}`);
   const potassium = Number.isFinite(S.k) ? r1(S.k) : null;
@@ -2165,8 +2174,13 @@ function dischargeCheck(S) {
            (hasDka ? glucose >= DKA_DISCHARGE_GLUCOSE_MAX_EXCLUSIVE : glucose > DISCHARGE_GLUCOSE_MAX)) {
     bad.push(`血糖 ${glucose.toFixed(1)} mmol/L，出院目标 ${glucoseTarget}`);
   }
-  if (S.gcs < 13) bad.push(`意识 ${S.gcs}`);
-  if (S.opioidTox || S.tags?.includes('opioid')) {
+  const needsFullConsciousness = opioid || lowSodium || hyperosmolar;
+  if (S.gcs < (needsFullConsciousness ? 15 : 13)) {
+    const target = needsFullConsciousness ? '15 分（本病例要求意识完全恢复）' : '≥13 分';
+    bad.push(`意识 GCS ${S.gcs} 分，出院目标 ${target}`);
+  }
+  if ((lowSodium || tags.includes('seizure')) && convulsionSigns(S)) bad.push('仍有抽搐，可在「脑」面板复查');
+  if (opioid) {
     const lastNaloxone = S.lastNaloxoneAt ?? (S.naloxoneUntil > 0 ? S.naloxoneUntil - 45 * 60 : -Infinity);
     const observationEnds = Math.max((Math.max(S.lastOpioidAt || 0, 0)) + 6 * 3600, lastNaloxone + 4 * 3600);
     if (S.t < observationEnds) {
@@ -2174,11 +2188,17 @@ function dischargeCheck(S) {
       observationDeadlines.push(observationEnds);
     }
     if (S.paco2 > 50) bad.push(`二氧化碳分压 ${Math.round(S.paco2)} mmHg`);
-    if (S.gcs < 15 && S.gcs >= 13) bad.push(`意识尚未完全恢复（${S.gcs} 分）`);
   }
   if (S.cas && S.cas.extra) for (const r of S.cas.extra(S)) bad.push(r);
   const observationEndsAt = observationDeadlines.length ? Math.min(...observationDeadlines) : null;
-  return { ok: bad.length === 0, reasons: bad, heartRateTarget, circulationObservation, observationEndsAt };
+  return { ok: bad.length === 0, reasons: [...new Set(bad)], heartRateTarget, circulationObservation, observationEndsAt };
+}
+
+function convulsionSigns(S) {
+  const activity = S.seizure || 0;
+  const visibleThreshold = S.tags?.includes('hypona') ? 0.1 : 0.15;
+  if (activity >= 0.6) return S.tags?.includes('seizure') ? '持续肢体抽搐，伴牙关紧闭' : '持续肢体抽搐';
+  return activity > visibleThreshold ? '间断可见肢体抽动' : null;
 }
 
 /* --- 主动听诊、开检验 --- */
@@ -2407,7 +2427,7 @@ function finalScore(S) {
 
 const API = {
   setIdentity(p) { IDENTITY = p || null; }, CASES, DRUGS, ACTIONS, TESTS, DELIVERY_DURATION, create, restorePatient, tick, give, acetaminophenExposure, setEnv, finalScore, scoreBreakdown, bp, snapshot,
-              dischargeCheck, glucoseDischargeTarget, potassiumTarget, auscultate, orderTest, pollTests, testValue, chestXrayReports, restoreChestXrayReports,
+              dischargeCheck, glucoseDischargeTarget, potassiumTarget, convulsionSigns, auscultate, orderTest, pollTests, testValue, chestXrayReports, restoreChestXrayReports,
               computeMap, fmt, endCase, setBleedingRate, restoreBleeding,
               benzodiazepineExposure, restoreBenzodiazepines, temperatureStatus, restoreTemperature, infusionDetails, insulinActivity,
               pumpRate, pumpOrder, pumpEffect, stopPump,

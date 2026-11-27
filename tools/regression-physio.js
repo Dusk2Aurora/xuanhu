@@ -414,6 +414,34 @@ for (const id of ['hyperkalemia', 'dka', 'bleed', 'sepsis', 'opioid']) {
   })), '高钾合并 DKA');
 }
 {
+  const assess = (ids, patch) => E.dischargeCheck(Object.assign(E.create(G.generate(4, 13, ids)), patch)).reasons;
+  const count = (rows, prefix) => rows.filter(row => row.startsWith(prefix)).length;
+  const seizure = assess(['seizure', 'highK'], { gcs: 3, k: 6.9, seizure: 0.79 });
+  check('癫痫合并高钾的出院评估分列三项', count(seizure, '意识') === 1 && count(seizure, '血钾') === 1 &&
+    count(seizure, '仍有抽搐') === 1, 'GCS 3、血钾 6.9 和床旁抽搐各提示一次');
+  const mixed = assess(['opioid', 'hyponatremia'], { gcs: 14, rr: 11, na: 125 });
+  check('合并病例保留较严的意识、呼吸和血钠门槛', ['意识', '呼吸', '血钠'].every(prefix => count(mixed, prefix) === 1) &&
+    mixed.some(r => r.startsWith('意识') && r.includes('15 分（本病例要求意识完全恢复）')) &&
+    !assess(['opioid', 'hyponatremia'], { gcs: 15, rr: 12, na: 130 }).some(r => /^(意识|呼吸 |血钠 )/.test(r)),
+    'GCS 14、呼吸 11、血钠 125 仍拦截，达到各项目标后消除');
+  const renal = cr => assess(['apap', 'aki', 'bph'], { cr }).filter(r => r.startsWith('肌酐'));
+  check('肌酐读数合并并注明各病种的阈值', renal(450).length === 1 &&
+    ['≤130', '≤180', '≤400'].every(target => renal(450)[0].includes(target)) &&
+    renal(150).length === 1 && renal(150)[0].includes('≤130') && !renal(130).length, '对乙酰氨基酚中毒合并肾损伤、尿潴留');
+  const bleeding = assess(['bleed', 'trauma'], { hb: 70, bleedingSites: { bleed: 1, trauma: 1 } });
+  check('重复血红蛋白合并，两个出血部位分别保留', count(bleeding, '血红蛋白') === 1 &&
+    bleeding.includes('消化道出血未止') && bleeding.includes('创伤出血未控制'), '不同处置原因仍逐项可见');
+  const urine = assess(['pancreatitis', 'hhs'], { uo: 0.3, weight: 70 }).filter(r => r.startsWith('尿量'));
+  check('合并病例可区分两种尿量要求', urine.length === 1 && urine[0].includes('≥0.5 mL/min') &&
+    urine[0].includes('>0.5 mL/kg/h'), '尿量和按体重折算的尿量各保留单位与目标');
+  const bed = E.create(G.generate(3, 13, ['seizure', 'hyponatremia']));
+  check('床旁抽搐征象与出院拦截同步', [0.79, 0.54, 0.15, 0.11, 0.10, 0].every(seizure => {
+    const sample = { ...bed, seizure };
+    return Boolean(E.convulsionSigns(sample)) === (seizure > 0.10) &&
+      count(E.dischargeCheck(sample).reasons, '仍有抽搐') === Number(seizure > 0.10);
+  }), '合并低钠时保留更严格的发作观察条件');
+}
+{
   const edema = E.create(G.generate(2, 101, ['edema']));
   E.ACTIONS.oxygen.apply(edema);
   const samplingAt = E.TESTS.abg.min * 60;

@@ -76,6 +76,40 @@ function potassiumGoal() {
   return `血钾维持 ${engine.potassiumTarget}`;
 }
 
+/* 多个病种可以对同一读数提出不同要求。保留各自的阈值，并按指标合成一行。 */
+function caseMeasureReasons(primary, S) {
+  const failures = new Map();
+  for (const m of primary) {
+    for (const [key, rule] of Object.entries(m.measures || {})) {
+      const reading = CASE_MEASURES[key](S, rule);
+      if (!reading) continue;
+      const { label, value, target } = reading;
+      const metric = key === 'urinePerKg' ? 'uo' : key;
+      if (!failures.has(metric)) failures.set(metric, { label, values: new Set(), targets: new Map() });
+      const row = failures.get(metric);
+      row.values.add(value);
+      if (!row.targets.has(target)) row.targets.set(target, []);
+      row.targets.get(target).push(m.name);
+    }
+  }
+  return [...failures.values()].map(({ label, values, targets }) => {
+    const goals = [...targets].map(([target, names]) =>
+      targets.size === 1 ? target : `${names.join('、')}要求 ${target}`);
+    return `${label} ${[...values].join(' / ')}，出院目标 ${goals.join('；')}`;
+  });
+}
+
+const CASE_MEASURES = {
+  cr: (S, max) => S.cr > max && { label: '肌酐', value: `${Math.round(S.cr)} µmol/L`, target: `≤${max} µmol/L` },
+  coag: (S, min) => (S.coag || 1) < min && { label: '凝血功能', value: S.coag.toFixed(2), target: `≥${min.toFixed(2)}` },
+  vol: (S, min) => S.vol < min && { label: '有效循环血量', value: `${S.vol.toFixed(1)} L`, target: `≥${min} L` },
+  uo: (S, min) => S.uo < min && { label: '尿量', value: `${S.uo.toFixed(1)} mL/min`, target: `≥${min} mL/min` },
+  urinePerKg(S, min) {
+    const rate = S.uo * 60 / (S.weight || 70);
+    return rate <= min && { label: '尿量', value: `${rate.toFixed(2)} mL/kg/h`, target: `>${min} mL/kg/h` };
+  },
+};
+
 function observeAfter(startTime, duration, reason, check) {
   const observation = S => {
     const start = startTime(S);
@@ -160,8 +194,6 @@ const MODULES = [
     preload:[['morphine',12]], opioidTox:true,
     history:[[null, '院前交接', '送医前曾呼之不应，呼吸浅慢，双侧瞳孔明显缩小。']],
     goal:['自主呼吸频率 ≥12','意识恢复','室内空气血氧 ≥94%','完成阿片暴露后的观察'],
-    /* rr<12 是下限，与全局 rr≤22 不重复 */
-    check:S=>[ S.rr<12 ? `呼吸 ${Math.round(S.rr)} 次/分` : null ].filter(Boolean),
     hint:'呼吸抑制是致命的。纳洛酮起效快但半衰期短。',
   },
   {
@@ -223,7 +255,6 @@ const MODULES = [
     medicalHistory:['糖尿病'],
     goal:['血糖升至 4 以上','意识恢复'],
     /* glu 已由全局判据覆盖 */
-    check:S=>[ S.gcs<13 ? `意识 ${S.gcs}` : null ].filter(Boolean),
     hint:'先推高浓度葡萄糖，再找原因。磺脲类过量要持续输注。',
     /* 不再硬把 glu 封在 2.8、gcs 封在 7：引擎用"胰岛素负荷高 → 摄取↑、肝糖输出被压制"
        的自然方程推进；低血糖损伤按剂量×时间积分判死（替代原来的 45 min 计时器） */
@@ -319,9 +350,8 @@ const MODULES = [
     drivers:{ kProd:0.068, lactProd:0.015 },
     history:[[240, '院前病史', '吞服约 20 片对乙酰氨基酚，随后恶心。']],
     goal:['尽早使用解毒剂','观察 2 小时无肝损证据','肌酐与乳酸正常'],
+    measures: { cr: 130, coag: 0.60 },
     ...observeAfter(() => 0, 2 * 3600, '对乙酰氨基酚中毒需观察 2 小时（肝损窗口）', S => [
-               S.cr>130 ? `肌酐 ${Math.round(S.cr)} µmol/L（肝肾综合征）` : null,
-               (S.coag||1)<0.60 ? `凝血功能恶化（${(S.coag||1).toFixed(2)}）` : null,
                S.lac>3.0 ? `乳酸 ${S.lac.toFixed(1)} mmol/L` : null ].filter(Boolean)),
     hint:'早期没有症状不等于安全。N-乙酰半胱氨酸越早给越有效，8 小时后疗效明显下降。',
     advance(S, dtMin, E) {
@@ -395,10 +425,7 @@ const MODULES = [
     ],
     medicationHistory:['长期服用氢氯噻嗪'],
     goal:['血钠逐步恢复至 130–145 mmol/L','意识恢复','避免血钠纠正过快'],
-    check:S=>[ !S.hyponatremiaCauseControlled ? '需停止噻嗪并限制饮水' : null,
-               S.na < 130 || S.na > 145 ? `血钠 ${S.na.toFixed(1)} mmol/L` : null,
-               S.gcs < 15 && S.gcs >= 13 ? `意识尚未完全恢复（${S.gcs} 分）` : null,
-               (S.seizure || 0) > 0.1 ? '仍有抽搐' : null ].filter(Boolean),
+    check:S=> S.hyponatremiaCauseControlled ? [] : ['需停止噻嗪并限制饮水'],
     hint:'低钠性脑病先用 3% 高渗盐水把血钠抬 4–6 mmol/L，再慢慢纠。抬得太快会脱髓鞘。',
     advance(S, dtMin, E) {
       /* SIADH 样持续游离水潴留（水多了 → 钠被稀释），钠由引擎 na = naMass/(ecfVd+freeWater) 导出 */
@@ -493,9 +520,7 @@ const MODULES = [
     drivers:{ kProd:0.010, lactProd:0.055 },
     history:[[480, '病史回顾', '出现上腹剧痛并向背部放射，伴频繁呕吐，弯腰时疼痛稍缓。']],
     goal:['平均动脉压 ≥ 65','尿量 ≥ 0.5 mL/min','疼痛缓解'],
-    check:S=>[ S.vol < 3.9 ? `有效循环血量不足（${S.vol.toFixed(1)} L）` : null,
-               S.temp > 38.0 ? `仍发热 ${S.temp.toFixed(1)}℃` : null,
-               S.uo<0.5 ? `尿量 ${S.uo.toFixed(1)} mL/min` : null ].filter(Boolean),
+    measures: { vol: 3.9, uo: 0.5 },
     hint:'胰腺炎的头 24 小时死于第三间隙丢失，不是死于疼痛——先补液，再谈镇痛。',
     advance(S, dtMin){
       /* 炎症导致毛细血管渗漏：液体持续进入第三间隙，不补就低容量 */
@@ -520,13 +545,10 @@ const MODULES = [
     get goal() {
       return [glucoseGoal(false), '血钠 ≤145 mmol/L', '血清渗透压 <300 mOsm/kg', '尿量 >0.5 mL/kg/h', '意识恢复'];
     },
+    measures: { urinePerKg: 0.5 },
     check(S) {
       const osmolality = 2 * S.na + S.glu + S.bun;
-      const urinePerKg = S.uo * 60 / (S.weight || 70);
-      return [S.na > 145 ? `血钠 ${S.na.toFixed(1)} mmol/L` : null,
-              osmolality >= 300 ? `血清渗透压 ${osmolality.toFixed(1)} mOsm/kg` : null,
-              urinePerKg <= 0.5 ? `尿量 ${urinePerKg.toFixed(2)} mL/kg/h` : null,
-              S.gcs < 15 && S.gcs >= 13 ? `意识尚未完全恢复（${S.gcs} 分）` : null].filter(Boolean);
+      return osmolality >= 300 ? [`血清渗透压 ${osmolality.toFixed(1)} mOsm/kg`] : [];
     },
     hint:'高渗状态先补液：血糖降太快会导致脑水肿，血钠也要慢慢降。',
     advance(S) {
@@ -557,7 +579,7 @@ const MODULES = [
     drivers:{ kProd:0.075, lactProd:0.03 },
     history:[[4320, '病史回顾', '开始恶心、呕吐，尿量明显减少，并出现眼睑及下肢水肿。']],
     get goal() { return [potassiumGoal(), '肌酐下降', '尿量恢复']; },
-    check:S=> (S.cr || 0) > 400 ? [`肌酐 ${Math.round(S.cr)}`] : [],
+    measures: { cr: 400 },
     hint:'利尿药对这种肾衰是无效的——该透析了。先保护心肌，再安排血透。',
   },
 
@@ -587,8 +609,6 @@ const MODULES = [
     drivers:{ kProd:0.016, lactProd:0.08 },
     history:[[null, '现场人员转述', '在高温环境中持续暴露约四小时，随后晕倒。']],
     goal:['核心体温 < 38.5','收缩压 ≥ 90','意识恢复'],
-    check:S=>[ S.temp > 38.5 ? `体温 ${S.temp.toFixed(1)}℃` : null,
-               S.gcs < 13 ? `意识 ${S.gcs}` : null ].filter(Boolean),
     hint:'热射病需尽快散热。在「环境 / 场景」开启物理降温，同时补液并监测血压。',
     advance(S, dtMin){
       const recovering = S.heatstrokeCooled && !S.env?.heat;
@@ -628,8 +648,7 @@ const MODULES = [
     drivers:{ kProd:0.012, lactProd:0.05 },
     history:[[10080, '家属转述', '近一周皮肤黄染加深，逐渐出现白天嗜睡、夜间烦躁。']],
     goal:['意识恢复','凝血功能改善','乳酸下降'],
-    check:S=>[ S.gcs < 13 ? `意识 ${S.gcs}` : null,
-               (S.coag || 1) < 0.70 ? `凝血功能 ${(S.coag || 1).toFixed(2)}` : null ].filter(Boolean),
+    measures: { coag: 0.70 },
     hint:'肝性脑病是"氨"的问题：乳果糖降氨，同时处理诱因（感染、出血、低钾）。别用镇静药。',
     advance(S, dtMin){
       /* 肝细胞坏死继续、凝血因子合成下降；乳果糖降氨可减缓损伤 */
@@ -652,8 +671,7 @@ const MODULES = [
     drivers:{ kProd:0.010, lactProd:0.035 },
     history:[[null, '院前病史', '吞服约 20 片阿米替林，约两小时后被发现反应迟钝、口干。']],
     goal:['QRS 变窄','意识恢复','心率 < 120'],
-    check:S=>[ (S.tca||0) > 0.25 ? `三环类毒性仍高（QRS 增宽）` : null,
-               S.gcs < 13 ? `意识 ${S.gcs}` : null ].filter(Boolean),
+    check:S=> (S.tca||0) > 0.25 ? ['三环类毒性仍高（QRS 增宽）'] : [],
     hint:'三环类过量的解药不是"洗胃"，而是碳酸氢钠——碱化血液能窄化 QRS、止住室性心律失常。',
     advance(S, dtMin){
       S.tca = Math.max(0, (S.tca == null ? 0.78 : S.tca) - 0.0006 * dtMin);   // 自身清除极慢
@@ -672,7 +690,6 @@ const MODULES = [
     history:[[null, '院前交接', '左颞部撞伤后曾清醒，约一小时后逐渐出现嗜睡、呕吐。']],
     goal:['意识恢复','颅内压下降','血压心率回稳'],
     ...observeAfter(S => S.cranied ? (S.craniotomyAt ?? 0) : null, 900, '开颅术后观察未满 15 分钟', S => [
-               S.gcs < 13 ? `意识 ${S.gcs}` : null,
                (S.hematoma || 0) > 0.12 ? '颅内血肿未清除' : null ].filter(Boolean)),
     hint:'硬膜外血肿有"中间清醒期"——意识变差就是再出血。甘露醇只是争取时间，必须开颅。',
     advance(S, dtMin){
@@ -693,8 +710,7 @@ const MODULES = [
     drivers:{ kProd:0.020, lactProd:0.055 },
     history:[[null, '院前交接', '从密闭空间火灾中救出，伴面颈部烧伤、声音嘶哑及炭末样痰，估计烧伤面积约 35%。']],
     goal:['血氧回升','血压稳定','尿量 ≥ 0.5 mL/min'],
-    check:S=>[ S.spo2 < 94 ? `血氧 ${S.spo2.toFixed(0)}%` : null,
-               (S.map || 100) < 68 ? '平均动脉压不足' : null ].filter(Boolean),
+    check:S=> (S.map || 100) < 68 ? ['平均动脉压不足'] : [],
     hint:'烧伤先看气道：声音嘶哑 + 炭末痰 = 吸入性损伤，气道会肿到堵死，宁可早插管。补液按体重×面积算。',
     advance(S, dtMin){
       /* 血浆渗漏到组织间隙（前 8 小时最快） */
@@ -744,8 +760,6 @@ const MODULES = [
     history:[[20, '院前交接', '开始持续抽搐，伴牙关紧闭和发绀。']],
     medicationHistory:['近期停用抗癫痫药'],
     goal:['抽搐停止','意识恢复','乳酸下降'],
-    check:S=>[ (S.seizure || 0) > 0.15 ? `仍在抽搐（活动度 ${Math.round((S.seizure || 0) * 100)}%）` : null,
-               S.gcs < 13 ? `意识 ${S.gcs}` : null ].filter(Boolean),
     hint:'持续抽搐超过 5 分钟就要止惊：苯二氮卓是首选。止惊后意识不会立刻回来，别重复过量给药。',
     advance(S, dtMin){
       /* 未止惊则持续放电：乳酸飙升、体温上升、缺氧 */
@@ -769,10 +783,9 @@ const MODULES = [
     drivers:{ kProd:0.012, lactProd:0.055 },
     history:[[null, '院前交接', '左上腹受撞击后疼痛，向左肩放射，伴面色苍白、冷汗。']],
     goal:['血压稳定','乳酸下降','尿量 ≥ 0.5 mL/min'],
+    measures: { vol: 3.6, uo: 0.5 },
     ...observeAfter(S => S.bleedingSites.spleen === 0 ? (S.surgicalHemostasisAt ?? 0) : null, 900, '止血术后观察未满 15 分钟', S => [
                S.bleedingSites.spleen > 0 ? '脾脏仍在出血' : null,
-               (S.vol || 4) < 3.6 ? `有效循环血量 ${S.vol.toFixed(1)} L` : null,
-               S.uo < 0.5 ? `尿量 ${S.uo.toFixed(1)} mL/min` : null,
                (S.map || 100) < 68 ? '平均动脉压不足' : null ].filter(Boolean)),
     hint:'钝性腹部外伤 + 失血性休克，要考虑脾破裂：液体复苏是争取时间，腹腔内出血不会自己停——该手术。',
     advance(S, dtMin, E){
@@ -793,10 +806,9 @@ const MODULES = [
     drivers:{ kProd:0.011, lactProd:0.06 },
     history:[[null, '院前病史', '停经七周，送医前突发下腹撕裂样痛、肛门坠胀，曾晕厥。']],
     goal:['血压稳定','尿量 ≥ 0.5 mL/min','腹腔出血已控制'],
+    measures: { vol: 3.6, uo: 0.5 },
     ...observeAfter(S => S.bleedingSites.ectopic === 0 ? (S.surgicalHemostasisAt ?? 0) : null, 900, '止血术后观察未满 15 分钟', S => [
                S.bleedingSites.ectopic > 0 ? '盆腔仍在出血' : null,
-               (S.vol || 4) < 3.6 ? `有效循环血量 ${S.vol.toFixed(1)} L` : null,
-               S.uo < 0.5 ? `尿量 ${S.uo.toFixed(1)} mL/min` : null,
                (S.map || 100) < 68 ? '平均动脉压不足' : null ].filter(Boolean)),
     hint:'育龄女性 + 停经 + 突发下腹痛 + 休克 = 宫外孕破裂。补液是争取时间，必须立刻手术。',
     advance(S, dtMin, E){
@@ -815,11 +827,11 @@ const MODULES = [
     drivers:{ kProd:0.011, lactProd:0.035 },
     history:[[2880, '病史回顾', '开始头痛、视物模糊，伴双下肢水肿。']],
     goal:['血压下降','头痛缓解','尿量 ≥ 0.5 mL/min'],
+    measures: { coag: 0.65 },
     ...observeAfter(S => S.delivered ? (S.deliveryAt ?? 0) : null, 900, '产后观察未满 15 分钟', S => [
                !S.delivered ? '重度子痫前期的产科病因尚未解除' : null,
                (S.map || 100) > 118 ? `平均动脉压 ${Math.round(S.map)}` : null,
-               (S.plt || 200) < 100 ? `血小板 ${Math.round(S.plt)}` : null,
-               (S.coag || 1) < 0.65 ? '凝血功能恶化' : null ].filter(Boolean)),
+               (S.plt || 200) < 100 ? `血小板 ${Math.round(S.plt)}` : null ].filter(Boolean)),
     hint:'重度子痫前期：解痉（硫酸镁）比降压更优先，血压别降太猛——胎盘灌注会掉。根治只有终止妊娠。',
     advance(S, dtMin){
       /* 病因在胎盘：不终止妊娠，血管痉挛与血小板消耗都只会加重。
@@ -852,8 +864,8 @@ const MODULES = [
       [null, '院前病史', '送医前已无法自行排尿。'],
     ],
     get goal() { return ['尿量恢复', potassiumGoal(), '肌酐下降']; },
-    check:S=>[ (S.cr || 0) > 180 ? `肌酐 ${Math.round(S.cr)}` : null,
-               (S.vol || 5) > 5.7 ? '容量负荷过重' : null ].filter(Boolean),
+    measures: { cr: 180 },
+    check:S=> (S.vol || 5) > 5.7 ? ['容量负荷过重'] : [],
     hint:'急性尿潴留先导尿——膀胱减压后肾后性肾损伤才有机会恢复；高钾要同时处理。',
     advance(S, dtMin){
       if (!S.urineDrained) {
@@ -1218,7 +1230,7 @@ function generateCase(difficulty, seed, only, genVersion) {
     goals: Array.from(new Set(primary.flatMap(m => m.goal))),
     minDischargeHR: Math.max(...primary.map(m => m.minDischargeHR ?? 50)),
     hint: primary[0].hint,
-    extra: S => primary.flatMap(m => (m.check ? m.check(S) : [])),
+    extra: S => [...primary.flatMap(m => m.check?.(S) ?? []), ...caseMeasureReasons(primary, S)],
     observations: S => primary.map(m => m.observation?.(S)).filter(Boolean),
     advance,
     cases,

@@ -1,0 +1,673 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<title>悬壶 · 一间病房四位患者</title>
+<style>
+/* ==========================================================================
+ * 响应式布局 v2
+ * 设计基准：以视口最短边 vmin 计算字号/间距；用网格 + clamp + minmax，
+ * 不写死任何视口尺寸。四个目标视口与两个极端尺寸均已实测。
+ * ========================================================================== */
+:root{
+  --bg:#f4f2f1;
+  --ink:#141414;
+  --ink-2:#6b6b6b;
+  --ink-3:#9a9a9a;
+  --card:#ffffff;
+  --line:#e8e4e2;
+  --red:#d33a3a;
+  --red-soft:#e8a3a3;
+  --pink:#e9b9c0;
+  --pink-deep:#c9737f;
+  --green:#2f9e63;
+  --amber:#c98a2e;
+  --mono:ui-monospace,"SF Mono","Cascadia Mono",Consolas,monospace;
+
+  /* 安全区 */
+  --safe-t:env(safe-area-inset-top,0px);
+  --safe-r:env(safe-area-inset-right,0px);
+  --safe-b:env(safe-area-inset-bottom,0px);
+  --safe-l:env(safe-area-inset-left,0px);
+
+  /* 底部工具条高度（不含安全区）与统一边距 */
+  --btn:clamp(38px,4.6vmin,46px);
+  --dock-h:calc(var(--btn) + 12px);
+  --pad:clamp(10px,1.5vmin,18px);
+
+  /* 小器官基准缩放（spleen 在原始 SVG 里明显偏小，全局放大一点） */
+  --k-brain:1;
+  --k-lung:1;
+  --k-heart:1;
+  --k-liver:1;
+  --k-stomach:1;
+  --k-spleen:1.25;
+  --k-pancreas:1;
+  --k-kidney:1;
+  --k-gut:1;
+  --dx-brain:0px;  --dy-brain:0px;
+  --dx-lung:0px;   --dy-lung:-28px;
+  --dx-heart:0px;  --dy-heart:5px;
+  --dx-liver:0px;  --dy-liver:0px;
+  --dx-stomach:0px;--dy-stomach:0px;
+  --dx-spleen:12px; --dy-spleen:0px;
+  --dx-pancreas:0px;--dy-pancreas:8px;
+  --dx-kidney:0px; --dy-kidney:13px;
+  --dx-gut:0px;    --dy-gut:0px;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;height:100dvh;margin:0;overflow:hidden}
+body{
+  background:var(--bg);
+  color:var(--ink);
+  font:14px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  font-variant-numeric:tabular-nums;
+  -webkit-font-smoothing:antialiased;
+  user-select:none;
+  touch-action:manipulation;
+}
+:focus-visible{outline:2px solid var(--pink-deep);outline-offset:2px}
+.screen{
+  position:fixed;inset:0;display:grid;
+  grid-template-rows:auto minmax(0,1fr);
+  overflow:hidden;
+}
+
+/* ---------- 顶部：极简 ---------- */
+.top{
+  display:flex;align-items:center;gap:clamp(4px,.9vmin,8px);min-width:0;
+  padding:calc(var(--safe-t) + clamp(5px,1vmin,10px)) max(var(--pad),var(--safe-r)) clamp(3px,.7vmin,6px) max(var(--pad),var(--safe-l));
+  font-size:clamp(11px,1.5vmin,13px);color:var(--ink-3);
+}
+.top .meta{color:var(--ink-3);white-space:nowrap}
+.top .who{font-size:clamp(12.5px,1.8vmin,15px);color:var(--ink);font-weight:600;letter-spacing:.2px;white-space:nowrap}
+.top .sp{flex:1;min-width:0}
+.pill{
+  background:var(--card);border-radius:11px;padding:4px 9px;
+  box-shadow:0 1px 1px rgba(0,0,0,.045),0 3px 10px rgba(0,0,0,.035);
+  font-size:12px;color:var(--ink);white-space:nowrap;flex:none;
+}
+.pill.num{font-family:var(--mono);font-size:12.5px;letter-spacing:.2px}
+.seg{display:flex;gap:4px;flex:none}
+.seg .pill{padding:4px 8px;color:var(--ink-3);cursor:pointer;transition:.15s}
+.seg .pill.on{color:var(--ink);font-weight:700}
+.seg .pill.ff{color:#b34a4a}
+.seg .pill.ff.on{background:#fdeceb;color:var(--red);font-weight:700}
+#levelPill{cursor:pointer;font-size:11.5px;color:#8a7a7a}
+#levelPill + .pill{cursor:pointer;font-size:11.5px;margin-left:2px}
+
+/* ---------- 主舞台 ---------- */
+.stage{
+  position:relative;min-height:0;min-width:0;display:grid;
+  grid-template-columns:clamp(210px,17vw,270px) minmax(0,1fr) clamp(180px,15vw,240px);
+  gap:clamp(4px,1vmin,10px);
+  padding:0 var(--pad) calc(var(--safe-b) + var(--dock-h));
+  overflow:hidden;
+}
+.rail{
+  display:flex;flex-direction:column;gap:clamp(4px,.8vmin,7px);
+  padding:clamp(2px,.8vmin,8px) 0 0;
+  align-items:flex-start;z-index:3;min-height:0;min-width:0;
+}
+.rail.right{padding:clamp(2px,.8vmin,8px) 0 0;align-items:flex-end;overflow-y:auto;overflow-x:hidden;scrollbar-width:none}
+.rail.right::-webkit-scrollbar{display:none}
+#vitals{display:flex;flex-direction:column;gap:clamp(4px,.8vmin,7px);align-items:flex-start;width:100%;min-width:0}
+
+/* 体征药丸 */
+.vpill{
+  background:var(--card);border-radius:11px;padding:5px 10px 5px 9px;
+  box-shadow:0 1px 1px rgba(0,0,0,.045),0 3px 10px rgba(0,0,0,.035);
+  display:flex;align-items:baseline;gap:6px;cursor:pointer;
+  transition:transform .15s,box-shadow .15s;max-width:100%;min-width:0;
+}
+.vpill:active{transform:scale(.97)}
+.vpill .k{font-size:10.5px;color:var(--ink-3);letter-spacing:.3px;white-space:nowrap}
+.vpill .v{font-family:var(--mono);font-size:13px;font-weight:600;white-space:nowrap}
+.vpill .u{font-size:9px;color:var(--ink-3);white-space:nowrap}
+.vpill.bad .v{color:var(--red)}
+.vpill.warn .v{color:var(--amber)}
+.vpill .dot{width:5px;height:5px;border-radius:60%;background:#3aa86a;flex:none}
+.vpill.bad .dot{background:var(--red)} .vpill.warn .dot{background:var(--amber)}
+
+/* 状态药丸 */
+.spill{
+  background:var(--card);border-radius:999px;padding:5px 11px;
+  box-shadow:0 1px 1px rgba(0,0,0,.045),0 3px 10px rgba(0,0,0,.035);
+  font-size:12px;color:var(--red);font-weight:600;cursor:pointer;
+  max-width:100%;white-space:nowrap;flex:none;
+}
+.spill.ok{color:var(--green)}
+
+/* 人体 */
+.bodywrap{
+  position:relative;display:flex;align-items:center;justify-content:center;
+  min-height:0;min-width:0;padding:2px 0;overflow:hidden;
+}
+.bodywrap::before{
+  content:"";position:absolute;inset:6% 12%;
+  background:radial-gradient(ellipse at 50% 42%,rgba(233,185,192,.16),rgba(233,185,192,0) 68%);
+  border-radius:50%;pointer-events:none;z-index:0;
+}
+svg.anat{
+  position:relative;z-index:1;
+  width:100%;height:100%;max-width:100%;max-height:100%;display:block;overflow:visible;
+}
+/* 用 CSS 分组缩放小器官：transform-box:fill-box 以自身中心为原点，
+   不依赖 viewBox 的 min-x/min-y，缩放后仍以原解剖位置为中心。 */
+#anat .org{transform-box:fill-box;transform-origin:center}
+#anat .org[data-o="brain"]   {transform:translate(var(--dx-brain),var(--dy-brain)) scale(var(--k-brain))}
+#anat .org[data-o="lung"]    {transform:translate(var(--dx-lung),var(--dy-lung)) scale(var(--k-lung))}
+#anat .org[data-o="heart"]   {transform:translate(var(--dx-heart),var(--dy-heart)) scale(var(--k-heart))}
+#anat .org[data-o="liver"]   {transform:translate(var(--dx-liver),var(--dy-liver)) scale(var(--k-liver))}
+#anat .org[data-o="stomach"] {transform:translate(var(--dx-stomach),var(--dy-stomach)) scale(var(--k-stomach))}
+#anat .org[data-o="spleen"]  {transform:translate(var(--dx-spleen),var(--dy-spleen)) scale(var(--k-spleen))}
+#anat .org[data-o="pancreas"]{transform:translate(var(--dx-pancreas),var(--dy-pancreas)) scale(var(--k-pancreas))}
+#anat .org[data-o="kidney"]  {transform:translate(var(--dx-kidney),var(--dy-kidney)) scale(var(--k-kidney))}
+#anat .org[data-o="gut"]     {transform:translate(var(--dx-gut),var(--dy-gut)) scale(var(--k-gut))}
+/* 不可见光晕不参与布局，也不参与命中；命中圆按图形自身尺度收缩，
+   既保证 >=28px 的触控核心，又避免透明热区互相覆盖。 */
+.halo{display:none}
+#anat .org[data-o="brain"] .hit   {r:24px}
+#anat .org[data-o="lung"] .hit    {r:48px}
+#anat .org[data-o="heart"] .hit   {r:22px}
+#anat .org[data-o="liver"] .hit   {r:24.6px}
+#anat .org[data-o="stomach"] .hit {r:21.3px}
+#anat .org[data-o="spleen"] .hit  {r:11.1px}
+#anat .org[data-o="pancreas"] .hit{r:20.25px}
+#anat .org[data-o="kidney"] .hit  {r:26.3px}
+#anat .org[data-o="gut"] .hit     {r:30.35px}
+.org{cursor:pointer;transition:opacity .2s}
+.org .shape{transition:fill .25s,filter .25s}
+.org:hover .shape{filter:brightness(1.06)}
+.org.sel .shape{fill:#c0303f}
+.hit{fill:transparent;cursor:pointer}
+.bname{
+  position:absolute;left:50%;transform:translateX(-50%);
+  bottom:2px;font-size:clamp(11px,1.6vmin,15px);font-weight:700;letter-spacing:2px;color:#8d4a52;opacity:.9;
+  pointer-events:none;z-index:2;white-space:nowrap;
+}
+
+/* ---------- 底部工具条 ---------- */
+.dock{
+  position:fixed;left:0;right:0;bottom:0;
+  padding:3px max(var(--pad),var(--safe-r)) calc(var(--safe-b) + 9px) max(var(--pad),var(--safe-l));
+  display:flex;align-items:center;gap:clamp(6px,1.2vmin,12px);
+  pointer-events:none;z-index:20;
+}
+.dock > *{pointer-events:auto}
+.dock .sp{flex:1}
+.icobtn{
+  width:var(--btn);height:var(--btn);border-radius:60%;background:var(--card);
+  box-shadow:0 1px 1px rgba(0,0,0,.05),0 4px 14px rgba(0,0,0,.06);
+  display:flex;align-items:center;justify-content:center;cursor:pointer;
+  transition:transform .14s;border:0;padding:0;flex:none;
+}
+.icobtn:active{transform:scale(.93)}
+.icobtn svg{width:46%;height:46%;stroke:#2a2a2a;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.icobtn.blood svg{stroke:none;fill:#cf3b3b}
+
+/* ---------- 器官参数面板 ---------- */
+.opan{
+  width:min(212px,100%);z-index:12;
+  display:flex;flex-direction:column;gap:6px;
+  transition:opacity .22s,transform .22s;
+  margin-bottom:2px;
+}
+.opan.hide{opacity:0;transform:translateY(-6px);pointer-events:none}
+.opan .title{
+  align-self:flex-start;background:var(--red);color:#fff;border-radius:999px;
+  padding:4px 11px;font-size:12px;font-weight:700;letter-spacing:.5px;white-space:nowrap;
+}
+.opan .title.ok{background:var(--green)}
+.opan .title.warn{background:var(--amber)}
+.opan .row{
+  background:var(--card);border-radius:11px;padding:6px 10px;
+  box-shadow:0 1px 1px rgba(0,0,0,.045),0 3px 10px rgba(0,0,0,.035);
+  display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0;
+}
+.opan .row .lab{font-size:11px;color:var(--ink-3);white-space:nowrap}
+.opan .row .val{font-family:var(--mono);font-size:13px;font-weight:600;white-space:nowrap}
+.opan canvas{width:100%;height:46px;display:block;border-radius:11px;background:var(--card);
+  box-shadow:0 1px 1px rgba(0,0,0,.045),0 3px 10px rgba(0,0,0,.035)}
+
+/* ---------- 底部抽屉 ---------- */
+.mask{position:fixed;inset:0;background:rgba(20,20,20,.18);backdrop-filter:blur(2px);
+  opacity:0;pointer-events:none;transition:.25s;z-index:30}
+.mask.on{opacity:1;pointer-events:auto}
+.sheet{
+  position:fixed;left:0;right:0;bottom:0;z-index:31;
+  background:#fff;border-radius:22px 22px 0 0;
+  box-shadow:0 -8px 40px rgba(0,0,0,.12);
+  transform:translateY(102%);transition:transform .3s cubic-bezier(.2,.8,.2,1);
+  max-height:84vh;
+  max-height:min(84dvh,calc(100dvh - var(--safe-t) - 10px));
+  display:flex;flex-direction:column;
+  overflow:visible;
+  padding-bottom:calc(var(--safe-b) + 6px);
+}
+.sheet.on{transform:translateY(0)}
+.sheet .grab{width:38px;height:4px;border-radius:3px;background:#e2ddd9;margin:9px auto 4px;flex:none}
+.sheet h3{margin:2px 18px 10px;font-size:15px;font-weight:700;letter-spacing:.3px;display:flex;align-items:center;gap:8px;flex:none;min-width:0}
+.sheet h3 small{font-weight:400;color:var(--ink-3);font-size:11.5px}
+.sheet .list{flex:1 1 auto;overflow:auto;overscroll-behavior:contain;padding:0 10px 8px;min-height:0}
+.sheet .list > *{flex:none}
+.sheet input,.sheet canvas,.sheet img,.sheet video{max-width:100%;box-sizing:border-box}
+.sheet input{display:block;width:100%}
+.sheet canvas{display:block;width:100%!important;max-width:100%!important;height:auto;margin:8px 0;border-radius:12px;background:#faf9f8}
+.drow{
+  display:flex;align-items:center;gap:10px;padding:11px 10px;border-radius:12px;cursor:pointer;
+}
+.drow:active{background:#f7f4f2}
+.drow .nm{flex:1;font-size:14px;min-width:0}
+.drow .tag{font-size:10.5px;color:var(--ink-3);background:#f5f2f0;border-radius:6px;padding:2px 6px;white-space:nowrap}
+.drow .amt{font-family:var(--mono);font-size:11px;color:var(--ink-3);min-width:44px;text-align:right;white-space:nowrap}
+.sec{font-size:10.5px;color:var(--ink-3);letter-spacing:1.2px;padding:10px 12px 4px;font-weight:600}
+
+/* ---------- 说明卡 ---------- */
+.detail{position:fixed;inset:0;z-index:60;display:none;align-items:center;justify-content:center;
+  padding:calc(var(--safe-t) + 12px) max(12px,var(--safe-r)) calc(var(--safe-b) + 12px) max(12px,var(--safe-l));
+  background:rgba(20,20,20,.22);backdrop-filter:blur(3px)}
+.detail.on{display:flex}
+.detail .card{
+  width:min(440px,100%);max-height:100%;overflow:auto;background:#fff;border-radius:20px;
+  box-shadow:0 24px 70px rgba(0,0,0,.22);padding:20px 20px 18px;position:relative;
+}
+.detail h4{margin:0 0 2px;font-size:17px;padding-right:26px}
+.detail .sub{font-size:11.5px;color:var(--ink-3);margin-bottom:14px}
+.detail dl{display:grid;grid-template-columns:66px 1fr;gap:9px 12px;margin:0 0 14px;font-size:13px}
+.detail dt{color:var(--ink-3);font-size:12px}
+.detail dd{margin:0;min-width:0;overflow-wrap:anywhere}
+.detail .warn{font-size:12px;line-height:1.6;color:#a33;background:#fdf3f2;border-radius:10px;padding:10px 12px;white-space:pre-wrap}
+.detail .x{position:absolute;top:10px;right:10px;border:0;background:none;font-size:20px;color:#bbb;cursor:pointer;width:32px;height:32px;line-height:1}
+
+/* ---------- 记录浮条 ---------- */
+.toast{
+  position:fixed;left:50%;bottom:calc(var(--safe-b) + var(--dock-h) + 10px);
+  max-width:calc(100vw - 24px);transform:translate(-50%,12px);opacity:0;
+  background:#2a2320;color:#fff;border-radius:14px;padding:9px 15px;font-size:12.5px;
+  box-shadow:0 10px 30px rgba(0,0,0,.22);transition:.28s;z-index:50;pointer-events:none;text-align:center;
+  overflow-wrap:anywhere;
+}
+.toast.on{opacity:1;transform:translate(-50%,0)}
+.toast b{color:#ffc9c0}
+
+/* ---------- 导师卡（全局落位：永远在左侧栏内，不压人体） ---------- */
+#mentorWrap{
+  left:max(14px,var(--safe-l))!important;
+  bottom:calc(var(--safe-b) + var(--dock-h) + 6px)!important;
+  width:calc(clamp(210px,17vw,270px) - 28px)!important;
+  max-width:none!important;
+}
+#mentorCard{
+  max-height:min(120px,18vh);overflow:auto;scrollbar-width:none;
+}
+#mentorCard::-webkit-scrollbar{display:none}
+
+/* ==========================================================================
+ * 手机竖屏（<=760px）
+ * 结构：顶栏两行 → 体征 3 列 × 2 行 → 状态横滑 → 参数横滑条 → 人体 → 导师卡 → Dock
+ * ========================================================================== */
+@media (orientation:portrait) and (max-width:760px){
+  .top{
+    display:grid;
+    grid-template-columns:auto auto minmax(0,1fr) auto;
+    grid-template-areas:
+      "who meta . clock"
+      "level ask . speed";
+    align-items:center;gap:3px 6px;
+    padding:calc(var(--safe-t) + 5px) max(10px,var(--safe-r)) 2px max(10px,var(--safe-l));
+    font-size:10.5px;
+  }
+  .top .who{grid-area:who;font-size:clamp(12.5px,3.3vw,15px);line-height:1.25}
+  .top .meta{grid-area:meta;font-size:clamp(10px,2.6vw,11.5px);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .top .sp{display:none}
+  #levelPill{grid-area:level;justify-self:start;font-size:10.5px!important;padding:3px 8px!important;color:#8a7a7a}
+  #levelPill + .pill{grid-area:ask;justify-self:start;font-size:10.5px!important;padding:3px 8px!important;margin-left:0!important}
+  #clock{grid-area:clock;justify-self:end;font-size:11px;padding:4px 8px}
+  #speed{grid-area:speed;justify-self:end;gap:3px;display:flex}
+  #speed .pill{padding:3px 7px;font-size:10.5px}
+
+  .stage{
+    display:grid;
+    grid-template-columns:minmax(0,1fr);
+    grid-template-rows:auto auto auto minmax(0,1fr);
+    grid-template-areas:"vitals" "states" "opan" "body";
+    gap:4px;
+    padding:2px max(10px,var(--safe-r)) calc(var(--safe-b) + var(--dock-h) + var(--mentor-h,72px) + 10px) max(10px,var(--safe-l));
+  }
+  .stage > .rail.left{display:contents}
+  #vitals{
+    grid-area:vitals;display:grid!important;
+    grid-template-columns:repeat(3,minmax(0,1fr));
+    gap:4px!important;align-items:stretch!important;
+    width:100%;min-width:0;
+  }
+  #vitals .vpill{width:100%;min-width:0;padding:4px 6px;border-radius:10px;gap:3px}
+  #vitals .vpill .k{font-size:clamp(9px,2.4vw,10.5px)}
+  #vitals .vpill .v{font-size:clamp(11px,3vw,13px)}
+  #vitals .vpill .u{font-size:clamp(7.5px,2vw,9px)}
+  #states{
+    grid-area:states;width:100%;display:flex;flex-direction:row;flex-wrap:nowrap;
+    align-items:center;justify-content:flex-start;gap:6px;
+    padding:0 0 1px;overflow-x:auto;overflow-y:hidden;
+    scrollbar-width:none;align-self:start;
+  }
+  #states::-webkit-scrollbar{display:none}
+  #states .spill{flex:0 0 auto;font-size:11px;padding:4px 9px}
+  #opan{
+    grid-area:opan;width:100%;margin:0;
+    display:flex!important;flex-direction:row;flex-wrap:nowrap;
+    align-items:center;gap:5px;
+    overflow-x:auto;overflow-y:hidden;scrollbar-width:none;
+  }
+  #opan::-webkit-scrollbar{display:none}
+  #opan .title{flex:0 0 auto;padding:3px 9px;font-size:10.5px;letter-spacing:.3px}
+  #opan .row{flex:0 0 auto;padding:3px 8px;border-radius:999px;gap:4px;align-items:baseline}
+  #opan .row .lab{font-size:9.5px}
+  #opan .row .val{font-size:11px}
+  #opan{flex-wrap:wrap}
+  #opan canvas{display:block!important;flex:1 1 100%;height:30px;margin-top:1px}
+  .bodywrap{grid-area:body;padding:0}
+
+  #mentorWrap{
+    left:max(10px,var(--safe-l))!important;
+    right:max(10px,var(--safe-r))!important;
+    width:auto!important;max-width:none!important;
+    bottom:calc(var(--safe-b) + var(--dock-h) + 6px)!important;
+  }
+  #mentorCard{
+    font-size:11px!important;line-height:1.4!important;
+    padding:7px 10px!important;border-radius:12px!important;
+    max-height:var(--mentor-h,72px);
+  }
+  .toast{bottom:calc(var(--safe-b) + var(--dock-h) + var(--mentor-h,72px) + 14px);font-size:11.5px;padding:7px 12px}
+}
+
+/* 手机竖屏：高屏（如 430×932）——人体本来就大，小器官只轻微放大 */
+@media (orientation:portrait) and (max-width:760px) and (min-height:851px){
+  :root{
+    --mentor-h:74px;
+    --k-brain:1.02; --k-heart:1.04; --k-liver:1;
+    --k-stomach:1.04; --k-spleen:1.48; --k-pancreas:1.04;
+    --k-kidney:1; --k-gut:1;
+  }
+  #mentorCard{font-size:11.5px!important;line-height:1.42!important}
+}
+
+/* 手机竖屏：矮屏（如 360×640）——压缩 HUD，用 CSS 放大偏小的器官 */
+@media (orientation:portrait) and (max-width:760px) and (max-height:850px){
+  :root{
+    --mentor-h:66px;
+    --k-brain:1.2; --k-heart:1.3; --k-liver:1.18;
+    --k-stomach:1.35; --k-spleen:2.55; --k-pancreas:1.42;
+    --k-kidney:1.12; --k-gut:1;
+  }
+  .stage{gap:3px;padding-bottom:calc(var(--safe-b) + var(--dock-h) + var(--mentor-h) + 8px)}
+  #levelPill{font-size:10px!important;padding:2px 7px!important}
+  #levelPill + .pill{font-size:10px!important;padding:2px 7px!important}
+  #speed .pill{padding:3px 6px;font-size:10px}
+  #vitals .vpill{padding:3px 5px}
+  #opan .row{padding:2px 7px}
+  #mentorCard{max-height:var(--mentor-h);font-size:10.5px!important;padding:6px 9px!important}
+}
+
+/* ==========================================================================
+ * 手机横屏 / 矮屏（<=560px 高）
+ * 左侧：器官参数 + 体征；中间：人体；右侧：状态。导师卡放在左栏内，绝不压人体。
+ * ========================================================================== */
+@media (orientation:landscape) and (max-height:560px){
+  :root{
+    --k-brain:1.2; --k-heart:1.3; --k-liver:1.18;
+    --k-stomach:1.35; --k-spleen:2.55; --k-pancreas:1.42;
+    --k-kidney:1.12; --k-gut:1;
+  }
+  .top{
+    gap:4px;font-size:10.5px;
+    padding:calc(var(--safe-t) + 3px) max(10px,var(--safe-r)) 2px max(10px,var(--safe-l));
+  }
+  .top .who{font-size:12px}
+  .top .meta{font-size:10.5px;white-space:nowrap}
+  #levelPill{font-size:10px!important;padding:3px 7px!important}
+  #levelPill + .pill{font-size:10px!important;padding:3px 7px!important;margin-left:0!important}
+  #clock{font-size:11px;padding:4px 8px}
+  #speed{gap:3px}
+  #speed .pill{padding:3px 7px;font-size:10.5px}
+
+  .stage{
+    grid-template-columns:clamp(170px,22vw,220px) minmax(0,1fr) clamp(104px,13vw,140px);
+    gap:4px;
+    padding:0 max(10px,var(--safe-r)) calc(var(--safe-b) + var(--dock-h)) max(10px,var(--safe-l));
+    overflow:hidden;
+  }
+  .rail{padding:2px 0 0;gap:4px}
+  .rail.right{padding:2px 0 0;gap:4px;align-items:flex-end;max-height:100%;overflow-y:auto;overflow-x:hidden}
+  #vitals{
+    display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr));
+    gap:4px!important;align-items:stretch!important;width:100%;min-width:0;
+  }
+  #vitals .vpill{width:100%;min-width:0;padding:3px 6px;border-radius:9px;gap:4px}
+  .vpill .k{font-size:9.5px}
+  .vpill .v{font-size:11.5px}
+  .vpill .u{font-size:8px}
+  #states .spill{font-size:10px;padding:3px 8px;white-space:normal;line-height:1.2;text-align:center;max-width:100%}
+
+  #opan{
+    width:100%;margin:0 0 1px;
+    display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr));
+    gap:4px;align-items:start;
+  }
+  #opan .title{grid-column:1/-1;justify-self:start;padding:2px 8px;font-size:10px;letter-spacing:.3px}
+  #opan .row{padding:2px 6px;border-radius:8px;gap:4px}
+  #opan .row .lab{font-size:9.5px}
+  #opan .row .val{font-size:10.5px}
+  #opan .row .val span{font-size:8px!important}
+  #opan canvas{grid-column:1/-1;height:28px;border-radius:8px}
+
+  .bodywrap{padding:0}
+  .bname{bottom:0;font-size:11px;letter-spacing:1.4px}
+
+  #mentorWrap{
+    left:max(10px,var(--safe-l))!important;
+    bottom:calc(var(--safe-b) + var(--dock-h) + 4px)!important;
+    width:calc(clamp(170px,22vw,220px) - 20px)!important;
+    max-width:none!important;
+  }
+  #mentorCard{
+    font-size:10.5px!important;line-height:1.4!important;
+    padding:7px 10px!important;border-radius:11px!important;
+    max-height:86px;
+  }
+  .toast{bottom:calc(var(--safe-b) + var(--dock-h) + 8px);font-size:11.5px;padding:7px 12px}
+  .sheet{max-height:86vh;max-height:min(86dvh,calc(100dvh - var(--safe-t) - 8px))}
+  .sheet .grab{margin:6px auto 2px}
+  .sheet h3{margin:1px 14px 7px;font-size:14px}
+  .sheet .list{padding:0 8px 8px}
+  .drow{padding:8px 9px}
+  .detail{padding:8px 14px}
+  .detail .card{padding:16px 16px 14px}
+}
+
+/* 更窄的手机横屏（如 667×375）：进一步收紧字体与导师卡 */
+@media (orientation:landscape) and (max-height:560px) and (max-width:820px){
+  .stage{grid-template-columns:170px minmax(0,1fr) 104px}
+  #vitals{gap:3px!important}
+  #vitals .vpill{padding:2px 5px;gap:3px}
+  .vpill .k{font-size:9px}
+  .vpill .v{font-size:10.5px}
+  .vpill .u{font-size:7.5px}
+  #opan{gap:3px}
+  #opan .row{padding:2px 5px}
+  #opan .row .lab{font-size:9px}
+  #opan .row .val{font-size:10px}
+  #mentorWrap{
+    left:max(8px,var(--safe-l))!important;
+    width:150px!important;
+  }
+  #mentorCard{font-size:9.5px!important;line-height:1.35!important;padding:6px 8px!important;max-height:74px}
+}
+
+/* 短横屏 / 小笔记本（高 561–700）：保持三栏，但把偏小的器官放大，避免人体过小 */
+@media (orientation:landscape) and (min-height:561px) and (max-height:700px){
+  :root{
+    --k-brain:1.16; --k-heart:1.26; --k-liver:1.14;
+    --k-stomach:1.3; --k-spleen:2.05; --k-pancreas:1.38;
+    --k-kidney:1.1; --k-gut:1;
+  }
+}
+
+/* ==========================================================================
+ * 平板 / 桌面：三栏。竖屏收窄左右栏，让人体占满中间。
+ * ========================================================================== */
+@media (orientation:portrait) and (min-width:761px){
+  .stage{
+    grid-template-columns:clamp(210px,19vw,270px) minmax(0,1fr) clamp(180px,16vw,230px);
+    gap:clamp(6px,1vmin,12px);
+  }
+  #mentorWrap{
+    width:calc(clamp(210px,19vw,270px) - 28px)!important;
+    max-width:none!important;
+  }
+}
+@media (orientation:landscape) and (min-height:561px){
+  .stage{
+    grid-template-columns:clamp(210px,17vw,270px) minmax(0,1fr) clamp(180px,15vw,240px);
+    gap:clamp(6px,1vmin,12px);
+  }
+  #mentorWrap{
+    width:calc(clamp(210px,17vw,270px) - 28px)!important;
+    max-width:none!important;
+  }
+}
+/* 大屏抽屉：居中而不是拉满整宽 */
+@media (min-width:901px){
+  .sheet{left:50%;right:auto;width:min(720px,100%);transform:translate(-50%,102%)}
+  .sheet.on{transform:translate(-50%,0)}
+}
+
+/* 系统偏好：减少动效 */
+@media (prefers-reduced-motion:reduce){
+  *{transition-duration:.01ms!important;animation-duration:.01ms!important}
+}
+
+/* ---------- 夜间模式：整体转暗，红色更警示 ---------- */
+body.night{
+  --bg:#0a0c10;
+  --ink:#ece9e6;
+  --ink-2:#a49d97;
+  --ink-3:#6f6963;
+  --card:#14181e;
+  --line:#252b34;
+  --red:#ff5f5f;
+  --red-soft:#a35a5a;
+  --pink:#7a4a52;
+  --pink-deep:#e08a95;
+  --green:#4fbf86;
+  --amber:#e0a94d;
+}
+body.night .top{background:linear-gradient(#0a0c10, rgba(10,12,16,.86))}
+body.night #mentorCard{background:#171b22;border-color:#2a313a;color:#d9d4cf}
+body.night .drow:hover{background:#1b2028}
+body.night #sheet, body.night .detail{background:#14181e}
+body.night .pill{background:#1b2028;color:#cfc9c4}
+body.night .spill{background:#1b2028}
+body.night #lobby{background:rgba(8,10,13,.96)}
+body.night #lobby .bed{background:#14181e;border-color:#252b34}
+body.night #lobby .links button{background:#14181e;border-color:#252b34;color:#ddd8d3}
+
+</style>
+</head>
+<body>
+  <!-- 问题反馈表单：Netlify 构建时会识别，网页版可"直接提交" -->
+  <form name="feedback" method="POST" action="/" data-netlify="true" netlify-honeypot="bot-field" hidden>
+    <input type="text" name="bot-field" />
+    <textarea name="detail"></textarea>
+  </form>
+
+<div class="screen">
+
+  <div class="top">
+    <span class="who" id="pname">—</span>
+    <span class="meta" id="pmeta" style="font-size:11.5px">—</span>
+    <span class="sp"></span>
+    <span class="pill num" id="clock">02:14</span>
+    <div class="seg" id="speed">
+      <span class="pill on" data-s="1">1×</span>
+      <span class="pill" data-s="4">4×</span>
+      <span class="pill" data-s="16">16×</span>
+      <span class="pill ff" id="ff">快进</span>
+    </div>
+  </div>
+
+  <div class="stage">
+    <div class="rail left">
+      <div class="opan hide" id="opan"></div>
+      <div id="vitals"></div>
+    </div>
+
+    <div class="bodywrap">
+      <svg class="anat" id="anat" viewBox="80 18 290 580" preserveAspectRatio="xMidYMid meet"></svg>
+      <div class="bname" id="bname"></div>
+    </div>
+
+    <div class="rail right" id="states"></div>
+  </div>
+</div>
+
+<div class="dock">
+  <button class="icobtn blood" id="btnBlood" title="血液报告">
+    <svg viewBox="0 0 24 24"><path d="M12 3.2c3.2 4 5.4 6.9 5.4 9.6a5.4 5.4 0 1 1-10.8 0c0-2.7 2.2-5.6 5.4-9.6z"/></svg>
+  </button>
+  <button class="icobtn" id="btnMenu" title="菜单">
+    <svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+  </button>
+  <span class="sp"></span>
+  <button class="icobtn" id="btnBody" title="状态">
+    <svg viewBox="0 0 24 24"><circle cx="12" cy="6" r="2.6"/><path d="M12 9v5m0 0l-2.4 5M12 14l2.4 5M8 11h8"/></svg>
+  </button>
+  <button class="icobtn" id="btnOps" title="操作">
+    <svg viewBox="0 0 24 24"><path d="M4 20l6.5-6.5M14 4l6 6-3 3-6-6z"/></svg>
+  </button>
+  <button class="icobtn" id="btnDrug" title="给药">
+    <svg viewBox="0 0 24 24"><path d="M15 4l5 5M13.5 5.5l5 5M4 20l7.5-7.5M11 11l2 2"/><path d="M9 13l6-6"/></svg>
+  </button>
+</div>
+
+<div class="mask" id="mask"></div>
+
+<div class="sheet" id="sheet">
+  <div class="grab"></div>
+  <h3 id="sheetTitle">给药 <small>选择药物</small></h3>
+  <div class="list" id="sheetList"></div>
+</div>
+
+<div class="detail" id="detail">
+  <div class="card">
+    <button class="x" id="detailX">✕</button>
+    <h4 id="dName"></h4>
+    <div class="sub" id="dSub"></div>
+    <dl id="dKv"></dl>
+    <div class="warn" id="dWarn"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="organs.js"></script>
+<script src="substances.js"></script>
+<script src="traits.js"></script>
+<script src="generator.js"></script>
+<script src="engine.js"></script>
+<script src="diagnosis.js"></script>
+<script src="handbook.js"></script>
+<script src="signs.js"></script>
+<script src="mentor.js"></script>
+<script src="achievements.js"></script>
+<script src="sound.js"></script>
+<script src="tutorial.js"></script>
+<script src="glossary.js"></script>
+<script src="chart.js"></script>
+<script src="share.js"></script>
+<script src="game.js"></script>
+</body>
+</html>

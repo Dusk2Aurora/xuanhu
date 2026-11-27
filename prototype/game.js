@@ -1,0 +1,2447 @@
+/* ==========================================================================
+ * 游戏层：把生理引擎接到界面上
+ * 依赖：engine.js（全局 LIFE）、organs.js（全局 ORGAN_SVG）
+ * ========================================================================== */
+(function () {
+'use strict';
+const E = window.LIFE;
+const $ = s => document.querySelector(s);
+const r1 = x => Math.round(x * 10) / 10;
+
+/* ---------------- 状态 ---------------- */
+let S = E.create('hyperkalemia');
+/* 病房床位：同时最多 MAX_BEDS 个病例，时间同步流逝，可随时切换 */
+const MAX_BEDS = 4;
+let beds = [{ S: S }];
+let activeIdx = 0;
+let selected = 'heart';
+let lastTs = 0, acc = 0, hudAcc = 0, saveAcc = 0, nextBeat = 0, nextAlarm = 0, signsAcc = 0;
+let speed = 1, ff = false;
+let ended = false;
+let paused = false;
+let bigFont = false;
+/* 白天 / 夜间：夜间难度显著提升（病情推进更快、提示更少、界面转暗） */
+let nightMode = false;
+/* 现实模式：不给提示、不显示参考范围、化验必须开检查 */
+let realism = false;
+/* 是否运行在网页版（http/https 且不是 APK 内的 localhost） */
+const IS_WEB = (function () {
+  try {
+    return /^https?:/.test(location.protocol) &&
+      !/^(localhost|127\.0\.0\.1)$/.test(location.hostname);
+  } catch (e) { return false; }
+})();
+/* 上级医师是否主动提示：默认关闭，改为"求助制"——只在点「问上级」时给提示，其余时候只做给药点评 */
+let autoHint = false;   /* 无障碍：大字号模式（全局缩放 1.10） */   /* 暂停：所有床位都停止推进 */
+let level = (function(){ try { return localStorage.getItem('life.level') || 'intern'; } catch(e){ return 'intern'; } })();
+/* 病例难度（1–5）与指导强度（level）是两件事：
+   难度决定病有多复杂，指导决定上级医师说多少。 */
+let caseDiff = (function(){
+  try { const v = parseInt(localStorage.getItem('life.caseDiff') || '0', 10); if (v >= 1 && v <= 5) return v; } catch (e) {}
+  return 3;
+})();
+
+/* ---------------- 人体 ---------------- */
+/* 生殖系统图标：organs.js 里没有现成图标，运行时补两个极简轮廓 */
+(function addReproIcons() {
+  if (typeof ORGAN_SVG === 'undefined') return;   /* organs.js 用 const 声明，不是 window 属性 */
+  ORGAN_SVG['uterus-outline'] = {
+    vb: '0 0 48 48',
+    inner: '<path d="M18 14c0-2 2-3 4-2 1 .6 1.6 1.6 2 2.6.4-1 1-2 2-2.6 2-1 4 0 4 2 0 3-3 4-4 7-.5 1.6-.7 3-.7 4.6 0 4 1.4 7 3.7 9.4 1 1 .4 2.6-1 2.4-3-.4-5.2-2.2-6-5.2-.8 3-3 4.8-6 5.2-1.4.2-2-1.4-1-2.4 2.3-2.4 3.7-5.4 3.7-9.4 0-1.6-.2-3-.7-4.6-1-3-4-4-4-7z" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><circle cx="10" cy="16" r="3" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="38" cy="16" r="3" fill="none" stroke="currentColor" stroke-width="2"/>'
+  };
+  ORGAN_SVG['prostate-outline'] = {
+    vb: '0 0 48 48',
+    inner: '<path d="M24 10c6 0 10 3.4 10 9 0 5.4-3.4 9-6 14-1 2-2.4 3-4 3s-3-1-4-3c-2.6-5-6-8.6-6-14 0-5.6 4-9 10-9z" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"/><path d="M24 20v14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>'
+  };
+})();
+
+const PLACE = {
+  brain:   {x:210, y: 66, s:64, ic:'neurology-outline',  c:'#d98b98'},
+  lung:    {x:210, y:196, s:128,ic:'lungs-outline',      c:'#e0a3ac'},
+  heart:   {x:192, y:244, s:66, ic:'heart-organ-outline',c:'#cf7b86'},
+  liver:   {x:160, y:320, s:80, ic:'liver-outline',      c:'#d79a94'},
+  stomach: {x:262, y:316, s:62, ic:'stomach-outline',    c:'#dda79a'},
+  spleen:  {x:308, y:286, s:38, ic:'spleen-outline',     c:'#d9a1ae'},
+  pancreas:{x:214, y:374, s:54, ic:'pancreas-outline',   c:'#d9a48f'},
+  kidney:  {x:210, y:428, s:78, ic:'kidneys-outline',    c:'#cf93a2'},
+  gut:     {x:210, y:530, s:104,ic:'intestine-outline',  c:'#d98f92'},
+  uterus:  {x:300, y:466, s:42, ic:'uterus-outline',     c:'#d98fa0', sex:'女'},
+  prostate:{x:300, y:466, s:40, ic:'prostate-outline',   c:'#cf93a2', sex:'男'},
+};
+
+function drawBody() {
+  const svg = $('#anat');
+  let g = `<defs>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="11"/></filter>
+  </defs>`;
+  const mySex = (S && S.patient && S.patient.sex) || '男';
+  g += Object.entries(PLACE).map(([id, p]) => {
+    if (p.sex && p.sex !== mySex) return '';        // 生殖器官按性别显示
+    const o = ORGAN_SVG[p.ic]; if (!o) return '';
+    const s = p.s / 48, x = p.x - p.s / 2, y = p.y - p.s / 2;
+    return `<g class="org" data-o="${id}">
+      <circle cx="${p.x}" cy="${p.y}" r="${p.s*0.56}" fill="${p.c}" opacity="0" filter="url(#glow)" class="halo"/>
+      <g class="shape" transform="translate(${x},${y}) scale(${s})" fill="${p.c}" opacity=".95">${String(o.inner).replace(/currentColor/g, p.c)}</g>
+      <circle class="hit" cx="${p.x}" cy="${p.y}" r="${p.s*0.55}"/>
+    </g>`;
+  }).join('');
+  svg.innerHTML = g;
+  svg.querySelectorAll('.org').forEach(el => {
+    el.addEventListener('click', () => selectOrgan(el.dataset.o));
+  });
+  selectOrgan('heart');
+}
+
+/* 总览界面左右滑动 → 切换床位（多张床时） */
+function bindBedSwipe() {
+  const host = document.querySelector('.stage') || document.body;
+  if (!host || host.__bedSwipe) return;
+  host.__bedSwipe = 1;
+  let x0 = null, y0 = null, t0 = 0;
+  const blocked = () => {
+    const mask = document.getElementById('mask');
+    const detail = document.getElementById('detail');
+    const lobby = document.getElementById('lobby');
+    return (mask && mask.classList.contains('on')) ||
+           (detail && detail.classList.contains('on')) ||
+           (lobby && getComputedStyle(lobby).display !== 'none');
+  };
+  host.addEventListener('touchstart', (e) => {
+    if (e.touches.length !== 1) { x0 = null; return; }
+    x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; t0 = Date.now();
+  }, { passive: true });
+  host.addEventListener('touchend', (e) => {
+    if (x0 == null) return;
+    const t = e.changedTouches[0];
+    const dx = t.clientX - x0, dy = t.clientY - y0, dt = Date.now() - t0;
+    x0 = null;
+    if (dt > 800 || blocked()) return;
+    if (beds.length < 2) return;
+    if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.6) return;   // 竖向滑动交给页面
+    const next = (activeIdx + (dx < 0 ? 1 : -1) + beds.length) % beds.length;
+    switchBed(next);
+  }, { passive: true });
+}
+
+function selectOrgan(id) {
+  selected = id;
+  document.querySelectorAll('#anat .org').forEach(x => x.classList.toggle('sel', x.dataset.o === id));
+  renderOrganPanel();
+}
+
+const ORGAN_META = {
+  uterus: {n:'子宫 / 卵巢', f: s => [
+    ['雌激素', (s.estrogen != null ? (s.estrogen * 100).toFixed(0) : '—'), '%'],
+    ['绝经', (s.patient && s.patient.age >= 52) ? '是' : '否', ''],
+    ['盆腔出血', s.uo < 0.4 ? '需警惕' : '未见', '']]},
+  prostate: {n:'前列腺', f: s => [
+    ['睾酮', (s.testosterone != null ? (s.testosterone * 100).toFixed(0) : '—'), '%'],
+    ['尿潴留', s.uo < 0.35 ? '可疑' : '无', ''],
+    ['年龄风险', (s.patient && s.patient.age >= 55) ? '偏高' : '低', '']]},
+  brain:   {n:'脑',   f: s => [['意识', s.gcs, 'GCS'], ['脑灌注', s.map < 60 ? '不足' : '正常', ''], ['瞳孔', s.gcs < 6 ? '散大' : '等大', '']]},
+  lung:    {n:'肺',   f: s => [['SpO₂', s.spo2, '%'], ['PaO₂', s.pao2, 'mmHg'], ['PaCO₂', s.paco2, 'mmHg'], ['RR', s.rr, 'rpm']]},
+  heart:   {n:'心脏', f: s => [['HR', s.hr, 'bpm'], ['EF', s.ef, '%'], ['MAP', s.map, 'mmHg'], ['心律', s.rhythm === 'sinus' ? '窦性' : (s.rhythm === 'vf' ? '室颤' : '心静止'), '']]},
+  liver:   {n:'肝脏', f: s => [['胆红素', '14', 'µmol/L'], ['白蛋白', '38', 'g/L'], ['凝血', '正常', '']]},
+  stomach: {n:'胃',   f: s => [['pH', '1.8', ''], ['排空', '正常', ''], ['黏膜', '完好', '']]},
+  spleen:  {n:'脾',   f: s => [['体积', '正常', ''], ['滤血', '正常', '']]},
+  pancreas:{n:'胰腺', f: s => [['血糖', s.glu, 'mmol/L'], ['胰岛素', s.glu > 11 ? '相对不足' : '正常', '']]},
+  kidney:  {n:'肾脏', f: s => [['血钾', s.k, 'mmol/L'], ['肌酐', s.cr, 'µmol/L'], ['尿量', s.uo, 'mL/min'], ['GFR', '28', 'mL/min']]},
+  gut:     {n:'肠道', f: s => [['蠕动', '正常', ''], ['吸收', '92%', ''], ['血氨', '33', 'µmol/L']]},
+};
+
+function organState(id, s) {
+  if (id === 'heart') return s.rhythm !== 'sinus' ? 'crit' : (s.map < 65 || s.hr > 120 ? 'crit' : (s.hr > 100 ? 'warn' : 'ok'));
+  if (id === 'lung')  return s.spo2 < 92 ? 'warn' : 'ok';
+  if (id === 'kidney')return s.k > 5.5 || s.uo < 0.5 ? 'crit' : 'warn';
+  if (id === 'brain') return s.gcs < 12 ? 'crit' : (s.gcs < 15 ? 'warn' : 'ok');
+  if (id === 'pancreas') return s.glu > 11 ? 'warn' : 'ok';
+  return 'ok';
+}
+
+let organBuiltFor = null;
+function renderOrganPanel() {
+  const meta = ORGAN_META[selected];
+  if (organBuiltFor !== selected) {
+    organBuiltFor = selected;
+    const panel = $('#opan');
+    panel.classList.remove('hide');
+    panel.innerHTML = '<span class="title" id="opTitle"></span>'
+      + meta.f(E.snapshot(S)).map(([k], i) =>
+          `<div class="row"><span class="lab">${k}</span><span class="val" data-oi="${i}"></span></div>`).join('')
+      + (selected === 'heart' ? '<canvas id="miniEcg" height="92"></canvas>' : '');
+    updateOrganValues();
+    drawMini();
+  } else {
+    updateOrganValues();
+  }
+}
+function updateOrganValues() {
+  const s = E.snapshot(S), meta = ORGAN_META[selected];
+  const st = organState(selected, s);
+  const t = $('#opTitle');
+  if (t) { t.textContent = meta.n; t.className = 'title ' + (st === 'crit' ? '' : st === 'warn' ? 'warn' : 'ok'); }
+  meta.f(s).forEach(([k, v, u], i) => {
+    const el = document.querySelector('[data-oi="' + i + '"]');
+    if (el) el.innerHTML = `${v}${u ? `<span style="font-size:9px;color:#9a9a9a"> ${u}</span>` : ''}`;
+  });
+}
+/* ---------------- 迷你心电 ---------------- */
+let miniRAF = null, miniPhase = 0;
+function drawMini() {
+  if (miniRAF) cancelAnimationFrame(miniRAF);
+  const cv = $('#miniEcg'); if (!cv) return;
+  if (!cv.__tap) {
+    cv.__tap = 1;
+    cv.style.cursor = 'pointer';
+    cv.title = '点击查看指标走势';
+    cv.addEventListener('click', (ev) => { ev.stopPropagation(); openChart(); });
+  }
+  const ctx = cv.getContext('2d');
+  const dpr = devicePixelRatio || 1, r = cv.getBoundingClientRect();
+  cv.width = Math.max(120, r.width * dpr); cv.height = Math.max(40, r.height * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const w = cv.width / dpr, h = cv.height / dpr;
+  const gg = (x, mu, s) => Math.exp(-((x - mu) * (x - mu)) / (2 * s * s));
+  const beat = p => 0.10 * gg(p, .17, .024) - 0.09 * gg(p, .268, .008) + 1 * gg(p, .286, .009)
+                  - 0.26 * gg(p, .306, .012) + 0.34 * gg(p, .47, .04);
+  function frame() {
+    const rhythm = S.rhythm;
+    ctx.clearRect(0, 0, w, h);
+    ctx.strokeStyle = 'rgba(211,58,58,.10)'; ctx.lineWidth = 1;
+    for (let x = 0; x < w; x += 14) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); }
+    for (let y = 0; y < h; y += 14) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); }
+    ctx.beginPath();
+    for (let x = 0; x < w; x++) {
+      let y;
+      if (rhythm === 'sinus') { const t = (x / w * 3.4 + miniPhase) % 1; y = h * 0.62 - beat(t) * h * 0.42; }
+      else if (rhythm === 'vf') { const t = x / w * 18 + miniPhase * 40; y = h * 0.55 - (Math.sin(t) * 0.5 + Math.sin(t * 2.7) * 0.3 + Math.sin(t * 5.3) * 0.2) * h * 0.26; }
+      else { y = h * 0.6 + Math.sin((x / w * 6) + miniPhase * 3) * 0.4; }
+      x ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+    }
+    ctx.strokeStyle = '#d33a3a'; ctx.lineWidth = 1.5; ctx.lineJoin = 'round'; ctx.stroke();
+    miniPhase = (miniPhase + 0.0016) % 1;
+    miniRAF = requestAnimationFrame(frame);
+  }
+  frame();
+}
+/* ---------------- 体征 / 状态 ---------------- */
+function vitalList(s) {
+  const sys = s.sys, dia = s.dia;
+  return [
+    {k:'hr',   n:'心率', v:s.hr,  u:'bpm', st: s.hr > 120 || s.hr < 50 ? 'crit' : (s.hr > 100 ? 'warn' : '')},
+    {k:'bp',   n:'血压', v:`${sys}|${dia}`, u:'', st: sys < 90 ? 'crit' : (sys < 100 ? 'warn' : '')},
+    {k:'rr',   n:'呼吸', v:s.rr,  u:'rpm', st: s.rr > 24 ? 'warn' : ''},
+    {k:'spo2', n:'血氧', v:s.spo2,u:'%',   st: s.spo2 < 92 ? 'crit' : (s.spo2 < 95 ? 'warn' : '')},
+    {k:'temp', n:'体温', v:s.temp,u:'℃',   st: s.temp > 37.5 ? 'warn' : ''},
+    {k:'gcs',  n:'意识', v:s.gcs, u:'GCS', st: s.gcs < 12 ? 'crit' : (s.gcs < 15 ? 'warn' : '')},
+  ];
+}
+function renderVitals() {
+  const s = E.snapshot(S);
+  $('#vitals').innerHTML = vitalList(s).map(v => {
+    const cls = v.st === 'crit' ? 'bad' : (v.st === 'warn' ? 'warn' : '');
+    return `<div class="vpill ${cls}" data-v="${v.k}">
+      <span class="dot"></span><span class="k">${v.n}</span>
+      <span class="v">${v.v}</span><span class="u">${v.u}</span></div>`;
+  }).join('');
+  $('#vitals').querySelectorAll('.vpill').forEach(el => {
+    el.addEventListener('click', () => {
+      const v = vitalList(E.snapshot(S)).find(x => x.k === el.dataset.v);
+      openDetail(v.n + ' · 参考范围', v.u,
+        [['参考', REF[v.k] || '—'], ['当前', v.v + ' ' + v.u], ['趋势', trend(v.k)]], '');
+    });
+  });
+}
+const REF = {hr:'60–100 bpm', bp:'90–140 / 60–90 mmHg', rr:'12–20 rpm',
+             spo2:'95–100 %', temp:'36.1–37.5 ℃', gcs:'15'};
+function trend(k) {
+  const h = S.history.slice(-12);
+  if (h.length < 3) return '—';
+  const key = k === 'bp' ? 'sys' : k;
+  const a = h[0][key], b = h[h.length - 1][key];
+  if (a == null || b == null) return '—';
+  const d = b - a;
+  return Math.abs(d) < 2 ? '平稳' : (d > 0 ? '上升 ' + r1(d) : '下降 ' + r1(Math.abs(d)));
+}
+
+function renderStates() {
+  const s = E.snapshot(S);
+  const out = [];
+  if (s.rhythm === 'vf') out.push('心室颤动');
+  else if (s.rhythm === 'asystole') out.push('心静止');
+  if (s.k > 5.5) out.push('高血钾');
+  if (s.k < 3.5) out.push('低血钾');
+  if (s.ph < 7.32) out.push('代谢性酸中毒');
+  if (s.glu > 11) out.push('高血糖');
+  if (s.glu < 3.9) out.push('低血糖');
+  if (s.spo2 < 92) out.push('低氧血症');
+  if (s.sys < 90) out.push('低血压');
+  const pp = (s.sys || 0) - (s.dia || 0);
+  if ((S.tamponade || 0) > 0.3 && pp < 25) out.push('奇脉（吸气收缩压 −' + Math.round(10 + 8 * (S.tamponade || 0)) + '）');
+  if ((S.cvp || 0) > 9) out.push('颈静脉怒张');
+  if ((S.ddimer || 0) > 3) out.push('D-二聚体 ' + S.ddimer.toFixed(1));
+  if ((S.flush || 0) > 0.78) out.push('潮热');
+  if ((S.stemi || 0) > 0.2) out.push('ST 段抬高');
+  if ((S.stemi || 0) > 0.35) out.push('肌钙蛋白升高');
+  if ((S.hematoma || 0) > 0.55) out.push('左侧瞳孔散大');
+  if ((S.hematoma || 0) > 0.25) out.push('头部外伤');
+  if ((S.airwayResistance || 0) > 0.75) out.push('气道水肿');
+  if ((S.coHb || 0) > 0.10) out.push('碳氧血红蛋白升高');
+  if ((S.tca || 0) > 0.2) out.push('QRS 增宽');
+  if ((S.hematoma || 0) > 0.2) out.push('颅内压升高');
+  const tox = S.tox || {};
+  if ((tox.benzo || 0) > 0) out.push('苯二氮卓过量');
+  if ((tox.op || 0) > 0) out.push('有机磷中毒');
+  if ((tox.apap || 0) > 0) out.push('对乙酰氨基酚过量');
+  if ((S.withdraw || 0) > 0.15) out.push('戒断反应');
+  if ((S.anaphyl || 0) > 0.15) out.push('过敏性休克');
+  if ((S.bronchospasm || 0) > 0.25) out.push('支气管痉挛');
+  if ((S.hemolysis || 0) > 0.15) out.push('溶血');
+  const env = S.env || {};
+  if (env.heat) out.push('高温环境');
+  if (env.cold) out.push('低温环境');
+  if (env.exercise) out.push('运动中');
+  if (env.sleep) out.push('睡眠');
+  if (!out.length) out.push('生命体征平稳');
+  $('#states').innerHTML = out.map((t, i) =>
+    `<span class="spill ${i === 0 && t === '生命体征平稳' ? 'ok' : ''}" data-state="${t}">${t}</span>`).join('');
+  /* 点状态标签 → 术语卡 */
+  document.querySelectorAll('#states .spill').forEach(el => {
+    el.style.cursor = 'pointer';
+    el.addEventListener('click', () => {
+      const name = el.dataset.state;
+      const card = window.GLOSSARY && window.GLOSSARY.renderCard(name);
+      if (card) openDetail(card.title, card.sub, card.kv, '');
+      else if (window.GLOSSARY) openGlossary(name);
+      else toast(name);
+    });
+  });
+}
+
+/* ---------------- 抽屉 ---------------- */
+let sheetRows = [];
+function openSheet(title, sub, rows) {
+  $('#sheetTitle').innerHTML = `${title} <small>${sub}</small>`;
+  $('#sheetList').innerHTML = rows.map((r, i) => r.sec
+    ? `<div class="sec">${r.sec}</div>`
+    : `<div class="drow" data-i="${i}"><span class="nm">${r.n}</span>
+        <span class="tag">${r.tag}</span><span class="amt">${r.amt}</span></div>`).join('');
+  sheetRows = rows;
+  $('#sheetList').querySelectorAll('.drow').forEach(el => {
+    el.addEventListener('click', () => rows[+el.dataset.i].run());
+  });
+  $('#sheet').classList.add('on');
+  $('#mask').classList.add('on');
+}
+function closeSheet() { $('#sheet').classList.remove('on'); $('#mask').classList.remove('on'); }
+
+function openDetail(name, sub, kv, warn) {
+  $('#dName').textContent = name;
+  $('#dSub').textContent = sub || '';
+  $('#dKv').innerHTML = kv.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
+  const w = $('#dWarn'); w.textContent = warn || ''; w.style.display = warn ? 'block' : 'none';
+  $('#detail').classList.add('on');
+}
+
+/* 给药列表：按类别分组 + 搜索（119 种物质） */
+
+/* 给药面板置顶：常用（补液、电解质、代谢）与急救（复苏、解毒） */
+const PIN_DRUGS = {
+  '常用': ['nacl', 'dextrose50', 'dextrose10', 'ringer', 'kcl', 'insulin', 'calcium',
+           'bicarb', 'furosemide', 'magnesium', 'hypertonic_saline', 'glucagon'],
+  '急救': ['epi', 'norepi', 'atropine', 'amiodarone', 'lidocaine',
+           'naloxone', 'flumazenil', 'dopamine', 'vasopressin', 'adenosine', 'isoproterenol'],
+};
+
+function openDrugSheet() {
+  const SUB = window.SUBSTANCES;
+  if (!SUB) { openSheet('给药', '', drugRows()); return; }
+  $('#sheetTitle').innerHTML = `给药 <small>搜索全库 · 分标签浏览</small>`;
+  const list = $('#sheetList');
+  list.innerHTML = `
+    <div style="padding:2px 10px 8px">
+      <input id="drugSearch" placeholder="搜索药名 / 类别，跨药品·血制品·微生物·食物"
+        style="width:100%;padding:11px 13px;border-radius:11px;border:1px solid #e8e4e2;
+               font:inherit;font-size:14px;outline:none;background:#faf9f8">
+    </div>
+    <div id="drugTabs" style="display:flex;gap:6px;padding:0 10px 10px;overflow-x:auto;scrollbar-width:none"></div>
+    <div id="drugList"></div>`;
+
+  /* 分类：搜索时跨全库；空搜索时按标签过滤 */
+  const TABS = [
+    { id: 'all',  n: '全部' },
+    { id: 'drug', n: '药品' },
+    { id: 'cell', n: '细胞·血制品' },
+    { id: 'germ', n: '病毒·细菌' },
+    { id: 'food', n: '食物' },
+  ];
+  const inTab = (it, tab) => {
+    if (!tab || tab === 'all') return true;
+    if (tab === 'food') return it.kind === 'food';
+    if (tab === 'germ') return it.cls === '病毒' || it.cls === '细菌';
+    if (tab === 'cell') return it.cls === '血液成分' || it.cls === '扩容';
+    return it.kind === 'drug' && it.cls !== '病毒' && it.cls !== '细菌';
+  };
+
+  let curTab = 'all';
+  const rowOf = (it) => `
+        <div class="drow" data-id="${it.id}">
+          <span class="nm">${it.n}${(window.SUBSTANCES.ALIASES && Object.keys(window.SUBSTANCES.ALIASES).some(a => window.SUBSTANCES.ALIASES[a] === it.n)) ? `<span style="font-size:10px;color:#c8a0a0">（${Object.keys(window.SUBSTANCES.ALIASES).filter(a => window.SUBSTANCES.ALIASES[a] === it.n).slice(0,2).join('/')}）</span>` : ''}${it.note ? `<span style="font-size:10px;color:#b3a6a6"> · ${it.note}</span>` : ''}</span>
+          <span class="tag">${it.route}${(it.routes && it.routes.length > 1) ? ' 等' + it.routes.length + ' 途径' : ''}</span>
+          <span class="amt">${it.dose}${it.unit}</span>
+        </div>`;
+
+  const drawTabs = () => {
+    const host = list.querySelector('#drugTabs');
+    host.innerHTML = TABS.map(t =>
+      `<span class="pill" data-tab="${t.id}" style="flex:0 0 auto;cursor:pointer;padding:7px 13px;${
+        t.id === curTab ? 'background:#f7e6e6;color:#a33;font-weight:700' : ''}">${t.n}</span>`).join('');
+    host.querySelectorAll('[data-tab]').forEach(el => {
+      el.addEventListener('click', () => { curTab = el.dataset.tab; drawTabs(); draw(inp.value); });
+    });
+  };
+
+  const draw = (q) => {
+    const searching = !!(q && q.trim());
+    const items = SUB.search(q).filter(it => searching ? true : inTab(it, curTab));
+    const groups = {};
+    let pinnedHtml = '';
+
+    /* 置顶只在「全部 + 空搜索」时出现 */
+    if (!searching && curTab === 'all') {
+      const used = {};
+      for (const [title, ids] of Object.entries(PIN_DRUGS)) {
+        const rows = ids.map(id => SUB.byId(id)).filter(Boolean);
+        if (!rows.length) continue;
+        for (const r of rows) used[r.id] = 1;
+        pinnedHtml += `<div class="sec">${title} <span style="opacity:.6">${rows.length}</span></div>` +
+          rows.map(rowOf).join('');
+      }
+      for (const it of items) if (!used[it.id]) (groups[it.cls] = groups[it.cls] || []).push(it);
+    } else {
+      for (const it of items) (groups[it.cls] = groups[it.cls] || []).push(it);
+    }
+
+    const order = Object.keys(groups).sort();
+    const host = list.querySelector('#drugList');
+    const body = order.map(cls => `
+      <div class="sec">${cls} <span style="opacity:.6">${groups[cls].length}</span></div>
+      ${groups[cls].map(rowOf).join('')}
+    `).join('');
+    host.innerHTML = (pinnedHtml + body) ||
+      `<div style="padding:18px;color:#9a9a9a;font-size:13px">没有匹配的物质</div>`;
+
+    host.querySelectorAll('.drow').forEach(el => {
+      el.addEventListener('click', () => openGiveConfig(SUB.byId(el.dataset.id)));
+    });
+  };
+
+  drawTabs();
+  draw('');
+  const inp = list.querySelector('#drugSearch');
+  inp.addEventListener('input', e => draw(e.target.value));
+  $('#sheet').classList.add('on');
+  $('#mask').classList.add('on');
+}
+
+const EFF_NAME = { k:'血钾', na:'血钠', cl:'血氯', ca:'血钙', hco3:'HCO₃⁻', glu:'血糖', lac:'乳酸',
+                   vol:'血容量', hb:'血红蛋白', hr:'心率', svr:'血管张力', sv:'心肌收缩力',
+                   rr:'呼吸频率', spo2:'血氧', temp:'体温', gcs:'意识', uo:'尿量' };
+function describeEff(eff) {
+  const parts = [];
+  for (const k in (eff || {})) {
+    const v = eff[k];
+    if (!v) continue;
+    parts.push(`${EFF_NAME[k] || k}${v > 0 ? '↑' : '↓'}`);
+  }
+  return parts.join(' ');
+}
+
+
+/* 选完药 → 选途径 + 调剂量（允许给错、给过量） */
+function openGiveConfig(it) {
+  const routes = (it.routes && it.routes.length) ? it.routes : [{ r: it.route, d: it.dose, on: it.onset, du: it.dur }];
+  let ri = 0;
+  let dose = routes[0].d;
+  const fmt = v => (Math.round(v * 100) / 100).toString();
+
+  const render = () => {
+    const rt = routes[ri];
+    const lo = it.doseRange ? it.doseRange[0] : rt.d * 0.2;
+    const hi = it.doseRange ? it.doseRange[1] : rt.d * 10;
+    const over = dose > rt.d * 2.5, under = dose < rt.d * 0.4;
+    const warn = over ? '⚠ 剂量明显高于常规，注意中毒风险'
+                : under ? '⚠ 剂量偏低，可能达不到治疗浓度' : '';
+    $('#sheetTitle').innerHTML = `${it.n} <small>${it.cls}</small>`;
+    $('#sheetList').innerHTML = `
+      <div style="padding:2px 14px 14px">
+        ${routes.length > 1 ? `<div class="sec">给药途径</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;padding:0 0 14px">
+            ${routes.map((x, i) => `<span class="pill" data-ri="${i}" style="cursor:pointer;${i === ri ? 'background:#f7e6e6;color:#a33;font-weight:700' : ''}">${x.r}</span>`).join('')}
+          </div>` : ''}
+        <div class="sec">剂量</div>
+        <div style="display:flex;align-items:center;gap:10px;padding:6px 0 10px">
+          <button id="dMinus" class="pill" style="width:46px;height:46px;font-size:22px;cursor:pointer">−</button>
+          <div style="flex:1;text-align:center">
+            <span style="font-family:var(--mono);font-size:28px;font-weight:600">${fmt(dose)}</span>
+            <span style="font-size:13px;color:#9a9a9a"> ${it.unit}</span>
+          </div>
+          <button id="dPlus" class="pill" style="width:46px;height:46px;font-size:22px;cursor:pointer">+</button>
+        </div>
+        <div style="display:flex;gap:6px;justify-content:center;padding-bottom:10px">
+          ${[0.5, 1, 2, 5].map(f => `<span class="pill" data-mul="${f}" style="cursor:pointer;${Math.abs(dose - rt.d * f) < 1e-6 ? 'font-weight:700;color:#a33' : ''}">${f === 1 ? '常规' : f + '×'}</span>`).join('')}
+        </div>
+        ${warn ? `<div class="note" style="margin-bottom:10px;color:#a33;background:#fdf3f2">${warn}</div>` : ''}
+        <div class="note" style="margin-bottom:12px;font-size:11.5px">
+          起效 ${rt.on} min · 维持 ${rt.du} min · 效应 ${describeEff(it.eff) || '—'}
+          ${it.note ? '<br>' + it.note : ''}
+        </div>
+        <button id="dGo" class="pill" style="width:100%;padding:14px;font-size:16px;font-weight:700;cursor:pointer;background:${over ? '#f7e6e6' : '#fff'}">
+          给予 ${it.n} ${fmt(dose)}${it.unit}
+        </button>
+      </div>`;
+
+    $('#sheetList').querySelectorAll('[data-ri]').forEach(el => {
+      el.addEventListener('click', () => { ri = +el.dataset.ri; dose = routes[ri].d; render(); });
+    });
+    $('#sheetList').querySelectorAll('[data-mul]').forEach(el => {
+      el.addEventListener('click', () => { dose = Math.max(0.01, +(routes[ri].d * +el.dataset.mul).toFixed(2)); render(); });
+    });
+    const step = Math.max(0.01, +(routes[ri].d / 4).toFixed(2));
+    const mi = $('#sheetList').querySelector('#dMinus'), pl = $('#sheetList').querySelector('#dPlus');
+    if (mi) mi.addEventListener('click', () => { dose = Math.max(0.01, +(dose - step).toFixed(2)); render(); });
+    if (pl) pl.addEventListener('click', () => { dose = Math.min(hi, +(dose + step).toFixed(2)); render(); });
+    const go = $('#sheetList').querySelector('#dGo');
+    if (go) go.addEventListener('click', () => {
+      E.give(S, it.id, dose, routes[ri].r);
+    checkBudget();
+      if (window.SOUND) SOUND.drug();
+      judge('drug', it.id);
+      saveGame();
+      closeSheet();
+      toast(`已给予 ${it.n} ${fmt(dose)}${it.unit}（${routes[ri].r}）`);
+      renderAll();
+    });
+  };
+  render();
+}
+
+/* 环境 / 场景切换（炎热、寒冷、运动、睡眠） */
+function openEnvSheet() {
+  const env = S.env || {};
+  const rows = [
+    { n: '炎热环境', tag: env.heat ? '开' : '关', amt: '', run: () => { E.setEnv(S, 'heat', !env.heat); openEnvSheet(); } },
+    { n: '寒冷环境', tag: env.cold ? '开' : '关', amt: '', run: () => { E.setEnv(S, 'cold', !env.cold); openEnvSheet(); } },
+    { n: '运动',     tag: env.exercise ? '开' : '关', amt: '', run: () => { E.setEnv(S, 'exercise', !env.exercise); openEnvSheet(); } },
+    { n: '睡眠',     tag: env.sleep ? '开' : '关', amt: '', run: () => { E.setEnv(S, 'sleep', !env.sleep); openEnvSheet(); } },
+    { n: '恢复正常', tag: '', amt: '', run: () => { E.setEnv(S, 'reset'); openEnvSheet(); } },
+  ];
+  openSheet('环境 / 场景', '影响体温、心率、呼吸', rows);
+}
+
+/* 给药列表（旧接口，保留给不支持 SUBSTANCES 的场合） */
+function drugRows() {
+  return Object.entries(E.DRUGS).map(([id, d]) => ({
+    n: d.name, tag: (d.routes && d.routes[0]) || '', amt: d.defaultDose + ' ' + d.unit,
+    run: () => {
+      const route = (d.routes && d.routes[0]) || '';
+      E.give(S, id, d.defaultDose, route);
+      checkBudget();
+      if (window.SOUND) SOUND.drug();
+      judge('drug', id);
+      saveGame();
+      closeSheet();
+      toast(`已给予 ${d.name} ${d.defaultDose}${d.unit}（${route}）`);
+      openDetail(d.name, `${d.defaultDose} ${d.unit} · ${route}`, [['说明', d.desc]], '');
+      renderAll();
+    },
+  }));
+}
+function actionRows() {
+  return Object.entries(E.ACTIONS).map(([id, a]) => ({
+    n: a.name, tag: '', amt: a.cost ? '¥' + a.cost : '—',
+    run: () => {
+      if (a.cost) S.cost += a.cost;
+      a.apply(S);
+    checkBudget();
+      if (window.SOUND) SOUND.click();
+      judge('action', id);
+      saveGame();
+      closeSheet();
+      toast('已执行：' + a.name);
+      renderAll();
+    },
+  }));
+}
+function testRows() {
+  return Object.entries(E.TESTS).map(([id, t]) => ({
+    n: t.name, tag: t.min + ' min', amt: '¥' + t.cost,
+    run: () => {
+      E.orderTest(S, id);
+      closeSheet();
+      toast(`已开 ${t.name}，${t.min} 分钟后出结果`);
+      renderAll();
+    },
+  }));
+}
+
+
+/* ---------------- 上级医师 ---------------- */
+const MENTOR = window.MENTOR;
+let mentorBar = null;
+function ensureMentorDOM() {
+  if (mentorBar) return;
+  const wrap = document.createElement('div');
+  wrap.id = 'mentorWrap';
+  wrap.style.cssText = 'position:fixed;left:14px;bottom:78px;max-width:330px;z-index:15';
+  wrap.innerHTML = `<div id="mentorCard" style="background:var(--card);color:var(--ink);border:1px solid var(--line);border-radius:14px;padding:10px 13px;
+      box-shadow:0 6px 24px rgba(0,0,0,.10);font-size:12.5px;line-height:1.55;display:none">
+      <div style="font-size:10px;letter-spacing:1.2px;color:var(--ink-3);margin-bottom:4px">
+        上级医师 · <span id="mLevel"></span></div>
+      <div id="mText"></div></div>`;
+  document.body.appendChild(wrap);
+  mentorBar = wrap;
+  const pill = document.createElement('span');
+  pill.id = 'levelPill';
+  pill.className = 'pill';
+  pill.style.cssText = 'cursor:pointer;font-size:11.5px;color:#8a7a7a';
+  pill.textContent = '上级医生：实习';
+  pill.addEventListener('click', () => openSheet('难度', '影响提示详略与计分', levelRows()));
+  document.querySelector('.top').insertBefore(pill, document.querySelector('.top .sp'));
+  const ask = document.createElement('span');
+  ask.id = 'btnAsk';
+  ask.className = 'pill';
+  ask.style.cssText = 'cursor:pointer;font-size:11.5px;margin-left:6px';
+  ask.textContent = '问上级';
+  ask.addEventListener('click', () => showAdvice(true));
+  document.querySelector('.top').insertBefore(ask, document.querySelector('.top .sp'));
+}
+
+function levelRows() {
+  return Object.entries(MENTOR.LEVELS).map(([id, L]) => ({
+    n: L.name, tag: L.note, amt: id === level ? '当前' : '',
+    run: () => { level = id; try { localStorage.setItem('life.level', id); } catch (e) {} syncLevel(); closeSheet(); showAdvice(true); },
+  }));
+}
+function syncLevel() {
+  const p = document.getElementById('levelPill');
+  if (p) p.textContent = '上级医生：' + (MENTOR.LEVELS[level] || MENTOR.LEVELS.intern).name;
+  const l = document.getElementById('mLevel');
+  if (l) l.textContent = (MENTOR.LEVELS[level] || {}).name || '';
+}
+function showAdvice(force) {
+  if (!MENTOR) return;
+  const cardR = document.getElementById('mentorCard');
+  const L = MENTOR.LEVELS[level] || MENTOR.LEVELS.intern;
+  const card = document.getElementById('mentorCard');
+  const txt = document.getElementById('mText');
+  if (!card) return;
+  if (!force && !autoHint) {
+    /* 求助制：不问就不显示；点评后保留 20 秒让玩家看清 */
+    if (S._lastJudgeAt && (S.t - S._lastJudgeAt) < 20) { card.style.display = 'block'; return; }
+    card.style.display = 'none';
+    return;
+  }
+  const a = MENTOR.advise(S, level);
+  txt.textContent = a.empty ? a.text : a.text + (a.count > 1 ? `（还有 ${a.count - 1} 项待处理）` : '');
+  card.style.display = 'block';
+  syncLevel();
+}
+
+/* ---------------- 操作评价 ---------------- */
+function markEvent(label) {
+  try {
+    S.tl = S.tl || [];
+    const b = E.bp(S);
+    S.tl.push({ t: S.t, label: String(label || '').slice(0, 40),
+                sys: b.sys, dia: b.dia, hr: Math.round(S.hr), spo2: Math.round(S.spo2),
+                k: +S.k.toFixed(1), glu: +S.glu.toFixed(1), ph: +S.ph.toFixed(2),
+                gcs: S.gcs, lac: +S.lac.toFixed(1), temp: +S.temp.toFixed(1) });
+    if (S.tl.length > 120) S.tl.shift();
+  } catch (e) {}
+}
+
+function judge(kind, id) {
+  try {
+    const last = S.log && S.log.length ? S.log[S.log.length - 1] : null;
+    if (last) markEvent(last[1]);
+  } catch (e) {}
+  if (!MENTOR || level === 'expert') return;
+  const r = MENTOR.evaluate(S, kind, id);
+  if (!r || !r.msg) return;
+  if (!r.ok) S.penalties = (S.penalties || 0) + 1;
+  S.log.push([E.fmt(S.t), '带教点评：' + r.msg, r.ok ? 'good' : 'warn']);
+  S._lastJudgeAt = S.t;
+  toast((r.ok ? '✓ ' : '⚠ ') + r.msg, !r.ok);
+  /* 点评同时写进上级医师卡，方便回看 */
+  try {
+    const card = document.getElementById('mentorCard');
+    const txt = document.getElementById('mText');
+    if (card && txt) { txt.textContent = (r.ok ? '✓ ' : '⚠ ') + r.msg; card.style.display = 'block'; }
+  } catch (e) {}
+}
+
+/* ---------------- 存档 ---------------- */
+function serState(st) {
+  const copy = {};
+  for (const k of Object.keys(st)) if (k !== 'cas') copy[k] = st[k];
+  return { s: copy, caseId: st.caseId, seed: st.seed, diff: st.diff };
+}
+function saveGame() {
+  try {
+    localStorage.setItem('life.save', JSON.stringify({
+      v: 3, level, caseDiff, activeIdx,
+      beds: beds.map(b => serState(b.S)),
+    }));
+  } catch (e) {}
+}
+function loadGame() {
+  try {
+    const raw = localStorage.getItem('life.save');
+    if (!raw) return false;
+    const d = JSON.parse(raw);
+    if (!d || !d.beds || !d.beds.length) return false;
+    if (d.v !== 3) { try { localStorage.removeItem('life.save'); } catch (err) {} window.__saveDiscarded = true; return false; }
+    const rebuilt = [];
+    for (const item of d.beds) {
+      let base;
+      if (!item.s) continue;
+      if (item.caseId === 'gen' && window.CASEGEN && item.seed != null) {
+        base = E.create(window.CASEGEN.generate(item.diff || 3, item.seed));
+      } else {
+        base = E.create(item.caseId);
+      }
+      const st = Object.assign(base, item.s);
+      st.cas = base.cas;
+      rebuilt.push({ S: st });
+    }
+    if (!rebuilt.length) return false;
+    beds = rebuilt;
+    activeIdx = Math.min(Math.max(0, d.activeIdx || 0), beds.length - 1);
+    S = beds[activeIdx].S;
+    ended = !!S.death || !!S.discharged;
+    if (d.level) level = d.level;
+    if (d.caseDiff) caseDiff = d.caseDiff;
+    return true;
+  } catch (e) { return false; }
+}
+function clearSave() { try { localStorage.removeItem('life.save'); } catch (e) {} }
+
+/* ---------------- 病历档案 ---------------- */
+const REC_KEY = 'life.records';
+function loadRecords() {
+  try { const v = JSON.parse(localStorage.getItem(REC_KEY) || '[]'); return Array.isArray(v) ? v : []; }
+  catch (e) { return []; }
+}
+function pushRecord(rec) {
+  try {
+    const list = loadRecords();
+    list.unshift(rec);
+    localStorage.setItem(REC_KEY, JSON.stringify(list.slice(0, 30)));   // 只保留最近 30 条
+  } catch (e) {}
+}
+function openRecords() {
+  const list = loadRecords();
+  const rows = [];
+  if (!list.length) rows.push({ n:'还没有病历', tag:'完成一例后自动归档', amt:'', run: () => {} });
+  for (const r of list) {
+    rows.push({
+      n: r.病例名, tag: `${r.结局} · ${r.耗时} 分钟`, amt: (r.评分 || 0) + ' 分',
+      run: () => openDetail('病历 · ' + r.病例名, r.时间,
+        [['诊断', r.诊断], ['结局', r.结局], ['耗时', r.耗时 + ' 分钟'],
+         ['费用', '¥' + r.费用], ['评分', r.评分 + ' / 100']], ''),
+    });
+  }
+  openSheet('病历档案', `最近 ${list.length} / 30 例`, rows);
+}
+
+/* ---------------- 成就 ---------------- */
+function openAchievements() {
+  const A = window.ACHIEVEMENTS;
+  if (!A) { openDetail('成就', '', [['状态', '成就模块未加载']], ''); return; }
+  const un = A.unlocked();
+  const rows = A.list.map(a => ({
+    n: (un.has(a.id) ? '🏆 ' : '· ') + a.name,
+    tag: a.desc, amt: un.has(a.id) ? '已解锁' : '未解锁', run: () => {},
+  }));
+  openSheet('成就', `${un.size} / ${A.list.length} 已解锁`, rows);
+}
+/* ---------------- 血液报告 ---------------- */
+function bloodReport() {
+  const severe = isSevere(S);
+  /* 重症：监护中实时更新；轻症/现实模式：只有开过检查才有新结果 */
+  if (!severe) {
+    const snap = S.labSnap || {};
+    const ids = Object.keys(snap);
+    if (!ids.length) {
+      openDetail('血液报告', '轻症 · 需要开检查', [
+        ['提示', '本例病情稳定，没有持续监护'],
+        ['怎么做', '点「操作 → 检查」开血常规 / 电解质 / 血气，出结果后这里才会有数据'],
+      ], '');
+      return;
+    }
+    const latest = ids.map(k => snap[k]).sort((a, b) => b.t - a.t)[0];
+    const d = latest.s;
+    const mins = Math.max(0, Math.round((S.t - latest.t) / 60));
+    openDetail('血液报告', `最近一次：${latest.name} · ${mins} 分钟前`, [
+      ['血钾', `${d.k} mmol/L` + (d.k > 5.5 ? ' ↑' : d.k < 3.5 ? ' ↓' : '')],
+      ['血钠', `${d.na} mmol/L`],
+      ['pH', `${d.ph}`],
+      ['HCO₃⁻', `${d.hco3} mmol/L`],
+      ['乳酸', `${d.lac} mmol/L` + (d.lac > 2 ? ' ↑' : '')],
+      ['血糖', `${d.glu} mmol/L`],
+      ['肌酐', `${d.cr} µmol/L`],
+      ['血红蛋白', `${d.hb} g/L`],
+    ], '轻症没有实时监护，数据停留在上次检查；想更新请再开检查。');
+    return;
+  }
+  const s = E.snapshot(S);
+  openDetail('血液报告', '重症监护 · 实时更新', [
+    ['血钾', `${s.k} mmol/L` + (s.k > 5.5 ? ' ↑' : s.k < 3.5 ? ' ↓' : '')],
+    ['血钠', `${s.na} mmol/L`],
+    ['血氯', `${s.cl} mmol/L`],
+    ['pH', `${s.ph}` + (s.ph < 7.35 ? ' ↓' : '')],
+    ['HCO₃⁻', `${s.hco3} mmol/L`],
+    ['乳酸', `${s.lac} mmol/L` + (s.lac > 2 ? ' ↑' : '')],
+    ['血糖', `${s.glu} mmol/L`],
+    ['肌酐', `${s.cr} µmol/L`],
+    ['血红蛋白', `${s.hb} g/L`],
+  ], s.k > 6.5 ? '血钾已达危急值，心电图可能已有改变。' : '');
+}
+
+/* ---------------- 时钟 / 主循环 ---------------- */
+function loop(ts) {
+  if (!lastTs) lastTs = ts;
+  const dt = Math.min(0.5, (ts - lastTs) / 1000);
+  lastTs = ts;
+  if (paused) { requestAnimationFrame(loop); return; }
+  if (beds.length) {
+    const adv = dt * (ff ? 20 : speed) * (nightMode ? 1.3 : 1);
+    if (realism && S && S.ins) {
+      const severe = isSevere(S);
+      S.bedCost = (S.bedCost || 0) + (severe ? 80 : 25) * (adv / 3600);   // ¥/小时
+    }
+    acc += adv;
+    while (acc >= 0.2) {
+      for (const b of beds) {
+        if (!b.S.running) continue;
+        E.tick(b.S, 0.2);
+        if (window.CASEGEN) CASEGEN.step(b.S, 0.2, E);   // 病理模块的病程推进
+      }
+      acc -= 0.2;
+    }
+    for (const b of beds) { try { E.pollTests(b.S); } catch (e) {} }
+    pumpSound(ts);
+    hudAcc += dt;
+    if (hudAcc >= 0.25) { hudAcc = 0; renderHUD(); }
+    saveAcc += dt;
+    if (saveAcc >= 8) { saveAcc = 0; saveGame(); showAdvice(false); }
+
+    /* 首次体征提示：每 ~2 秒检查一次（非阻断；危急才用醒目 toast） */
+    signsAcc += dt;
+    if (signsAcc >= 2) { signsAcc = 0; checkSigns(); }
+    /* 后台床位危急警报 */
+    for (const b of beds) {
+      if (b.S === S) continue;
+      const st = b.S;
+      let crit = false;
+      try {
+        crit = st.rhythm === 'vf' || st.rhythm === 'asystole' ||
+               st.spo2 < 80 || st.k > 7 || E.bp(st).sys < 70;
+      } catch (e) {}
+      if (crit && !b.crit) {
+        b.crit = true;
+        toast('⚠ 床位 ' + (beds.indexOf(b) + 1) + ' 危急：' + (st.cas && st.cas.name), true);
+        if (window.SOUND && SOUND.alarm) { try { SOUND.alarm(); } catch (e) {} }
+      } else if (!crit) b.crit = false;
+    }
+
+    /* 进入重症：弹窗提醒（每例只弹一次，回到轻症后可再次触发） */
+    try {
+      const nowSevere = isSevere(S);
+      if (nowSevere && !S._wasSevere) {
+        /* 只在"由轻转重"那一刻弹；开局即重症不弹（_ready 之前也不弹） */
+        if (S._ready) showSeverePopup();
+        S._wasSevere = 1;
+      } else if (!nowSevere) {
+        S._wasSevere = 0;
+      }
+    } catch (e) {}
+
+    /* 逐床结算：哪个床结束就记录并释放；前台那张显示复盘卡 */
+    for (let i = beds.length - 1; i >= 0; i--) {
+      const b = beds[i];
+      if (b.S.running || b.done) continue;
+      b.done = true;
+      if (b.S === S) { onEnd(); }
+      else { recordBackground(b.S); }
+      beds.splice(i, 1);
+    }
+    if (beds.length) {
+      if (activeIdx >= beds.length) activeIdx = beds.length - 1;
+      if (!beds[activeIdx].S.running) activeIdx = 0;
+      if (beds[activeIdx] && S !== beds[activeIdx].S) { S = beds[activeIdx].S; renderAll(); }
+    }
+  }
+  requestAnimationFrame(loop);
+}
+
+/* ---------------- 音效调度 ---------------- */
+function pumpSound(ts) {
+  if (!window.SOUND || !SOUND.enabled) return;
+  const now = ts / 1000;
+  const sp = ff ? 20 : speed;
+  if (S.rhythm === 'sinus') {
+    const beatSec = 60 / Math.max(30, S.hr);
+    const interval = Math.max(0.22, beatSec / Math.min(sp, 4));
+    if (now >= nextBeat) {
+      SOUND.beat(S.spo2, S.spo2 < 92 || S.k > 6.5);
+      nextBeat = now + interval;
+    }
+  } else if (now >= nextAlarm) {
+    SOUND.alarm();
+    nextAlarm = now + 1.5;
+  }
+}
+
+function renderHUD() {
+  try {
+    /* 兜底：现实模式下任何时候发现没参保，补一份（开局/读档/切床都覆盖） */
+    if (realism && S && !S.ins) initInsurance();
+    let el = document.getElementById('budgetChip');
+    if (realism && S && S.ins) {
+      if (!el) {
+        el = document.createElement('span');
+        el.id = 'budgetChip';
+        el.className = 'pill num';
+        el.style.cssText = 'margin-right:6px';
+        const host = document.querySelector('.top .seg') || document.querySelector('.top');
+        if (host) host.parentNode.insertBefore(el, host);
+      }
+      const cs = costSummary();
+      const over = cs.selfPay > cs.cap;
+      el.textContent = '自付 ¥' + cs.selfPay + ' / ' + cs.cap;
+      el.style.color = over ? '#c0392b' : '';
+      el.style.display = '';
+    } else if (el) {
+      el.style.display = 'none';
+    }
+  } catch (e) {}
+  renderBedBar();
+  $('#clock').textContent = E.fmt(S.t);
+  renderVitals();
+  renderStates();
+  if (selected) renderOrganPanel();
+  checkCrucial();
+}
+
+let lastCrit = '';
+function checkCrucial() {
+  const s = E.snapshot(S);
+  const key = `${s.rhythm}|${s.k > 7.2}|${s.sys < 70}`;
+  if (key !== lastCrit) {
+    lastCrit = key;
+    if (s.rhythm === 'vf') { ff = false; speed = 1; syncSpeedUI(); toast('室颤！立即除颤', true); }
+    else if (s.rhythm === 'asystole') { ff = false; speed = 1; syncSpeedUI(); toast('心静止', true); }
+  }
+}
+function syncSpeedUI() {
+  $('#speed').querySelectorAll('.pill[data-s]').forEach(x => {
+    x.classList.toggle('on', +x.dataset.s === speed);
+  });
+  const f = $('#ff'); f.classList.toggle('on', ff); f.textContent = ff ? '快进中' : '快进';
+}
+
+let toastTimer = null;
+function toast(msg, urgent) {
+  const t = $('#toast');
+  t.innerHTML = msg;
+  t.style.background = urgent ? '#9b2c2c' : '#2a2320';
+  t.classList.add('on');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('on'), 2600);
+}
+
+/* ---------------- 结束 / 复盘 ---------------- */
+function buildTimeline() {
+  const rows = (S.tl || []).map(e =>
+    `${E.fmt(e.t)}  ${e.label}　|　BP ${e.sys}/${e.dia}　HR ${e.hr}　SpO₂ ${e.spo2}%　K ${e.k}　pH ${e.ph}`);
+  if (!rows.length) return S.log.slice(-8).map(l => `${l[0]}  ${l[1]}`).join('\n');
+  if (rows.length > 16) return rows.slice(0, 4).concat(['…']).concat(rows.slice(-11)).join('\n');
+  return rows.join('\n');
+}
+
+function recordBackground(st) {
+  try { st._level = level; st._beds = beds.length; } catch (e) {}
+  try {
+    if (window.DIAGNOSIS && window.HANDBOOK) {
+      const dx = window.DIAGNOSIS.classify(st);
+      window.HANDBOOK.record(window.HANDBOOK.fromCase(st, dx));
+    }
+  } catch (e) { console.warn('[beds] 后台结算记录失败', e); }
+  try {
+    pushRecord({ 时间: new Date().toLocaleString('zh-CN', { hour12: false }),
+      病例名: (st.cas && st.cas.name) || st.caseId,
+      诊断: (st.cas && st.cas.name) || st.caseId,
+      结局: st.discharged ? '出院' : '死亡', 耗时: Math.round(st.t / 60),
+      费用: Math.round(st.cost), 评分: E.finalScore(st) });
+  } catch (e) {}
+}
+
+function switchBed(i) {
+  if (i < 0 || i >= beds.length) return;
+  if (beds[i].S === S) { closeSheet(); return; }
+  activeIdx = i;
+  S = beds[i].S;
+  ended = false; lastCrit = '';
+  organBuiltFor = null;
+  closeSheet();
+  document.querySelector('#detail')?.classList.remove('on');
+  drawBody();
+  selectOrgan('heart');
+  renderAll();
+  showAdvice(false);
+  flashBedBar(4200);
+  toast(`切换到床位 ${i + 1}：${S.cas.name}`);
+}
+
+
+/* ---------------- 统计面板 ---------------- */
+function openStats() {
+  let recs = [];
+  try { recs = JSON.parse(localStorage.getItem('life.records') || '[]') || []; } catch (e) {}
+  let hb = { entries: [] };
+  try { hb = JSON.parse(localStorage.getItem('life.handbook') || 'null') || { entries: [] }; } catch (e) {}
+  let ach = [];
+  try { ach = JSON.parse(localStorage.getItem('life.ach') || '[]') || []; } catch (e) {}
+
+  const total = recs.length;
+  const cured = recs.filter(r => r.结局 === '出院').length;
+  const died = recs.filter(r => r.结局 === '死亡').length;
+  const rate = total ? Math.round(cured / total * 100) : 0;
+  const avg = k => {
+    const v = recs.map(r => Number(r[k]) || 0);
+    return v.length ? Math.round(v.reduce((a, b) => a + b, 0) / v.length) : 0;
+  };
+
+  /* 最常见的诊断 */
+  const dxCount = {};
+  for (const e of (hb.entries || [])) dxCount[e.name] = e.encounters || 0;
+  const topDx = Object.entries(dxCount).sort((a, b) => b[1] - a[1]).slice(0, 5);
+
+  /* 最常见的误治 */
+  const misCount = {};
+  for (const e of (hb.entries || [])) {
+    for (const m of (e.mistreatments || [])) {
+      const k = String(m.text || '').slice(0, 24);
+      misCount[k] = (misCount[k] || 0) + 1;
+    }
+  }
+  const topMis = Object.entries(misCount).sort((a, b) => b[1] - a[1]).slice(0, 5);
+
+  let html = '';
+  html += '<div class="sec">总体</div>';
+  html += '<div style="padding:0 12px 10px">';
+  html += '<table style="width:100%;border-collapse:collapse;font-size:13px">';
+  const row = (k, v) => '<tr><td style="padding:6px 4px;color:#8a8078">' + k + '</td>' +
+    '<td style="padding:6px 4px;text-align:right;font-weight:600">' + v + '</td></tr>';
+  html += row('总局数', total);
+  html += row('痊愈出院', cured);
+  html += row('死亡', died);
+  html += row('治愈率', rate + '%');
+  html += row('平均耗时', avg('耗时') + ' min');
+  html += row('平均费用', '¥' + avg('费用'));
+  html += row('平均评分', avg('评分'));
+  html += row('解锁成就', (Array.isArray(ach) ? ach.length : Object.keys(ach).length) + ' 个');
+  html += '</table></div>';
+
+  html += '<div class="sec">最常遇到的诊断</div><div style="padding:0 12px 10px">';
+  if (topDx.length) html += topDx.map(([n, c]) => row(n, c + ' 次')).join('');
+  else html += '<div style="color:#9a9a9a;font-size:13px;padding:6px">还没有记录</div>';
+  html += '</div>';
+
+  html += '<div class="sec">最常犯的错</div><div style="padding:0 12px 14px">';
+  if (topMis.length) html += topMis.map(([n, c]) => row(n, c + ' 次')).join('');
+  else html += '<div style="color:#9a9a9a;font-size:13px;padding:6px">暂时没有——保持住</div>';
+  html += '</div>';
+
+  /* 近 10 局走势 */
+  const last = recs.slice(-10);
+  if (last.length) {
+    html += '<div class="sec">最近 ' + last.length + ' 局评分</div><div style="padding:0 12px 14px">';
+    html += last.map(r => {
+      const sc = Number(r.评分) || 0;
+      const w = Math.max(4, Math.round(sc * 1.6));
+      const col = r.结局 === '出院' ? '#7fb069' : '#c0392b';
+      return '<div style="display:flex;align-items:center;gap:8px;margin:4px 0">' +
+        '<span style="flex:0 0 96px;font-size:11px;color:#8a8078;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
+        String(r.病例名 || '') + '</span>' +
+        '<span style="display:inline-block;height:10px;border-radius:5px;background:' + col + ';width:' + w + 'px"></span>' +
+        '<span style="font-size:11px;color:#6b625d">' + sc + '</span></div>';
+    }).join('');
+    html += '</div>';
+  }
+
+  openSheet('统计', '从病历档案与手册汇总', []);
+  const list = document.querySelector('#sheetList');
+  if (list) list.innerHTML = html;
+}
+
+function applyFontScale() {
+  try {
+    document.documentElement.style.zoom = bigFont ? '1.10' : '';
+    document.documentElement.style.setProperty('--life-zoom', bigFont ? '1.10' : '1');
+  } catch (e) {}
+}
+
+let bedBarHideAt = 0;
+function flashBedBar(ms) {
+  bedBarHideAt = Date.now() + (ms || 4000);
+  renderBedBar();
+}
+
+function mountBedBar() {
+  if (document.getElementById('bedBar')) return;
+  const el = document.createElement('div');
+  el.id = 'bedBar';
+  el.style.cssText = [
+    'position:fixed', 'left:50%', 'transform:translateX(-50%)',
+    'bottom:calc(env(safe-area-inset-bottom, 0px) + 64px)',
+    'display:none', 'align-items:center', 'gap:6px',
+    'padding:5px 10px', 'border-radius:999px',
+    'background:rgba(255,255,255,.92)', 'box-shadow:0 2px 10px rgba(0,0,0,.10)',
+    'font-size:12px', 'color:#6b625d', 'z-index:60', 'cursor:pointer',
+    'backdrop-filter:blur(8px)', '-webkit-backdrop-filter:blur(8px)',
+    'transition:opacity .45s ease',
+  ].join(';');
+  el.addEventListener('click', () => openBeds());
+  /* 窄屏时把胶囊挪到右下，避免压住导师提示卡 */
+  if (!document.getElementById('bedBarStyle')) {
+    const st2 = document.createElement('style');
+    st2.id = 'bedBarStyle';
+    st2.textContent = '@media (max-width: 560px){ #bedBar{ left:auto !important; right:12px !important; transform:none !important; } #mentorCard{ padding-right:118px !important; } }';
+    document.head.appendChild(st2);
+  }
+  document.body.appendChild(el);
+}
+function renderBedBar() {
+  const el = document.getElementById('bedBar');
+  if (!el) return;
+  /* 抽屉或详情打开时让位 */
+  const maskOn = document.getElementById('mask');
+  const detailOn = document.getElementById('detail');
+  if ((maskOn && maskOn.classList.contains('on')) || (detailOn && detailOn.classList.contains('on'))) {
+    el.style.opacity = '0'; el.style.pointerEvents = 'none'; return;
+  }
+  /* 淡出：只在切换床位后的几秒内显示 */
+  el.style.display = 'flex';
+  const show = Date.now() < bedBarHideAt;
+  el.style.opacity = show ? '1' : '0';
+  el.style.pointerEvents = show ? 'auto' : 'none';
+  let html = '<span style="font-weight:600">床位 </span>';
+  for (let i = 0; i < beds.length; i++) {
+    const b = beds[i];
+    const cur = b.S === S;
+    const crit = b.crit ? '#c0392b' : (cur ? '#cf7b86' : '#d8d0ca');
+    html += '<span style="display:inline-block;min-width:18px;height:18px;line-height:18px;text-align:center;' +
+      'border-radius:9px;font-size:11px;color:#fff;background:' + crit + '">' + (i + 1) + '</span>';
+  }
+  html += '<span style="opacity:.55">' + beds.length + '/' + MAX_BEDS + '</span>';
+  el.innerHTML = html;
+}
+
+function openBeds() {
+  const rows = beds.map((b, i) => {
+    const st = b.S;
+    const tag = st.discharged ? '已出院' : (st.death ? '已死亡' : `${Math.round(st.t / 60)} min`);
+    return {
+      n: `床位 ${i + 1} · ${st.cas.name}`,
+      tag: (b.S === S ? '当前 · ' : '') + tag,
+      amt: b.S === S ? '—' : '切换',
+      run: () => switchBed(i),
+    };
+  });
+  rows.push({ sec: '操作' });
+  rows.push({ n: '开一个新病例（占用空床）', tag: `${beds.length}/${MAX_BEDS}`, amt: '新建',
+              run: () => { closeSheet(); startCase(window.CASEGEN.generate(diffFromLevel())); } });
+  openSheet('病房床位', `${beds.length} / ${MAX_BEDS} 张在用`, rows);
+}
+
+function onEnd() {
+  try { S._level = level; S._beds = beds.length; } catch (e) {}
+  ended = true;
+  if (window.SOUND) { if (S.discharged) SOUND.success(); else SOUND.fail(); }
+  clearSave();
+  const s = E.snapshot(S);
+  const ok = S.discharged;
+  const score = E.finalScore(S);
+  const min = Math.round(S.t / 60);
+  const name = (S.cas && S.cas.name) || S.caseId;
+
+  /* === HANDBOOK PATCH: 诊断分类 + 行医手册（只记录本局实际发生的事） === */
+  try {
+    if (window.DIAGNOSIS && window.HANDBOOK) {
+      const endDx = window.DIAGNOSIS.classify(S);
+      /* 出院时异常已被纠正，此时分类会给出"残留下游诊断"（例如高钾治好后只剩急性肾损伤）。
+         优先采用入院时的诊断，除非结束时诊断更严重且证据更强。 */
+      const dx = (S.dx0 && (endDx.confidence || 0) <= (S.dx0.confidence || 0)) ? S.dx0 : endDx;
+      window.HANDBOOK.record(window.HANDBOOK.fromCase(S, dx));
+      /* 合并诊断（如 高钾 + DKA）分别建档；sessionId 加后缀以绕过同局去重 */
+      try {
+        const all = window.DIAGNOSIS.classifyAll ? window.DIAGNOSIS.classifyAll(S, 0.70) : [];
+        let k = 0;
+        for (const dx2 of all) {
+          if (!dx2 || dx2.name === dx.primary) continue;
+          const pTags = new Set(dx.tags || []);
+          const t2 = dx2.tags || [];
+          if (t2.length && t2.every(x => pTags.has(x))) continue;  // 只是主诊断的组分，不单独建档
+          k++;   /* 不再限制个数：每个独立诊断各记一笔 */
+          const rec2 = window.HANDBOOK.fromCase(S, dx2);
+          if (!rec2) continue;
+          const sid = (rec2.sessionId || ('sess' + Date.now())) + '#' + k;
+          rec2.sessionId = sid;
+          if (Array.isArray(rec2.therapies)) rec2.therapies.forEach(t => { t.sessionId = sid; });
+          window.HANDBOOK.record(rec2);
+        }
+      } catch (e2) { console.warn('[handbook] 合并诊断记录失败：', e2); }
+      /* 合并症（慢性肾病、糖尿病…）：这些是真诊断，但不会作为"主诊断"出现，单独记一笔 */
+      try {
+        const comorb = (S.cas && S.cas.comorbidities) || [];
+        comorb.forEach((name, ci) => {
+          if (!name || name === dx.primary) return;
+          const rc = window.HANDBOOK.fromCase(S, { primary: name, name, confidence: 0.9,
+                                                    evidence: ['既往史'], severity: 'moderate', tags: ['comorbid'] });
+          if (!rc) return;
+          const sid2 = (rc.sessionId || ('sess' + Date.now())) + '#c' + ci;
+          rc.sessionId = sid2;
+          if (Array.isArray(rc.therapies)) rc.therapies.forEach(t => { t.sessionId = sid2; });
+          rc.outcome = 'unknown';
+          window.HANDBOOK.record(rc);
+        });
+      } catch (e3) { console.warn('[handbook] 合并症记录失败：', e3); }
+    }
+  } catch (e) {
+    console.warn('[handbook] 本局记录失败：', e);
+  }
+  /* === /HANDBOOK PATCH === */
+
+  /* 病历归档：每例结束追加一条，只留最近 30 条 */
+  pushRecord({
+    时间: new Date().toLocaleString('zh-CN', { hour12: false }),
+    病例名: name,
+    诊断: name,
+    结局: ok ? '出院' : '死亡',
+    耗时: min,
+    费用: Math.round(S.cost),
+    评分: score,
+  });
+
+  /* 成就判定：只报新解锁的，避免刷屏；学习模式按说明不解锁成就 */
+  const newAch = (window.ACHIEVEMENTS && level !== 'learning') ? window.ACHIEVEMENTS.evaluate(S) : [];
+  const achNames = newAch.map(id => {
+    const a = window.ACHIEVEMENTS.list.find(x => x.id === id);
+    return a ? a.name : id;
+  });
+
+  const tl = buildTimeline();
+  const key = ok
+    ? [['诊断', S.cas.name], ['结局', '痊愈出院'], ['耗时', min + ' 分钟'],
+       ['总费用', '¥' + Math.round(S.cost)], ['评分', score + ' / 100']]
+    : [['诊断', S.cas.name], ['结局', '死亡'], ['死因', S.death ? S.death.reason : '—'],
+       ['终末血钾', s.k + ' mmol/L'], ['终末 pH', s.ph], ['评分', score + ' / 100']];
+  if (achNames.length) key.push(['新成就', achNames.join('、')]);
+  openDetail(ok ? '患者出院' : '患者死亡',
+    ok ? `住院 ${min} 分钟 · 费用 ¥${Math.round(S.cost)}`
+       : `${E.fmt(S.t)} · ${S.death ? S.death.reason : ''}`,
+    key,
+    (ok ? '处理流程符合规范。' : '复盘下面这条时间线，找出第一次错过的窗口：') + '\n\n' + tl);
+  if (achNames.length) {
+    setTimeout(() => toast('🏆 解锁成就：' + achNames.join('、')), 500);
+  }
+}
+/* === HANDBOOK PATCH: 手册入口与首次体征提示 === */
+
+/* ---------------- 指标走势图 ---------------- */
+function openChart(gid) {
+  if (!window.CHART) { openDetail('指标走势', '', [['状态', '图表模块未加载']], ''); return; }
+  const groups = window.CHART.GROUPS;
+  const cur = groups.find(x => x.id === gid) || groups[0];
+  openSheet('指标走势', '本局 · ' + cur.name, []);
+  const list = document.querySelector('#sheetList');
+  if (!list) return;
+  list.innerHTML =
+    '<div class="sec">选择指标</div>' +
+    '<div style="display:flex;gap:6px;flex-wrap:wrap;padding:0 10px 12px">' +
+    groups.map(x => '<span class="pill" data-g="' + x.id + '" style="cursor:pointer;' +
+      (x.id === cur.id ? 'background:#f7e6e6;color:#a33;font-weight:700' : '') + '">' + x.name + '</span>').join('') +
+    '</div>' +
+    '<canvas id="chartCv" style="width:100%;height:230px;display:block"></canvas>' +
+    '<div class="note" style="margin:10px 12px;font-size:11.5px;color:#8a8078">' +
+      '采样每 ' + Math.round(30) + ' 游戏秒一次，最多保留最近 720 个点。' +
+    '</div>';
+  const draw = (id) => {
+    window.CHART.render(document.getElementById('chartCv'), S.history || [], id);
+  };
+  draw(cur.id);
+  list.querySelectorAll('[data-g]').forEach(el => {
+    el.addEventListener('click', () => { openChart(el.dataset.g); });
+  });
+}
+
+/* ---------------- 开局必定发病 ----------------
+   有些病理的初始值落在正常范围（例如代谢类早期），玩家开局看到一切都正常，
+   既没有紧张感也不知道从哪下手。这里在开局时做一次"预热"：
+   如果生命体征与关键化验全部正常，就按病程推进几分钟，直到出现异常。
+   间歇性发作的病理（癫痫、甲亢危象、低血糖等）因此会直接从发作中开始。 */
+function isAllNormal(S) {
+  const b = E.bp(S);
+  const bad =
+    S.spo2 < 94 || S.hr > 100 || S.hr < 60 || b.sys < 95 || b.sys > 150 ||
+    S.rr > 22 || S.temp > 37.8 || S.gcs < 15 ||
+    S.k < 3.5 || S.k > 5.3 || S.na < 135 || S.na > 145 ||
+    S.glu < 3.9 || S.glu > 7.8 || S.hb < 110 || S.lac > 2.5 ||
+    S.ph < 7.35 || S.ph > 7.45 || (S.plt && S.plt < 100) || (S.cr && S.cr > 130);
+  return !bad;
+}
+
+function ensurePresentation(S) {
+  if (!S || !S.cas) return S;
+  if (!isAllNormal(S)) return S;
+  /* 最多推进 45 分钟，每步 1 分钟；不致死（若会死就回退到能撑住的那一刻） */
+  let guard = 0;
+  const start = JSON.parse(JSON.stringify({
+    k: S.k, na: S.na, glu: S.glu, vol: S.vol, hr: S.hr, gcs: S.gcs,
+    spo2: S.spo2, lac: S.lac, temp: S.temp, t: S.t,
+  }));
+  while (guard < 45 && isAllNormal(S) && !S.death && S.running) {
+    guard++;
+    try { E.tick(S, 60); } catch (e) { break; }
+    try { if (window.CASEGEN) CASEGEN.step(S, 60, E); } catch (e) { break; }
+  }
+  if (S.death) {
+    /* 预热把病人推死了：退回初始值，改成小幅恶化（保证"已发病"但还救得回来） */
+    S.death = null; S.running = true;
+    S.k = start.k; S.na = start.na; S.glu = start.glu; S.vol = start.vol;
+    S.hr = start.hr; S.gcs = Math.min(start.gcs, 14); S.spo2 = Math.min(start.spo2, 93);
+    S.lac = Math.max(start.lac, 2.8); S.temp = Math.max(start.temp, 37.9);
+  }
+  if (S.tl) S.tl.length = 0;   /* 预热过程不写时间轴，避免玩家看到"凭空"的记录 */
+  S.log = [];
+  /* 开局是否已是重症：决定要不要弹"转入重症"（开局即重症不弹） */
+  try { S._wasSevere = isSevere(S) ? 1 : 0; } catch (e) { S._wasSevere = 0; }
+  /* 给 1.5 秒缓冲，避免刚创建就弹 */
+  try { setTimeout(() => { S._ready = 1; }, 1500); } catch (e) {}
+  return S;
+}
+
+/* 重症弹窗 */
+let severePopup = null;
+function showSeverePopup() {
+  if (severePopup) return;
+  const b = (E.bp ? E.bp(S) : {});
+  const reasons = [];
+  if (S.gcs < 12) reasons.push('意识 GCS ' + S.gcs);
+  if ((b.map || 90) < 65) reasons.push('MAP ' + Math.round(b.map || 0));
+  if (S.spo2 < 90) reasons.push('SpO₂ ' + Math.round(S.spo2) + '%');
+  if (S.k > 6.5) reasons.push('血钾 ' + S.k.toFixed(1));
+  if (S.temp > 39.5) reasons.push('体温 ' + S.temp.toFixed(1) + '℃');
+  if (S.rhythm !== 'sinus') reasons.push('心律异常');
+  if (S.vent) reasons.push('已插管');
+  const el = document.createElement('div');
+  el.id = 'severePopup';
+  el.style.cssText = 'position:fixed;inset:0;z-index:300;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.42)';
+  el.innerHTML =
+    '<div style="width:min(420px,88vw);background:var(--card);color:var(--ink);border-radius:16px;padding:20px 20px 16px;box-shadow:0 20px 60px rgba(0,0,0,.35);border:1px solid rgba(211,58,58,.35)">' +
+      '<div style="font-size:11px;letter-spacing:2px;color:#c0392b;margin-bottom:6px">⚠ 病情加重</div>' +
+      '<div style="font-size:18px;font-weight:700;margin-bottom:8px">已转入重症</div>' +
+      '<div style="font-size:13px;line-height:1.7;color:var(--ink-2)">' + (reasons.length ? reasons.join(' · ') : '生命体征恶化') + '</div>' +
+      '<div style="font-size:12.5px;line-height:1.7;color:var(--ink-3);margin-top:8px">从现在起血液指标改为实时监护；床位费按重症计。</div>' +
+      '<button id="sevOk" style="margin-top:14px;width:100%;padding:11px;border-radius:11px;border:1px solid rgba(211,58,58,.4);background:rgba(211,58,58,.10);color:#c0392b;font:inherit;font-weight:700;cursor:pointer">知道了</button>' +
+    '</div>';
+  document.body.appendChild(el);
+  severePopup = el;
+  const close = () => { el.remove(); severePopup = null; };
+  el.querySelector('#sevOk').addEventListener('click', close);
+  el.addEventListener('click', (ev) => { if (ev.target === el) close(); });
+  if (window.SOUND && SOUND.alarm) { try { SOUND.alarm(); } catch (e) {} }
+}
+
+/* ---------------- 关于 / 隐私 ---------------- */
+function openAbout() {
+  openSheet('关于 · 隐私', 'v' + APP_VERSION, []);
+  const list = document.querySelector('#sheetList');
+  if (!list) return;
+  list.innerHTML =
+    '<div style="padding:12px 14px 6px;font-size:12.5px;line-height:1.9;color:var(--ink-2)">' +
+      '<b style="color:var(--ink)">悬壶</b> · 一间病房，四位患者，时间不会等你。<br>' +
+      '版本 v' + APP_VERSION + '（' + (IS_WEB ? '网页版' : '安卓版') + '）' +
+    '</div>' +
+    '<div class="sec">我们怎么处理你的数据</div>' +
+    '<div style="padding:0 14px 10px;font-size:12.5px;line-height:1.9">' +
+      '· <b>不收集</b>姓名、手机号、位置、设备标识<br>' +
+      '· 游戏进度只存在你的设备上，不上传<br>' +
+      '· 只有在你自己点「反馈问题」并提交时，才会发送版本、病例和体征数据' +
+    '</div>' +
+    '<div class="sec">权限</div>' +
+    '<div style="padding:0 14px 10px;font-size:12.5px;line-height:1.9">' +
+      '安卓版只申请网络权限（检查更新 / 在线版 / 反馈）。不申请存储、相机、麦克风、定位。' +
+    '</div>' +
+    '<div class="sec">医学免责</div>' +
+    '<div style="padding:0 14px 10px;font-size:12.5px;line-height:1.9;color:#a33">' +
+      '本作是教学模拟。所有病例、数值、处置均为教学演示，<b>不构成医疗建议</b>，不能用于真实诊疗。' +
+    '</div>' +
+    '<div style="display:flex;gap:8px;padding:6px 14px 10px">' +
+      '<a href="/privacy.html" target="_blank" class="pill" style="flex:1;padding:11px;text-align:center;text-decoration:none;border-radius:12px">完整隐私政策</a>' +
+      '<button id="abCopy" class="pill" style="flex:1;padding:11px;cursor:pointer;border-radius:12px">复制版本信息</button>' +
+    '</div>' +
+    '<div style="padding:0 14px 16px;font-size:11.5px;color:var(--ink-3);line-height:1.8">' +
+      '建议 16 岁以上玩家使用。' +
+    '</div>';
+  list.querySelector('#abCopy').addEventListener('click', async () => {
+    const t = '悬壶 v' + APP_VERSION + ' · ' + (IS_WEB ? '网页版' : '安卓版');
+    try { await navigator.clipboard.writeText(t); toast('已复制'); } catch (e) { toast(t, true); }
+  });
+}
+
+/* ---------------- 问题反馈 ---------------- */
+function buildFeedbackText() {
+  const lines = [];
+  lines.push('【悬壶 问题反馈】');
+  lines.push('版本：v' + APP_VERSION + '（' + (IS_WEB ? '网页版' : 'APK') + '）');
+  try { lines.push('设备：' + navigator.userAgent.slice(0, 90)); } catch (e) {}
+  if (S) {
+    lines.push('病例：' + (S.cas && S.cas.name || '—') + ' / 难度 ' + (S.diff || caseDiff));
+    const p = S.patient || {};
+    lines.push('病人：' + (p.name || '—') + ' ' + (p.sex || '') + ' ' + (p.age || '') + ' 岁');
+    lines.push('游戏时间：' + Math.round((S.t || 0) / 60) + ' 分钟' + (S.death ? ' · 已死亡' : S.discharged ? ' · 已出院' : ' · 进行中'));
+    lines.push('体征：HR ' + Math.round(S.hr) + ' BP ' + (E.bp(S).sys + '/' + E.bp(S).dia) +
+      ' SpO2 ' + Math.round(S.spo2) + '% T ' + S.temp.toFixed(1) + ' K ' + S.k.toFixed(1) +
+      ' GCS ' + S.gcs);
+    const tail = (S.log || []).slice(-12).map(l => '  ' + l[0] + ' ' + l[1]).join('\n');
+    if (tail) lines.push('最近记录：\n' + tail);
+    const given = (S.given || []).slice(-10).map(g => '  ' + g.n + ' ' + g.d + (g.unit || ''));
+    if (given.length) lines.push('最近用药：\n' + given.join('\n'));
+    /* 会诊码：作者拿到可以原样复现这一例 */
+    try {
+      if (window.SHARE && window.SHARE.make) {
+        const code = window.SHARE.make(S);
+        if (code) {
+          lines.push('会诊码（可复现本例）：');
+          lines.push(code);
+        }
+      }
+    } catch (e) {}
+    const isGen = !!(S.cas && (S.cas.id === 'gen' || S.caseId === 'gen'));
+    const sd = (S.seed != null) ? S.seed : (S.cas && S.cas.seed);
+    lines.push('种子/难度：' + (isGen ? (sd != null ? sd : '随机') : '固定病例') + ' / ' + (S.diff || caseDiff));
+  }
+  lines.push('问题描述：（在这里写你遇到的情况）');
+  return lines.join('\n');
+}
+
+function openFeedback() {
+  const text = buildFeedbackText();
+  openSheet('反馈问题', '复制后发作者即可', []);
+  const list = document.querySelector('#sheetList');
+  if (!list) return;
+  list.innerHTML =
+    '<div style="padding:10px 14px;font-size:12.5px;line-height:1.8;color:var(--ink-2)">' +
+      '下面这段包含了版本、病例、最近的体征与操作记录，作者拿到就能定位问题。' +
+      '把你在"问题描述"里补几句话，然后复制发过去。' +
+    '</div>' +
+    '<div style="padding:0 14px 10px">' +
+      '<textarea id="fbText" style="width:100%;height:220px;padding:10px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink);font:11.5px/1.6 monospace;resize:vertical">' + text.replace(/</g, '&lt;') + '</textarea>' +
+    '</div>' +
+    '<div style="display:flex;gap:8px;padding:0 14px 14px">' +
+      '<button id="fbCopy" class="pill" style="flex:1;padding:11px;cursor:pointer;background:rgba(211,58,58,.10);color:#a33;font-weight:700;border-radius:12px">复制报告</button>' +
+      '<button id="fbSend" class="pill" style="flex:1;padding:11px;cursor:pointer;border-radius:12px">直接提交</button>' +
+      '<button id="fbMail" class="pill" style="flex:1;padding:11px;cursor:pointer;border-radius:12px">邮件发送</button>' +
+    '</div>' +
+    '<div style="padding:0 14px 16px;font-size:12px;color:var(--ink-3);line-height:1.8">' +
+      '"直接提交"在网页版可用（走站点的表单服务）；APK 里请用"复制报告"，发微信/QQ 给作者。' +
+    '</div>';
+
+  const ta = list.querySelector('#fbText');
+  list.querySelector('#fbCopy').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(ta.value); toast('已复制，发给作者即可'); }
+    catch (e) { ta.select(); toast('已选中，请手动复制', true); }
+  });
+  list.querySelector('#fbMail').addEventListener('click', () => {
+    let to = '';
+    try { to = (localStorage.getItem('life.contact') || '').trim(); } catch (e) {}
+    const m = to.match(/[\w.+-]+@[\w-]+\.[\w.-]+/);
+    if (!m) { toast('先在「获取最新版」里填作者邮箱', true); return; }
+    const subject = encodeURIComponent('悬壶 问题反馈 v' + APP_VERSION);
+    const body = encodeURIComponent(ta.value);
+    location.href = 'mailto:' + m[0] + '?subject=' + subject + '&body=' + body;
+  });
+  list.querySelector('#fbSend').addEventListener('click', async () => {
+    if (!IS_WEB) { toast('APK 里请用"复制报告"', true); return; }
+    try {
+      const body = new URLSearchParams({ 'form-name': 'feedback', 'detail': ta.value });
+      const r = await fetch('/', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body });
+      if (r.ok) toast('已提交，谢谢！');
+      else throw new Error('HTTP ' + r.status);
+    } catch (e) {
+      /* 站点没开表单功能时，自动复制，避免用户白填 */
+      try { await navigator.clipboard.writeText(ta.value); toast('提交未开通，已复制报告，发给作者即可'); }
+      catch (e2) { toast('提交未开通，请点「复制报告」', true); }
+    }
+  });
+}
+
+/* ---------------- 版本 / 更新检查 ---------------- */
+const APP_VERSION = '1.50.0';
+const UPDATE_BASE = (function () {
+  try { return localStorage.getItem('life.updateBase') || 'https://xuanhu.netlify.app'; } catch (e) { return 'https://xuanhu.netlify.app'; }
+})();
+
+function cmpVer(a, b) {
+  const pa = String(a).split('.').map(Number), pb = String(b).split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    const x = pa[i] || 0, y = pb[i] || 0;
+    if (x !== y) return x - y;
+  }
+  return 0;
+}
+
+/* 更新 / 下载：优先用"当前站点"（网页版部署在哪就查哪），
+   其次用玩家保存的地址，最后才是校园网服务器。
+   这样校外/公网部署后不需要再连内网。 */
+function updateBaseCandidates() {
+  const list = [];
+  try {
+    const saved = localStorage.getItem('life.updateBase');
+    if (saved) list.push(saved.replace(/\/$/, ''));
+  } catch (e) {}
+  /* 排除本机地址：APK 内部跑在 http://localhost，它不是服务器 */
+  if (/^https?:/.test(location.protocol) && !/^https?:\/\/(localhost|127\.0\.0\.1)/.test(location.origin)) {
+    list.push(location.origin);
+  }
+  list.push('https://xuanhu.netlify.app');
+  list.push('http://10.100.2.93:8791');
+  return Array.from(new Set(list.filter(Boolean)));
+}
+
+function downloadPageUrl(base) {
+  try {
+    const saved = localStorage.getItem('life.downloadPage');
+    if (saved) return saved;
+  } catch (e) {}
+  return (base || updateBaseCandidates()[0] || '') + '/download';
+}
+
+/* 在线更新暂未开放：改为"联系作者获取最新版" */
+function openGetLatest() {
+  openSheet('获取最新版', '当前 v' + APP_VERSION, []);
+  const list = document.querySelector('#sheetList');
+  if (!list) return;
+  let contact = '';
+  try { contact = localStorage.getItem('life.contact') || ''; } catch (e) {}
+  list.innerHTML =
+    '<div style="padding:12px 14px;font-size:13px;line-height:1.9;color:var(--ink-2)">' +
+      '在线更新目前没有开放（需要公网服务器，暂时没搭）。<br>' +
+      '想要新版本的话，直接联系作者要安装包。' +
+    '</div>' +
+    '<div class="sec">当前版本</div>' +
+    '<div style="padding:0 14px 10px;display:flex;align-items:center;gap:10px">' +
+      '<div style="font-size:22px;font-weight:800">v' + APP_VERSION + '</div>' +
+      '<button id="glCopy" class="pill" style="padding:8px 14px;cursor:pointer">复制版本号</button>' +
+      '</div>' +
+      '<div style="padding:0 14px 12px">' +
+      '<a id="glOpen" href="' + 'https://xuanhu.netlify.app' + '" target="_blank" class="pill" style="display:block;padding:12px;text-align:center;text-decoration:none;background:rgba(211,58,58,.10);color:#a33;font-weight:700;border-radius:12px">打开下载页</a>' +
+    '</div>' +
+    '<div class="sec">联系方式</div>' +
+    '<div style="padding:0 14px 10px">' +
+      '<textarea id="glContact" placeholder="在这里写你的联系方式（微信 / QQ / 群号），会保存在本机" ' +
+      'style="width:100%;height:70px;padding:10px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink);font:inherit;font-size:12.5px;resize:none">' + contact + '</textarea>' +
+    '</div>' +
+    '<div style="display:flex;gap:8px;padding:0 14px 14px">' +
+      '<button id="glSave" class="pill" style="flex:1;padding:10px;cursor:pointer">保存</button>' +
+    '</div>' +
+    '<div style="padding:0 14px 16px;font-size:12px;line-height:1.8;color:var(--ink-3)">' +
+      '提示：这个面板里的"联系方式"只存在你这台设备上，发给别人前请自己确认内容。' +
+    '</div>';
+  const ta = list.querySelector('#glContact');
+  list.querySelector('#glSave').addEventListener('click', () => {
+    try { localStorage.setItem('life.contact', ta.value.trim()); } catch (e) {}
+    toast('已保存联系方式');
+  });
+  list.querySelector('#glCopy').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText('悬壶 v' + APP_VERSION); toast('已复制版本号'); }
+    catch (e) { toast('复制失败', true); }
+  });
+}
+
+async function checkUpdate() {
+  openSheet('检查更新', '当前版本 ' + APP_VERSION, []);
+  const list = document.querySelector('#sheetList');
+  if (!list) return;
+  list.innerHTML = '<div style="padding:16px 14px;font-size:13px;color:#8a8078">正在查找更新…</div>';
+
+  const cands = updateBaseCandidates();
+  let info = null, usedBase = null;
+  for (const b of cands) {
+    try {
+      const r = await fetch(b + '/version.json?t=' + Date.now(), { cache: 'no-store' });
+      if (!r.ok) continue;
+      const j = await r.json();
+      if (j && j.version) { info = j; usedBase = b; break; }
+    } catch (e) {}
+  }
+
+  /* 找不到服务器：给出"打开下载页 / 分享给朋友"的路径，而不是死胡同 */
+  if (!info) {
+    const dl = downloadPageUrl(cands[0]);
+    list.innerHTML =
+      '<div style="padding:14px 14px 4px;font-size:13px;line-height:1.8">' +
+        '<div style="color:#8a8078;margin-bottom:8px">没连上更新服务器（校外、或服务器没开）。可以直接打开下载页：</div>' +
+      '</div>' +
+      '<div style="padding:0 14px 12px">' +
+        '<a href="' + dl + '" target="_blank" class="pill" style="display:block;padding:12px;text-align:center;text-decoration:none;background:rgba(211,58,58,.10);color:#a33;font-weight:700;border-radius:12px">打开下载页</a>' +
+      '</div>' +
+      '<div class="sec">下载页地址（可改）</div>' +
+      '<div style="padding:0 14px 10px">' +
+        '<input id="dlUrl" value="' + dl.replace(/"/g, '') + '" style="width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink);font:inherit;font-size:12.5px">' +
+      '</div>' +
+      '<div style="display:flex;gap:8px;padding:0 14px 14px">' +
+        '<button id="dlSave" class="pill" style="flex:1;padding:10px;cursor:pointer">保存地址</button>' +
+        '<button id="dlCopy" class="pill" style="flex:1;padding:10px;cursor:pointer">复制链接</button>' +
+      '</div>' +
+      '<div style="padding:0 14px 16px;font-size:12px;line-height:1.8;color:var(--ink-3)">' +
+        '把网页版放到公网（Netlify Drop 拖一下即可）之后，把地址填在这里，' +
+        '以后点"检查更新"就能直接下载新版，也能把同一个链接发给朋友。' +
+      '</div>';
+    const b1 = list.querySelector('#dlSave');
+    if (b1) b1.addEventListener('click', () => {
+      const v = list.querySelector('#dlUrl').value.trim();
+      try { localStorage.setItem('life.downloadPage', v); } catch (e) {}
+      toast('已保存下载页地址');
+    });
+    const b2 = list.querySelector('#dlCopy');
+    if (b2) b2.addEventListener('click', async () => {
+      const v = list.querySelector('#dlUrl').value.trim();
+      try { await navigator.clipboard.writeText(v); toast('已复制，发给朋友即可'); }
+      catch (e) { toast('复制失败，请手动选择', true); }
+    });
+    return;
+  }
+
+  const newer = cmpVer(info.version, APP_VERSION) > 0;
+  const size = info.apkSize ? (info.apkSize / 1048576).toFixed(2) + ' MB' : '';
+  const dl = downloadPageUrl(usedBase);
+  list.innerHTML =
+    '<div style="padding:14px;font-size:13px;line-height:1.8">' +
+      '<div>当前版本：<b>' + APP_VERSION + '</b></div>' +
+      '<div>服务器版本：<b>' + info.version + '</b>' +
+        (newer ? ' <span style="color:#c0392b">（有新版本）</span>' : ' <span style="color:#27ae60">（已是最新）</span>') + '</div>' +
+      (size ? '<div style="color:#8a8078">安装包：' + size + '</div>' : '') +
+      '<div style="color:#8a8078;font-size:11.5px;margin-top:4px">来源：' + usedBase + '</div>' +
+    '</div>' +
+    '<div class="sec">获取新版本</div>' +
+    '<div style="padding:0 14px 10px;display:flex;gap:8px">' +
+      '<a href="' + dl + '" target="_blank" class="pill" style="flex:1;padding:11px;text-align:center;text-decoration:none;background:rgba(211,58,58,.10);color:#a33;font-weight:700;border-radius:12px">下载页</a>' +
+      '<a href="' + usedBase + (info.apk || '/apk') + '" target="_blank" class="pill" style="flex:1;padding:11px;text-align:center;text-decoration:none;border-radius:12px">直接下 APK</a>' +
+    '</div>' +
+    '<div style="padding:0 14px 16px">' +
+      '<a href="' + usedBase + '/web/" target="_blank" class="pill" style="display:block;padding:11px;text-align:center;text-decoration:none;border-radius:12px">打开在线版（永远最新）</a>' +
+    '</div>';
+}
+
+/* ---------------- 医保说明（给玩家看的） ---------------- */
+function openInsuranceHelp() {
+  openSheet('医保怎么算', '现实模式', []);
+  const list = document.querySelector('#sheetList');
+  if (!list) return;
+  const bindSwitch = () => {
+    list.querySelectorAll('[data-ins]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        if (!realism) { toast('先开启现实模式', true); return; }
+        initInsurance(btn.dataset.ins === 'random' ? 'random' : btn.dataset.ins);
+        toast('已切换：' + (S.ins ? S.ins.t : ''));
+        openInsuranceHelp();
+      });
+    });
+  };
+  const ins = (S && S.ins) ? S.ins : null;
+  const c = (S && S.ins) ? costSummary() : null;
+  list.innerHTML =
+    '<div style="padding:12px 14px 6px;font-size:12.5px;line-height:1.85;color:var(--ink-2)">' +
+      '现实模式会计费。你要盯的不是"医院花多少"，而是<b>病人家庭自己掏多少</b>。' +
+    '</div>' +
+    '<div class="sec">三个数字</div>' +
+    '<div style="padding:0 14px 10px;font-size:12.5px;line-height:1.9">' +
+      '① <b>总费用</b>：药费 + 操作费 + 床位费（普通 ¥25/小时，重症 ¥80/小时）<br>' +
+      '② <b>医保报销</b> = min(封顶线, max(0, 总费用 − 起付线) × 报销比例)<br>' +
+      '③ <b>家庭自付</b> = 总费用 − 医保报销' +
+    '</div>' +
+    '<div class="sec">三条线</div>' +
+    '<div style="padding:0 14px 10px;font-size:12.5px;line-height:1.9">' +
+      '· <b>起付线</b>：先自己掏够这个数，医保才开始报（职工 ¥800 / 居民 ¥500）<br>' +
+      '· <b>封顶线</b>：医保最多报到这个数（职工 ¥3 万 / 居民 ¥1.5 万）<br>' +
+      '· <b>家庭承受力</b> = 家庭月收入 × 3（因病致贫的粗略线）' +
+    '</div>' +
+    '<div class="sec">什么时候算"出事"</div>' +
+    '<div style="padding:0 14px 10px;font-size:12.5px;line-height:1.9">' +
+      '· 自付 > 承受力：提醒<br>' +
+      '· 自付 > 承受力 × 1.3：<b style="color:#c0392b">医保拒付，扣 40 分</b>' +
+    '</div>' +
+    (ins ? (
+      '<div class="sec">本例</div>' +
+      '<div style="padding:0 14px 10px;font-size:12.5px;line-height:1.9">' +
+        '参保：' + ins.t + '（报销 ' + Math.round(ins.rate * 100) + '%）<br>' +
+        '月收入：¥' + ins.income + '　承受力：¥' + Math.round(ins.oopCap) + '<br>' +
+        '当前：总费用 ¥' + c.total + '　报销 ¥' + c.reimb + '　<b>自付 ¥' + c.selfPay + '</b>' +
+      '</div>'
+    ) : '') +
+    '<div class="sec">怎么省</div>' +
+    '<div style="padding:0 14px 10px;font-size:12.5px;line-height:1.9">' +
+      '· 先查再治：不必要的检查先不开<br>' +
+      '· 早发现早处理：拖成重症，床位费翻三倍<br>' +
+      '· 同类药选便宜的（昂丹司琼 vs 昂贵止吐）' +
+    '</div>' +
+    '<div class="sec">切换参保类型</div>' +
+    '<div style="display:flex;gap:6px;padding:0 14px 10px;flex-wrap:wrap">' +
+      ['职工医保', '居民医保', '异地自费', 'random'].map(t =>
+        '<button data-ins="' + t + '" class="pill" style="flex:1;min-width:80px;padding:9px;cursor:pointer;' +
+        ((S && S.ins && (S.ins.t === t || (t === 'random' && false))) ? 'background:rgba(211,58,58,.12);color:#a33;font-weight:700' : '') +
+        '">' + (t === 'random' ? '随机重抽' : t) + '</button>').join('') +
+    '</div>' +
+    '<div style="padding:6px 14px 16px;font-size:12px;color:var(--ink-3);line-height:1.8">' +
+      '不想被费用约束？主页「现实模式」按钮点一下就能关掉，随时可以再开。' +
+    '</div>';
+  bindSwitch();
+}
+
+/* ---------------- 在线版模式 ----------------
+   安装包里是本地网页；如果把它指向一个"在线版"地址，之后所有更新都只是
+   替换服务器上的文件，玩家不需要重新装 APK。 */
+function openOnlineMode() {
+  const cur0 = (function () { try { return localStorage.getItem('life.remoteBase') || ''; } catch (e) { return ''; } })();
+  /* 旧版本可能存过 http://localhost/web/（那是 APK 自己），直接忽略并清掉 */
+  const cur = /localhost|127\.0\.0\.1/.test(cur0) ? '' : cur0;
+  if (!cur && cur0) { try { localStorage.setItem('life.remoteBase', ''); } catch (e) {} }
+  const cand = updateBaseCandidates().filter(b => !/localhost|127\\.0\\.0\\.1/.test(b))[0];
+  const def = cur || (cand ? cand + '/web/' : '');
+  openSheet('在线版模式', '免安装更新', []);
+  const list = document.querySelector('#sheetList');
+  if (!list) return;
+  list.innerHTML =
+    '<div style="padding:12px 14px;font-size:12.5px;line-height:1.8;color:var(--ink-2)">' +
+      '设置后，游戏启动会直接加载这个网址上的版本。以后更新只需要替换服务器上的文件，<b>不用再装 APK</b>。' +
+      '<br>代价：必须联网；离线时请改用本地版。' +
+    '</div>' +
+    '<div style="padding:0 14px 10px">' +
+      '<input id="olUrl" value="' + def.replace(/"/g, '') + '" style="width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink);font:inherit;font-size:12.5px">' +
+    '</div>' +
+    '<div style="display:flex;gap:8px;padding:0 14px 14px">' +
+      '<button id="olGo" class="pill" style="flex:1;padding:10px;cursor:pointer">应用内加载</button>' +
+      '<button id="olBrowser" class="pill" style="flex:1;padding:10px;cursor:pointer;background:rgba(211,58,58,.10);color:#a33;font-weight:700">浏览器打开</button>' +
+      '<button id="olClear" class="pill" style="flex:1;padding:10px;cursor:pointer">清除</button>' +
+    '</div>' +
+    (cur ? '<div style="padding:0 14px 16px;font-size:12px;color:var(--ink-3)">当前：' + cur + '</div>' : '');
+  const save = v => { try { localStorage.setItem('life.remoteBase', v); } catch (e) {} };
+  list.querySelector('#olGo').addEventListener('click', () => {
+    let v = list.querySelector('#olUrl').value.trim();
+    if (!v) { toast('请输入网址', true); return; }
+    if (!/^https?:\/\//.test(v)) { toast('需要以 http:// 或 https:// 开头', true); return; }
+    save(v);
+    toast('正在加载在线版…');
+    setTimeout(() => { location.href = v; }, 400);
+  });
+  list.querySelector('#olBrowser').addEventListener('click', () => {
+    let v = list.querySelector('#olUrl').value.trim();
+    if (!v) { toast('请输入网址', true); return; }
+    if (!/^https?:\/\//.test(v)) { toast('需要以 http:// 或 https:// 开头', true); return; }
+    save(v);
+    window.open(v, '_system');
+    toast('已交给系统浏览器打开');
+  });
+  list.querySelector('#olClear').addEventListener('click', () => {
+    save(''); toast('已清除，下次启动用本地版'); closeSheet();
+  });
+}
+
+/* ---------------- 会诊（分享码） ---------------- */
+function openConsult() {
+  if (!window.SHARE) { openDetail('会诊', '', [['状态', '会诊模块未加载']], ''); return; }
+  openSheet('会诊', '把这一例分享给别的医生，或接手别人的病例', []);
+  const list = document.querySelector('#sheetList');
+  if (!list) return;
+  list.innerHTML =
+    '<div class="sec">我要分享这一例</div>' +
+    '<div style="padding:0 12px 12px">' +
+      '<div style="font-size:12px;color:#8a8078;margin-bottom:8px">会诊码包含：病例来源、病人身份、全部处置与结局。对方粘贴后可以查看你的思路，也可以接手重来。</div>' +
+      '<textarea id="cShareOut" readonly style="width:100%;height:88px;padding:10px;border-radius:10px;border:1px solid #e8e4e2;font:12px/1.5 monospace;background:#faf9f8;resize:none"></textarea>' +
+      '<div style="display:flex;gap:8px;margin-top:8px">' +
+        '<button id="cMake" class="pill" style="flex:1;padding:10px;cursor:pointer">生成本例会诊码</button>' +
+        '<button id="cCopy" class="pill" style="flex:1;padding:10px;cursor:pointer">复制</button>' +
+      '</div>' +
+    '</div>' +
+    '<div class="sec">我要接手别人的病例</div>' +
+    '<div style="padding:0 12px 16px">' +
+      '<textarea id="cIn" placeholder="粘贴对方发来的会诊码（HX1- 开头）" style="width:100%;height:88px;padding:10px;border-radius:10px;border:1px solid #e8e4e2;font:12px/1.5 monospace;background:#faf9f8;resize:none"></textarea>' +
+      '<div style="display:flex;gap:8px;margin-top:8px">' +
+        '<button id="cParse" class="pill" style="flex:1;padding:10px;cursor:pointer">解析并查看</button>' +
+      '</div>' +
+      '<div id="cPreview" style="margin-top:10px"></div>' +
+    '</div>';
+
+  const out = list.querySelector('#cShareOut');
+  list.querySelector('#cMake').addEventListener('click', () => {
+    const code = window.SHARE.make(S);
+    if (!code) { toast('无法生成会诊码', true); return; }
+    out.value = code;
+    toast('会诊码已生成（' + code.length + ' 字）');
+  });
+  list.querySelector('#cCopy').addEventListener('click', async () => {
+    if (!out.value) { toast('先生成会诊码', true); return; }
+    try { await navigator.clipboard.writeText(out.value); toast('已复制'); }
+    catch (e) { out.select(); document.execCommand && document.execCommand('copy'); toast('已选中，请手动复制'); }
+  });
+
+  list.querySelector('#cParse').addEventListener('click', () => {
+    const raw = list.querySelector('#cIn').value;
+    const r = window.SHARE.parse(raw);
+    const pv = list.querySelector('#cPreview');
+    if (!r.ok) { pv.innerHTML = '<div style="color:#c0392b;font-size:12.5px">' + r.err + '</div>'; return; }
+    const d = r.data;
+    const caseName = d.c === 'gen' ? (window.CASEGEN ? (function () {
+      try { const S2 = window.SHARE.rebuild(d, E); return S2 ? S2.cas.name : '随机病例'; } catch (e) { return '随机病例'; }
+    })() : '随机病例') : ((E.CASES && E.CASES[d.c] && E.CASES[d.c].name) || d.c);
+    const acts = (d.a || []).map(x => (x[0] === 'd' ? '给药 ' : '操作 ') + x[2] + (x[3] ? ' ' + x[3] : ''));
+    pv.innerHTML =
+      '<div style="font-size:13px;line-height:1.7">' +
+      '<div><b>' + caseName + '</b></div>' +
+      '<div style="color:#8a8078">病人：' + (d.p.n || '—') + ' · ' + (d.p.x || '') + ' · ' + (d.p.a || '') + ' 岁 · ' + (d.p.w || '') + ' kg</div>' +
+      '<div style="color:#8a8078">结局：' + (d.o === 'death' ? ('死亡' + (d.r ? '（' + d.r + '）' : '')) : d.o === 'discharge' ? '出院' : '未结束') + ' · 用时 ' + d.t + ' 分钟 · 评分 ' + d.sc + '</div>' +
+      '<div style="margin-top:6px;color:#6b625d">处置 ' + acts.length + ' 条：' + (acts.slice(0, 6).join('；') || '无') + (acts.length > 6 ? ' …' : '') + '</div>' +
+      '</div>' +
+      '<button id="cTake" class="pill" style="margin-top:10px;padding:10px 16px;cursor:pointer;background:#f7e6e6;color:#a33;font-weight:700">接手这一例</button>';
+    pv.querySelector('#cTake').addEventListener('click', () => {
+      const ns = window.SHARE.rebuild(d, E);
+      if (!ns) { toast('无法重建该病例', true); return; }
+      beds[activeIdx] = { S: ns };
+      S = ns;
+      ended = false; lastCrit = ''; organBuiltFor = null;
+      closeSheet();
+      drawBody(); selectOrgan('heart'); renderAll(); showAdvice(false);
+      toast('已接手该会诊病例' + (d.p.n ? '：' + d.p.n : ''));
+    });
+  });
+}
+
+/* ---------------- 术语表 ---------------- */
+function openGlossary(q) {
+  if (!window.GLOSSARY) { openDetail('术语表', '', [['状态', '术语模块未加载']], ''); return; }
+  const list = window.GLOSSARY.search(q || '');
+  openSheet('术语表', '点任意名词看解释', []);
+  const host = document.querySelector('#sheetList');
+  if (!host) return;
+  host.innerHTML =
+    '<div style="padding:2px 12px 10px"><input id="glSearch" placeholder="搜索术语、缩写…" ' +
+    'style="width:100%;padding:10px 12px;border-radius:11px;border:1px solid #e8e4e2;font:inherit;' +
+    'font-size:14px;outline:none;background:#faf9f8" value="' + (q || '').replace(/"/g, '&quot;') + '"></div>' +
+    '<div id="glList">' + list.map(t =>
+      '<div class="drow" data-t="' + t.n + '"><span class="nm">' + t.n +
+      (t.abbr ? '<span style="font-size:10px;color:#b3a6a6"> · ' + t.abbr + '</span>' : '') +
+      '</span><span class="amt" style="font-size:11px;color:#9a8f89">' + (t.normal || '') + '</span></div>'
+    ).join('') + '</div>' +
+    (list.length ? '' : '<div style="padding:18px;color:#9a9a9a;font-size:13px">没有匹配的术语</div>');
+  const inp = host.querySelector('#glSearch');
+  if (inp) inp.addEventListener('input', () => openGlossary(inp.value));
+  host.querySelectorAll('[data-t]').forEach(el => {
+    el.addEventListener('click', () => {
+      const card = window.GLOSSARY.renderCard(el.dataset.t);
+      if (card) openDetail(card.title, card.sub, card.kv, '');
+    });
+  });
+}
+
+function openHandbook() {
+  const H = window.HANDBOOK;
+  if (!H) { openDetail('行医手册', '', [['状态', '手册模块未加载']], ''); return; }
+  let html = '';
+  try { html = H.render(); } catch (e) { html = '<div class="sec">手册渲染失败</div>'; }
+  openSheet('行医手册', '我遇到过的诊断 · 疗法 · 误治 · 备注', []);
+  const list = document.querySelector('#sheetList');
+  if (list) {
+    list.innerHTML = '<div style="padding:2px 12px 10px">' +
+      '<input id="hbSearch" placeholder="搜索诊断 / 药名…" ' +
+      'style="width:100%;padding:10px 12px;border-radius:11px;border:1px solid #e8e4e2;' +
+      'font:inherit;font-size:14px;outline:none;background:#faf9f8"></div>' + html;
+    const inp = list.querySelector('#hbSearch');
+    if (inp) {
+      inp.addEventListener('input', () => {
+        const q = inp.value.trim();
+        list.querySelectorAll('details').forEach(d => {
+          d.style.display = (!q || d.textContent.indexOf(q) >= 0) ? '' : 'none';
+        });
+      });
+    }
+  }
+}
+function handbookTag() {
+  try { return window.HANDBOOK ? window.HANDBOOK.entries().length + ' 种诊断' : '未加载'; }
+  catch (e) { return '查看'; }
+}
+function checkSigns() {
+  if (ended || !window.SIGNS) return;
+  let list = [];
+  try { list = window.SIGNS.detect(S) || []; } catch (e) { return; }
+  if (!list.length) return;
+  let fresh = [];
+  try { fresh = window.SIGNS.newOnes(list) || []; } catch (e) { return; }
+  if (!fresh.length) return;
+  try { window.SIGNS.markSeen(fresh); } catch (e) {}
+  const critical = fresh.some(x => x.level === 'critical');
+  const names = fresh.slice(0, 3).map(x => x.name).join('、')
+    + (fresh.length > 3 ? ` 等 ${fresh.length} 项` : '');
+  const brief = fresh[0].brief
+    ? `<br><span style="font-size:11px;opacity:.85">${fresh[0].brief}</span>` : '';
+  toast((critical ? '⚠ 危急体征：' : '新体征：') + names + brief, critical);
+  if (critical) {
+    if (window.SOUND && SOUND.alarm) { try { SOUND.alarm(); } catch (e) {} }
+    try { if (navigator.vibrate) navigator.vibrate([120, 80, 120]); } catch (e) {}
+  }
+}
+/* ---------------- 按钮 ---------------- */
+function bind() {
+  $('#btnDrug').addEventListener('click', () => openDrugSheet());
+  $('#btnOps').addEventListener('click', () => openSheet('操作', '急救与介入', actionRows()));
+  $('#btnBody').addEventListener('click', () => {
+    const rows = testRows();
+    const d = E.dischargeCheck(S);
+    rows.push({ sec: '结局' });
+    rows.push({
+      n: d.ok ? '办理出院' : '出院评估', tag: d.ok ? '可出院' : '未达标',
+      amt: d.ok ? '✓' : '—',
+      run: () => {
+        /* 防重复结算：本局一旦结束（出院或死亡），不能再点 */
+        if (ended || S.discharged || S.death) {
+          closeSheet();
+          toast('本病例已经结束，不能再结算');
+          return;
+        }
+        if (d.ok) { E.endCase(S, 'discharge', '达到出院标准'); closeSheet(); onEnd();
+          try { if (navigator.vibrate) navigator.vibrate(200); } catch (e) {} }
+        else { toast('还不能出院：' + d.reasons.join('、'), true); }
+      },
+    });
+    openSheet('检查 / 结局', '开单后出结果', rows);
+  });
+  $('#btnBlood').addEventListener('click', bloodReport);
+  $('#btnMenu').addEventListener('click', () => openSheet('菜单', '', [
+    {n:(window.SOUND && SOUND.enabled) ? '关闭音效' : '开启音效', tag:'', amt:'', run: () => { if (window.SOUND) { SOUND.enabled = !SOUND.enabled; SOUND.click(); } closeSheet(); toast((window.SOUND && SOUND.enabled) ? '音效已开启' : '音效已关闭'); }},
+    {n:'会诊', tag:'分享 / 接手病例', amt:'查看', run: () => openConsult()},
+    {n:'费用与医保', tag: realism ? '查看明细' : '现实模式才计费', amt:'查看', run: () => openCostSheet()},
+    {n:'检查更新', tag:'在线 · v' + APP_VERSION, amt:'查看', run: () => checkUpdate()},
+    {n:'反馈问题', tag:'带上记录，一键复制', amt:'反馈', run: () => openFeedback()},
+    {n:'关于 · 隐私', tag:'v' + APP_VERSION, amt:'查看', run: () => openAbout()},
+    {n:'获取最新版', tag:'下载页 / 联系方式', amt:'查看', run: () => openGetLatest()},
+    {n:'医保说明 / 切换', tag: realism ? ((S && S.ins ? S.ins.t : '未参保') + ' · 可切换') : '看看怎么算', amt:'查看', run: () => openInsuranceHelp()},
+    {n:'在线版模式', tag:'免安装更新', amt:'设置', run: () => openOnlineMode()},
+    ...(IS_WEB ? [{n:'下载离线版', tag:'APK · 离线可玩', amt:'下载', run: () => { location.href = '/xuanhu.apk'; }}] : []),
+    {n:'统计', tag:'治愈率 · 常犯错', amt:'查看', run: () => openStats()},
+    {n:'病历档案', tag:`最近 ${loadRecords().length} 例`, amt:'查看', run: () => openRecords()},
+    {n:'行医手册', tag: handbookTag(), amt:'查看', run: () => openHandbook()},
+    {n:'指标走势', tag:'血压·心率·血钾…', amt:'查看', run: () => openChart()},
+    {n:'术语表', tag:(window.GLOSSARY?window.GLOSSARY.TERMS.length:0)+' 条', amt:'查看', run: () => openGlossary()},
+    {n:'成就', tag: (window.ACHIEVEMENTS ? `${window.ACHIEVEMENTS.unlocked().size} / ${window.ACHIEVEMENTS.list.length} 已解锁` : '未加载'), amt:'查看', run: () => openAchievements()},
+    {n:'难度设置', tag:'病例难度 ' + caseDiff + ' · 指导 ' + ((MENTOR.LEVELS[level]||MENTOR.LEVELS.intern).name), amt:'', run: () => openSheet('难度设置', '两轴独立', difficultyRows())},
+    {n: nightMode ? '☀ 切回白天' : '🌙 夜间模式', tag: nightMode ? '病情推进 ×1.3 · 界面转暗' : '当前白天', amt:'切换', run: () => { closeSheet(); toggleNight(); }},
+    {n: realism ? '关闭现实模式' : '现实模式（医保与自付）', tag: realism ? ((S && S.ins ? S.ins.t : '已参保') + ' · 点此关闭') : '开：计费，看家庭自付', amt:'切换', run: () => { closeSheet(); toggleRealism(); }},
+    {n: '环境 / 场景', tag: '炎热·寒冷·运动·睡眠', amt: '', run: () => openEnvSheet()},
+    {n: autoHint ? '主动提示：开' : '主动提示：关', tag: autoHint ? '自动显示提示' : '只在给药后点评', amt: '', run: () => {
+      autoHint = !autoHint;
+      try { localStorage.setItem('life.autoHint', autoHint ? '1' : '0'); } catch (e) {}
+      closeSheet();
+      showAdvice(false);
+      toast(autoHint ? '已开启主动提示' : '已改为求助制：点「问上级」才给提示');
+    }},
+    {n: paused ? '继续（已暂停）' : '暂停', tag:'', amt:'', run: () => { paused = !paused; closeSheet(); toast(paused ? '已暂停' : '继续'); }},
+    {n:'返回大厅', tag:'床位 / 成就 / 手册', amt:'进入', run: () => { closeSheet(); showLobby(); }},
+    {n:'病房床位', tag: beds.length + ' / ' + MAX_BEDS, amt:'切换', run: () => openBeds()},
+    {n:'重新开始本病例', tag:'', amt:'', run: () => location.reload()},
+    {n:'切换病例', tag:'', amt:'', run: () => pickCase()},
+    {n:'教程 · 怎么玩', tag:(window.TUTORIAL?window.TUTORIAL.PAGES.length:6)+' 页', amt:'', run: () => { if (window.TUTORIAL) TUTORIAL.open(0); }},
+    {n:'病例说明', tag:'', amt:'', run: () => openDetail(S.cas.name, S.cas.complaint,
+        [['诊断', S.cas.name],
+       ['目标', S.cas.goals.join('；')],
+       ['体质', (S.traits && S.traits.length) ? S.traits.map(x => x.n).join('、') : '无特殊体质'],
+       ['提示', S.cas.hint]], '')},
+  ]));
+  $('#mask').addEventListener('click', closeSheet);
+  $('#detailX').addEventListener('click', () => $('#detail').classList.remove('on'));
+  $('#detail').addEventListener('click', e => { if (e.target.id === 'detail') $('#detail').classList.remove('on'); });
+
+  $('#speed').addEventListener('click', e => {
+    const p = e.target.closest('.pill'); if (!p) return;
+    if (p.id === 'ff') { ff = !ff; syncSpeedUI(); return; }
+    speed = +p.dataset.s; syncSpeedUI();
+  });
+}
+
+function setCaseDiff(v) {
+  caseDiff = Math.max(1, Math.min(5, v | 0));
+  try { localStorage.setItem('life.caseDiff', String(caseDiff)); } catch (e) {}
+  closeSheet();
+  toast('病例难度：' + caseDiff);
+}
+function caseDiffRows() {
+  const names = [
+    '1 普通 · 单一病理（原 1–2 合并）',
+    '2 重症 · 单一病理 + 基础病（原 3–5 合并）',
+    '3 危重 · 双病理叠加 + 基础病',
+    '4 极危 · 三病理叠加 + 特殊体质',
+    '5 噩梦 · 三病理 + 双体质，恶化最快',
+  ];
+  return names.map((n, i) => ({
+    n, tag: (i + 1) === caseDiff ? '当前' : '', amt: '',
+    run: () => setCaseDiff(i + 1),
+  }));
+}
+function difficultyRows() {
+  return [
+    { n: '病例难度', tag: '第 ' + caseDiff + ' 级', amt: '调整',
+      run: () => openSheet('病例难度', '病有多复杂', caseDiffRows()) },
+    { n: '指导强度', tag: (MENTOR.LEVELS[level] || MENTOR.LEVELS.intern).name, amt: '调整',
+      run: () => openSheet('指导强度', '上级医师说多少', levelRows()) },
+  ];
+}
+function diffFromLevel() {
+  return caseDiff;
+}
+function captureInitialDx() {
+  try {
+    if (!window.DIAGNOSIS || !S) return;
+    S.dx0 = window.DIAGNOSIS.classify(S);
+  } catch (e) {}
+}
+
+function startCase(spec, replace) {
+  /* 上一局若在进行中就被切换，记一笔"未结"，避免玩家的经历丢失 */
+  try {
+    if (S && S.running && !S.death && !S.discharged && window.DIAGNOSIS && window.HANDBOOK) {
+      const dx = window.DIAGNOSIS.classify(S);
+      const rec = window.HANDBOOK.fromCase(S, dx);
+      rec.outcome = 'unknown';
+      window.HANDBOOK.record(rec);
+    }
+  } catch (e) { console.warn('[handbook] 未结记录失败：', e); }
+  if (!replace && beds.length >= MAX_BEDS) {
+    closeSheet();
+    toast(`床位已满（最多 ${MAX_BEDS} 张），先处理或结束一个病例`, true);
+    return;
+  }
+  const keepLevel = level;
+  const ns = ensurePresentation(E.create(spec));
+  S = ns;
+  if (realism) initInsurance();   /* 现实模式：开局生成参保类型与家庭承受力 */
+  if (replace && beds.length) {
+    /* 切换病例：占用当前床，而不是新开一张 */
+    beds[activeIdx] = { S: ns };
+  } else {
+    beds.push({ S: ns });
+    activeIdx = beds.length - 1;
+  }
+  level = keepLevel;
+  ended = false; lastCrit = '';
+  $('#detail').classList.remove('on');
+  closeSheet();
+  organBuiltFor = null;
+  drawBody();
+  selectOrgan('heart');
+  renderAll();
+  syncLevel();
+  showAdvice(false);
+  captureInitialDx();
+  const tr = (S.traits && S.traits.length) ? "（" + S.traits.map(x => x.short || x.n).join("、") + "）" : "";
+  toast(`新病例：${S.cas.name}${tr}`);
+}
+function pickCase() {
+  const rows = [
+    { n: '🎲 随机生成新病例', tag: `难度 ${diffFromLevel()}`, amt: '推荐',
+      run: () => startCase(window.CASEGEN.generate(diffFromLevel()), true) },
+    { sec: '固定教学病例' },
+  ];
+  for (const c of Object.values(E.CASES)) {
+    rows.push({ n: c.name, tag: `${c.age}岁 ${c.sex}`, amt: '',
+                run: () => startCase(c.id, true) });
+  }
+  openSheet('选择病例', '随机生成 / 固定教学', rows);
+}
+
+function applyTheme() {
+  try { document.body.classList.toggle('night', !!nightMode); } catch (e) {}
+}
+
+function toggleNight() {
+  nightMode = !nightMode;
+  try { localStorage.setItem('life.night', nightMode ? '1' : '0'); } catch (e) {}
+  applyTheme();
+  toast(nightMode ? '🌙 夜间模式：病情推进加快，提示减少' : '☀ 白天模式');
+  renderAll();
+}
+
+function toggleRealism() {
+  realism = !realism;
+  try { localStorage.setItem('life.realism', realism ? '1' : '0'); } catch (e) {}
+  if (realism && S) {
+    initInsurance();
+    let first = true;
+    try { first = localStorage.getItem('life.insHelpShown') !== '1'; } catch (e) {}
+    if (first) {
+      try { localStorage.setItem('life.insHelpShown', '1'); } catch (e) {}
+      openInsuranceHelp();
+    } else {
+      toast('现实模式：' + (S.ins ? S.ins.t + '，家庭可承受自付 ¥' + Math.round(S.ins.oopCap) : '已参保'));
+    }
+  } else if (S) {
+    S.ins = null;
+    toast('已回到标准模式（不计费、不限费）');
+  }
+  renderAll();
+}
+
+/* ---------------- 医保与费用 ----------------
+   现实模式下的"预算"不是医院限额，而是**家庭自付能力**：
+     总费用 = 医药/操作费 + 床位费（重症更贵）
+     报销   = min(封顶线, max(0, 总费用 − 起付线) × 报销比例)
+     自付   = 总费用 − 报销
+     家庭可承受自付 = 月收入 × 3（因病致贫的粗略线）
+   自付超过承受力 130% → 医保拒付/家庭放弃，重罚。 */
+const INSURANCE = [
+  { t: '职工医保', rate: 0.78, ded: 800, cap: 30000 },
+  { t: '居民医保', rate: 0.58, ded: 500, cap: 15000 },
+  { t: '异地自费', rate: 0.00, ded: 0, cap: 0 },
+];
+
+function initInsurance(forceType) {
+  if (!realism || !S) return;
+  let k;
+  if (forceType != null) {
+    const list = INSURANCE;
+    k = forceType === 'random' ? list[Math.floor(Math.random() * list.length)] : (list.find(x => x.t === forceType) || list[0]);
+  } else {
+    k = INSURANCE[Math.floor(Math.random() * INSURANCE.length)];
+  }
+  const income = 3000 + Math.round(Math.random() * 9000);   // 家庭月收入
+  const keepIncome = (S.ins && S.ins.income) ? S.ins.income : income;
+  S.ins = { ...k, income: keepIncome, oopCap: keepIncome * 3 };
+  S.bedCost = S.bedCost || 0;
+  S._overWarned = 0; S._refused = 0;
+}
+
+function costSummary() {
+  const total = Math.round((S.cost || 0) + (S.bedCost || 0));
+  const ins = S.ins || { rate: 0, ded: 0, cap: 0 };
+  const reimbursable = ins.cap === 0 ? 0 : Math.min(ins.cap, Math.max(0, total - ins.ded) * ins.rate);
+  const selfPay = Math.round(total - reimbursable);
+  return { total, reimb: Math.round(reimbursable), selfPay, cap: S.ins ? S.ins.oopCap : 0 };
+}
+
+function checkBudget() {
+  if (!realism || !S || !S.ins) return;
+  const c = costSummary();
+  if (!S._overWarned && c.selfPay > c.cap) {
+    S._overWarned = 1;
+    toast('⚠ 自付 ¥' + c.selfPay + ' 已超过家庭承受能力 ¥' + c.cap, true);
+  }
+  if (!S._refused && c.selfPay > c.cap * 1.3) {
+    S._refused = 1;
+    S.score = Math.max(0, (S.score || 100) - 40);
+    S.log.push([E.fmt(S.t), '医保拒付：自付超出家庭承受力 130%，本病例计分重罚', 'bad']);
+    toast('⛔ 医保拒付：自付超上限 30%，扣 40 分', true);
+  }
+}
+
+function openCostSheet() {
+  const c = costSummary();
+  const ins = S.ins || { t: '未参保', rate: 0, ded: 0, cap: 0, income: 0 };
+  openDetail('费用与医保', realism ? '现实模式' : '标准模式（不计费）', [
+    ['参保类型', ins.t + (ins.rate ? '（报销 ' + Math.round(ins.rate * 100) + '%）' : '')],
+    ['总费用', '¥' + c.total + (S.bedCost ? '（含床位 ¥' + Math.round(S.bedCost) + '）' : '')],
+    ['医保支付', '¥' + c.reimb],
+    ['家庭自付', '¥' + c.selfPay],
+    ['家庭承受力', '¥' + c.cap + (ins.income ? '（月收入 ¥' + ins.income + ' ×3）' : '')],
+    ['起付线 / 封顶', '¥' + ins.ded + ' / ¥' + ins.cap],
+  ], c.selfPay > c.cap ? '自付已超过家庭承受能力。' : '');
+}
+
+/* 重症判定：重症才给"实时监护"，轻症必须开检查才有新结果 */
+function isSevere(S) {
+  if (!S) return false;
+  const b = (E.bp ? E.bp(S) : { map: S.map || 90 });
+  return !!(S.rhythm !== 'sinus' || S.vent || S.gcs < 12 || (b.map || 90) < 65 ||
+            S.spo2 < 90 || S.hr > 130 || S.hr < 45 || S.k > 6.5 || S.temp > 39.5);
+}
+
+function renderPatient() {
+  const p = (S && S.patient) || {};
+  const nEl = document.getElementById('pname');
+  const mEl = document.getElementById('pmeta');
+  if (nEl) nEl.textContent = p.name || '—';
+  if (mEl) mEl.textContent = [p.age != null ? p.age + ' 岁' : '', p.sex || '', p.weight ? p.weight + ' kg' : '']
+    .filter(Boolean).join(' · ');
+}
+
+function renderPatient() {
+  const p = (S && S.patient) || {};
+  const nEl = document.getElementById('pname');
+  const mEl = document.getElementById('pmeta');
+  if (nEl) nEl.textContent = p.name || '—';
+  if (mEl) mEl.textContent = [p.age != null ? p.age + ' 岁' : '', p.sex || '', p.weight ? p.weight + ' kg' : '']
+    .filter(Boolean).join(' · ');
+}
+
+function renderAll() {
+  renderPatient();
+  renderPatient();
+  mountBedBar(); renderVitals(); renderStates(); renderOrganPanel(); $('#clock').textContent = E.fmt(S.t); }
+
+
+
+/* 更新公告：每次发版在这里加一条（新的放最前面） */
+const RELEASES = [
+  { v: '1.50.0', notes: [
+    '新增「关于 · 隐私」页：数据说明、权限、医学免责',
+    '隐私政策可在游戏内直接查看',
+  ] },
+  { v: '1.49.3', notes: [
+    '反馈新增「邮件发送」（不依赖表单服务）',
+    '表单补上 method/action，便于 Netlify 识别',
+  ] },
+  { v: '1.49.2', notes: [
+    '反馈：提交失败时自动复制报告，不会白填',
+  ] },
+  { v: '1.49.1', notes: [
+    '反馈问题时自动附上会诊码，作者可一键复现病例',
+  ] },
+  { v: '1.49.0', notes: [
+    '网页版直接进游戏，另加「下载离线版」入口',
+    '恢复离线版的在线更新（指向公网站点）',
+    '新增「反馈问题」：一键生成可复制的报告',
+    '药品别名补全：常用叫法都能搜到',
+  ] },
+  { v: '1.48.0', notes: [
+    '公网版上线：https://xuanhu.netlify.app（网页版 + APK 下载）',
+    '「获取最新版」直接打开公网下载页',
+  ] },
+  { v: '1.47.0', notes: [
+    '药物补齐：新增甲泼尼龙、去乙酰毛花苷、普罗帕酮、哌替啶、酚磺乙胺、阿莫西林',
+    '药名别名：搜「氢化可的松」「速尿」「西地兰」「甲强龙」都能找到对应药',
+  ] },
+  { v: '1.46.0', notes: [
+    '修复在线版打不开：允许明文 HTTP、自动填对服务器地址（不再填 localhost）',
+    '在线版新增「浏览器打开」按钮（最稳），应用内加载保留为实验',
+  ] },
+  { v: '1.45.0', notes: [
+    '在线更新暂时关闭，改为「获取最新版 → 联系作者」',
+    '医保可切换参保类型；下载页改用 ASCII 路由',
+  ] },
+  { v: '1.44.0', notes: [
+    '医保可切换参保类型（职工 / 居民 / 自费 / 随机重抽）',
+    '下载页改用 ASCII 路由：/download、/single、/apk',
+  ] },
+  { v: '1.43.0', notes: [
+    '检查更新不再依赖校园网：自动识别当前站点，校外可直连下载页',
+    '新增静态下载页（dist/下载页.html），发给朋友即可玩',
+    '新增「医保说明」：三个数字、三条线、怎么省，进游戏就能看',
+    '现实模式可随时关闭（主页按钮直接切换）',
+  ] },
+  { v: '1.42.0', notes: [
+    '开局必定发病：不会再开局一切正常',
+    '重症弹窗只在病程中"由轻转重"时出现，开局即重症不弹',
+    '科学性修正：SpO₂/PaO₂ 下限、SVR 上限、Cushing 反应封顶',
+    '新增单文件网页版（悬壶-单文件版.html）与在线版模式',
+  ] },
+  { v: '1.41.0', notes: [
+    '难度重排：原 5 档合并为「普通 / 重症」，新增「危重 / 极危 / 噩梦」',
+    '现实模式重做为医保与自付：医保报销、起付线、封顶线、家庭收入决定承受力',
+    '床位费按小时累计，重症 ¥80/h、普通 ¥25/h',
+    '新增：转入重症时弹窗提醒',
+  ] },
+  { v: '1.40.0', notes: [
+    '现实模式改为预算制：每例有额度，超出 30% 医保拒付（扣 40 分）',
+    '轻症需要开检查才有化验结果（全难度生效）',
+    '整体上调病例难度：推进速度随难度 1.26–1.50×，基础病更常见',
+  ] },
+  { v: '1.39.1', notes: [
+    '新增：白天 / 夜间模式（夜间病情推进 ×1.3，界面转暗）',
+    '新增：现实模式（无提示、无参考范围、化验必须开检查）',
+    '重症才持续监护，轻症需要开检查才有新化验结果',
+    '心电图只在点击心脏时显示',
+    '修复：更年期潮热导致体温发散；提示引用了不存在的功能',
+  ] },
+  { v: '1.38.0', notes: [
+    '新增：会诊（分享码，可接手别人的病例）',
+    '新增：网页版与检查更新',
+  ] },
+];
+
+/* ---------------- 大厅（过渡页） ---------------- */
+function lobbyEnsure() {
+  if (document.getElementById('lobbyStyle')) return;
+  const st = document.createElement('style');
+  st.id = 'lobbyStyle';
+  st.textContent = `
+  #lobby { position:fixed; inset:0; z-index:200; display:flex; align-items:center; justify-content:center;
+    background:rgba(252,250,249,.94); backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
+    font-family:inherit; overflow:auto; padding:20px }
+  #lobby .box { width:min(560px, 92vw); max-height:92vh; overflow:auto }
+  #lobby h1 { font-size:24px; font-weight:700; letter-spacing:.5px; margin:0 0 4px }
+  #lobby .sub { font-size:12.5px; color:#8a8078; margin-bottom:18px }
+  #lobby .cap { font-size:11px; color:#a39a94; letter-spacing:1px; margin:16px 0 8px }
+  #lobby .bed { display:flex; align-items:center; gap:12px; padding:14px 16px; border-radius:14px;
+    background:#fff; border:1px solid #eee9e6; margin-bottom:9px; cursor:pointer; transition:.15s }
+  #lobby .bed:hover { border-color:#e2cfcf; transform:translateY(-1px) }
+  #lobby .bed.empty { background:#fbf9f8; border-style:dashed; color:#8a8078 }
+  #lobby .bed .no { width:34px; height:34px; border-radius:10px; background:#f7e6e6; color:#a33;
+    display:flex; align-items:center; justify-content:center; font-weight:700; font-size:14px; flex:0 0 auto }
+  #lobby .bed.empty .no { background:#f0ecea; color:#9a918c }
+  #lobby .bed .nm { flex:1; font-size:14px; font-weight:600 }
+  #lobby .bed .meta { font-size:11.5px; color:#9a918c; font-weight:400; margin-top:2px }
+  #lobby .bed .go { font-size:12px; color:#c0392b }
+  #lobby .links { display:flex; gap:8px; flex-wrap:wrap; margin-top:6px }
+  #lobby .links button { flex:1 1 auto; min-width:88px; padding:11px 10px; border-radius:12px; border:1px solid #eee9e6;
+    background:#fff; font:inherit; font-size:13px; color:#4b433f; cursor:pointer }
+  #lobby .links button:hover { border-color:#e2cfcf }
+  #lobby .foot { margin-top:18px; font-size:11px; color:#b3aaa4; text-align:center }
+  `;
+  document.head.appendChild(st);
+}
+
+function showLobby() {
+  lobbyEnsure();
+  let el = document.getElementById('lobby');
+  if (!el) { el = document.createElement('div'); el.id = 'lobby'; document.body.appendChild(el); }
+  const bedHtml = beds.map((b, i) => {
+    const st = b.S;
+    const mins = Math.round(st.t / 60);
+    const state = st.death ? '已死亡' : (st.discharged ? '已出院' : '进行中');
+    return '<div class="bed" data-bed="' + i + '">' +
+      '<div class="no">' + (i + 1) + '</div>' +
+      '<div class="nm">' + (st.cas && st.cas.name) +
+        '<div class="meta">' + mins + ' 分钟 · ' + state + '</div></div>' +
+      '<div class="go">继续 →</div></div>';
+  }).join('');
+  const emptyCount = Math.max(0, MAX_BEDS - beds.length);
+  const emptyHtml = emptyCount > 0
+    ? '<div class="bed empty" data-new="1"><div class="no">+</div>' +
+      '<div class="nm">开一个新病例<div class="meta">' + beds.length + ' / ' + MAX_BEDS + ' 张床在用</div></div>' +
+      '<div class="go">开始 →</div></div>'
+    : '<div class="bed empty" data-new="0"><div class="no">满</div>' +
+      '<div class="nm">床位已满（' + MAX_BEDS + ' 张）<div class="meta">先处理或结束一个病例</div></div></div>';
+
+  const rel = RELEASES[0];
+  el.innerHTML = '<div class="box">' +
+    '<h1>悬壶</h1>' +
+    '<div class="sub">一间病房，四位患者，时间不会等你。</div>' +
+    '<div style="display:flex;gap:8px;margin:10px 0 4px">' +
+      '<button data-mode="night" style="flex:1;padding:10px;border-radius:12px;border:1px solid var(--line);background:' +
+        (nightMode ? '#1b2028;color:#ffd9a0' : '#fff;color:#4b433f') + ';font:inherit;font-size:13px;cursor:pointer">' +
+        (nightMode ? '🌙 夜间（已开启）' : '☀ 白天 / 🌙 夜间') + '</button>' +
+      '<button data-mode="realism" style="flex:1;padding:10px;border-radius:12px;border:1px solid var(--line);background:' +
+        (realism ? '#1b2028;color:#ffd9a0' : '#fff;color:#4b433f') + ';font:inherit;font-size:13px;cursor:pointer">' +
+        (realism ? '现实模式 开（点这里关闭）' : '现实模式 关（点这里开启）') + '</button>' +
+    '</div>' +
+    (rel ? '<div style="margin:10px 0 2px;padding:10px 12px;border-radius:12px;background:rgba(211,58,58,.07);border:1px solid rgba(211,58,58,.18);font-size:12px;line-height:1.6">' +
+      '<b style="color:#a33">更新公告 · v' + rel.v + '</b><br>' + rel.notes.map(x => '· ' + x).join('<br>') + '</div>' : '') +
+    '<div class="cap">床位</div>' + bedHtml + emptyHtml +
+    '<div class="cap">随身工具</div>' +
+    '<div class="links">' +
+    '<button data-act="handbook">行医手册</button>' +
+    '<button data-act="stats">统计</button>' +
+    '<button data-act="chart">指标走势</button>' +
+    '<button data-act="consult">会诊</button>' +
+    (IS_WEB ? '<button data-act="download">下载离线版</button>' : '') +
+    '<button data-act="ach">成就</button>' +
+    '<button data-act="diff">难度</button>' +
+    '<button data-act="tutorial">教程</button>' +
+    '<button data-act="about">关于·隐私</button>' +
+    '</div>' +
+    '<div class="foot">上级医师：' + ((window.MENTOR && MENTOR.LEVELS[level] && MENTOR.LEVELS[level].name) || '实习') +
+    ' · 病例难度 ' + caseDiff + ' · 已有 ' + beds.length + ' 张床</div>' +
+    '</div>';
+
+  el.querySelectorAll('[data-bed]').forEach(b => {
+    b.addEventListener('click', () => { switchBed(+b.dataset.bed); hideLobby(); });
+  });
+  el.querySelectorAll('[data-new]').forEach(b => {
+    b.addEventListener('click', () => {
+      if (b.dataset.new === '0') { toast('床位已满', true); return; }
+      startCase(window.CASEGEN.generate(diffFromLevel()));
+      hideLobby();
+    });
+  });
+  el.querySelectorAll('[data-mode]').forEach(b => {
+    b.addEventListener('click', () => {
+      if (b.dataset.mode === 'night') toggleNight(); else toggleRealism();
+      showLobby();
+    });
+  });
+  el.querySelectorAll('[data-act]').forEach(b => {
+    b.addEventListener('click', () => {
+      el.style.display = 'none';
+      const act = b.dataset.act;
+      if (act === 'handbook') openHandbook();
+      else if (act === 'stats') openStats();
+      else if (act === 'chart') openChart();
+      else if (act === 'consult') openConsult();
+      else if (act === 'download') { try { location.href = '/xuanhu.apk'; } catch (e) {} }
+      else if (act === 'about') openAbout();
+      else if (act === 'ach') openAchievements();
+      else if (act === 'diff') openDifficulty();
+      else if (act === 'tutorial') openTutorial();
+    });
+  });
+  el.style.display = 'flex';
+}
+
+function hideLobby() {
+  const el = document.getElementById('lobby');
+  if (el) el.style.display = 'none';
+}
+
+/* ---------------- 启动 ---------------- */
+ensureMentorDOM();
+try { autoHint = localStorage.getItem('life.autoHint') === '1'; } catch (e) {}
+try {
+  nightMode = localStorage.getItem('life.night') === '1';
+  realism = localStorage.getItem('life.realism') === '1';
+} catch (e) {}
+applyTheme();
+const _loaded = loadGame();
+document.addEventListener('click', () => { if (window.SOUND) SOUND.unlock(); }, { once: true });
+if (!_loaded && window.CASEGEN) { S = ensurePresentation(E.create(window.CASEGEN.generate(diffFromLevel()))); }
+  if (realism && S && !S.ins) initInsurance();
+bind();
+drawBody();
+bindBedSwipe();
+renderAll();
+syncLevel();
+showAdvice(false);
+if (beds.length > 1) flashBedBar(3000);
+showLobby();
+/* 自动化测试（Playwright 会置 navigator.webdriver）直接进局，避免大厅遮挡点击 */
+if (navigator.webdriver || location.protocol === 'file:') hideLobby();
+/* 设置了在线版地址：启动时提示（不强制跳转，避免断网就进不去） */
+try {
+  const rb = localStorage.getItem('life.remoteBase');
+  if (rb && location.href.indexOf(rb) !== 0) {
+    setTimeout(() => toast('已设置在线版地址，可在菜单里加载：' + rb), 1800);
+  }
+} catch (e) {}
+requestAnimationFrame(loop);
+window.__showLobby = showLobby; window.__hideLobby = hideLobby; window.__checkBudget = checkBudget; window.openChart = openChart; window.openStats = openStats;
+window.__LIFE_GAME = { get S() { return S; }, get beds() { return beds; }, get activeIdx() { return activeIdx; }, E };
+})();
+
+
+
+
+
+
+
+

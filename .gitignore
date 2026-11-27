@@ -1,0 +1,22 @@
+# 构建产物
+app/android/app/build/
+app/android/.gradle/
+app/android/build/
+app/node_modules/
+app/www/
+dist/*.apk
+dist/*.zip
+dist/部署包/
+dist/web/
+shots/
+软著/
+反馈/
+bridge/*.log
+bridge/*.err
+bridge/*.jsonl
+tools/.netlify-token
+*.apk
+
+# 系统
+.DS_Store
+Thumbs.db

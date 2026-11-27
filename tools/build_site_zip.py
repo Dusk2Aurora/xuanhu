@@ -1,29 +1,19 @@
-# -*- coding: utf-8 -*-
-"""用 Python 的 zipfile 重打部署包，保证内部路径是正斜杠 /（Netlify 认这个）。"""
-import os, zipfile
+"""Build and archive the public web release with portable entry names."""
+import zipfile
 
-ROOT = r'D:\文档\deepseek-harness\default-workspace\lifegame'
-DEP = os.path.join(ROOT, 'dist', '部署包')
-OUT = os.path.join(ROOT, 'dist', '悬壶-网站包.zip')
+from build_site import build
+from site_assets import DEPLOY, DIST, SINGLE, web_files
 
-if os.path.exists(OUT):
-    os.remove(OUT)
 
-count = 0
-with zipfile.ZipFile(OUT, 'w', zipfile.ZIP_DEFLATED) as z:
-    for dirpath, dirnames, filenames in os.walk(DEP):
-        for fn in filenames:
-            full = os.path.join(dirpath, fn)
-            rel = os.path.relpath(full, DEP).replace('\\', '/')
-            z.write(full, rel)
-            count += 1
-
-print('打包完成:', OUT)
-print('文件数:', count)
-with zipfile.ZipFile(OUT) as z:
-    names = z.namelist()
-    print('前 10 条:')
-    for n in names[:10]:
-        print('  ', n)
-    bad = [n for n in names if '\\' in n]
-    print('含反斜杠的条目:', len(bad))
+if __name__ == "__main__":
+    build()
+    names = ["LICENSE", "download.html", "privacy.html", "version.json", SINGLE]
+    for _, name in web_files():
+        names.extend([name, "web/" + name])
+    if (DEPLOY / "xuanhu.apk").is_file():
+        names.append("xuanhu.apk")
+    archive = DIST / "悬壶-网站包.zip"
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as bundle:
+        for name in sorted(names):
+            bundle.write(DEPLOY / name, name)
+    print(archive)

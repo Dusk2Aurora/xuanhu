@@ -9,7 +9,7 @@ from docx.shared import Pt, Cm
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
 from docx.oxml.ns import qn
 
-ROOT = r'D:\文档\deepseek-harness\default-workspace\lifegame'
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, '软著')
 os.makedirs(OUT, exist_ok=True)
 

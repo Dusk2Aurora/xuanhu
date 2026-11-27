@@ -1,9 +1,6 @@
 # -*- coding: utf-8 -*-
 """把隐私政策生成一个可部署的静态页面 dist/privacy.html"""
-import os
-
-ROOT = r'D:\文档\deepseek-harness\default-workspace\lifegame'
-DIST = os.path.join(ROOT, 'dist')
+from site_assets import DIST
 
 HTML = """<!DOCTYPE html>
 <html lang="zh-CN">
@@ -78,7 +75,12 @@ HTML = """<!DOCTYPE html>
 </html>
 """
 
-out = os.path.join(DIST, 'privacy.html')
-with open(out, 'w', encoding='utf-8') as f:
-    f.write(HTML)
-print('隐私政策页面:', out)
+def build_privacy():
+    DIST.mkdir(exist_ok=True)
+    page = DIST / 'privacy.html'
+    page.write_text(HTML, encoding='utf-8')
+    return page
+
+
+if __name__ == '__main__':
+    print(build_privacy())

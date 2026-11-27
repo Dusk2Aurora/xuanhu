@@ -15,7 +15,7 @@
  * ========================================================================= */
 (function (root) {
 'use strict';
-let IDENTITY = null;      /* 测试用：固定病人身份；生产环境为 null（每次随机） */
+let IDENTITY = null;      /* 测试用：固定病人身份；生产环境使用病例所带资料 */
 const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
 const lerp  = (a, b, k) => a + (b - a) * k;
 const r1 = x => Math.round(x * 10) / 10;
@@ -23,10 +23,35 @@ const r2 = x => Math.round(x * 100) / 100;
 
 /* 氧解离曲线（Hill）：S = P^2.7 / (P^2.7 + 26.6^2.7) */
 const HILL_P50 = 26.6, HILL_N = 2.7;
-const hill = p => { const x = Math.pow(Math.max(1, p), HILL_N); return x / (x + Math.pow(HILL_P50, HILL_N)); };
+const HILL_P50_POWER = Math.pow(HILL_P50, HILL_N);
+const hill = p => { const x = Math.pow(Math.max(1, p), HILL_N); return x / (x + HILL_P50_POWER); };
+const inverseHill = saturation => HILL_P50 * Math.pow(saturation / (1 - saturation), 1 / HILL_N);
+const MIN_VENOUS_PO2 = inverseHill(0.15);
+const MAX_VENOUS_PO2 = inverseHill(0.85);
 
 /* 药物"体征类"效应键：这些键走瞬时浓度（S.mod），不走累计积分 */
 const MOD_KEYS = ['hr', 'svr', 'sv', 'rr', 'spo2', 'temp', 'gcs'];
+const THYROID_THERAPY = new Set(['propylthiouracil', 'methimazole', 'hydrocortisone', 'dexamethasone', 'propranolol']);
+const COOLING_TARGET = 38.5;
+const WARMING_TARGET = 36.1;
+const DISCHARGE_GLUCOSE_MIN = 4;
+const DISCHARGE_GLUCOSE_MAX = 12;
+const DKA_DISCHARGE_GLUCOSE_MAX_EXCLUSIVE = 11;
+const DISCHARGE_K_MIN = 3.5;
+const DISCHARGE_K_MAX = 5.5;
+const potassiumTarget = `${DISCHARGE_K_MIN}–${DISCHARGE_K_MAX} mmol/L`;
+
+function glucoseDischargeTarget(hasDka, includeDkaMinimum = false) {
+  if (!hasDka) return `${DISCHARGE_GLUCOSE_MIN}–${DISCHARGE_GLUCOSE_MAX} mmol/L`;
+  const minimum = includeDkaMinimum ? `≥${DISCHARGE_GLUCOSE_MIN} 且 ` : '';
+  return `${minimum}<${DKA_DISCHARGE_GLUCOSE_MAX_EXCLUSIVE} mmol/L`;
+}
+
+function temperatureStatus(temp) {
+  if (!Number.isFinite(temp)) return '';
+  if (temp < 35 || temp >= 39.5) return 'crit';
+  return temp < WARMING_TARGET || temp > 37.5 ? 'warn' : '';
+}
 
 /* ---------------- 病例定义（旧版手工病例，保留兼容） ---------------- */
 const CASES = {
@@ -46,7 +71,7 @@ const CASES = {
       kProd: 0.160, lactProd: 0.02, insulinBase: 0.55, contractility: 0.74,
       ecfVd: 12, renalFactor: 0.30,
     },
-    goals: ['血钾降至 5.5 以下', '收缩压维持 ≥ 90', '避免心脏骤停'],
+    goals: [`血钾维持 ${potassiumTarget}`, '收缩压维持 ≥ 90', '避免心脏骤停'],
     hint: '高钾的心电图改变先于症状。先保护心肌，再想办法把钾挪走。',
   },
   dka: {
@@ -63,7 +88,7 @@ const CASES = {
       uo: 1.6, kProd: 0.012, lactProd: 0.03, insulinBase: 0.12,
       contractility: 0.8, ketoneProd: 0.16, ecfVd: 11,
     },
-    goals: ['血糖降至 11 以下', 'pH 升至 7.30 以上', '血钾维持 3.5–5.5'],
+    goals: [`血糖 ${glucoseDischargeTarget(true)}`, 'pH 升至 7.30 以上', `血钾维持 ${potassiumTarget}`],
     hint: '补液是第一位的。胰岛素要小剂量持续，补钾要跟得上——治着治着血钾会掉。',
   },
   bleed: {
@@ -93,7 +118,7 @@ const CASES = {
     id: 'sepsis', name: '感染性休克',
     comorbidities: ['肺部感染'],
     age: 67, sex: '男', weight: 70, bloodType: 'O',
-    complaint: '发热咳嗽 3 天，今日意识模糊、尿少。血压 78/46，皮肤花斑。',
+    complaint: '发热咳嗽 3 天，今日意识模糊、尿少，皮肤花斑。',
     init: {
       vol: 3.70, k: 4.3, na: 132, cl: 98, ca: 1.15, hco3: 17, lac: 5.8, glu: 8.2,
       cr: 186, bun: 24.0, hb: 108, wbc: 19.5, plt: 140,
@@ -175,10 +200,18 @@ const DRUGS = {
       S.log.push(['给药', `氯化钾 ${dose} mmol`, 'warn']);
     } },
   norepi: { cost: 60, name: '去甲肾上腺素', unit: 'μg/min', defaultDose: 8, routes: ['泵入'],
-    ke: 1.6, dur: 20,
-    desc: 'α₁ 激动，收缩血管提升血压。起效 1–2 min。外渗可致组织坏死。',
+    ke: 1.6, dur: 8,
+    desc: 'α₁ 激动，收缩血管提升血压。起效 1–2 min。单次医嘱按有限药效模拟。外渗可致组织坏死。',
     apply: (S, dose) => {
-      S.eff.norepi += dose / 8;
+      const drug = DRUGS.norepi;
+      const scale = dose / drug.defaultDose;
+      S.pk ||= [];
+      S.given ||= [];
+      S.pk.push({ id: 'norepi', n: drug.name, t: S.t, route: drug.routes[0], onset: 1,
+                  dur: drug.dur * (S.pkScale || 1), eff: { svr: 6, hr: 2 }, scale });
+      S.given.push({ id: 'norepi', n: drug.name, d: dose, unit: drug.unit, route: drug.routes[0], t: S.t });
+      S.eff.norepi += scale;
+      if (scale > 0) markCirculatorySupport(S);
       S.log.push(['给药', `去甲肾上腺素 ${dose} μg/min 泵入`, 'good']);
     } },
   amiodarone: { cost: 88, name: '胺碘酮', unit: 'mg', defaultDose: 150, routes: ['静推'],
@@ -218,6 +251,8 @@ const DRUGS = {
 };
 
 /* ---------------- 操作 ---------------- */
+const DELIVERY_DURATION = 10 * 60;
+
 function setBleedingRate(S, site, rate) {
   S.bleedingSites[site] = rate;
   S.bleedRate = Object.values(S.bleedingSites).reduce((sum, value) => sum + value, 0);
@@ -236,15 +271,15 @@ function restoreBleeding(S, saved) {
 
 const ACTIONS = {
   delivery: {
-    name: '终止妊娠', cost: 1600,
-    desc: '子痫前期的唯一根治手段：胎盘娩出后血管痉挛与血小板消耗才会停止。',
+    name: '启动分娩流程', cost: 1600,
+    desc: '启动重度子痫前期的产科处置。模拟流程耗时 10 分钟，胎盘娩出后母体血管痉挛才开始缓解。',
     apply: (S) => {
-      if (!S.tags.includes('preeclampsia')) { S.log.push(['操作', '当前病例无终止妊娠指征', 'warn']); return; }
-      if (S.delivered) { S.log.push(['操作', '已经终止妊娠', 'warn']); return; }
-      S.delivered = true;
-      S.deliveryAt = S.t;
-      S.svr = Math.max(18, (S.svr || 26) - 3);
-      S.log.push(['操作', '终止妊娠 → 胎盘娩出，血管痉挛开始缓解', 'good']);
+      if (!S.running) { S.log.push(['操作', '当前病例已停止推进', 'warn']); return; }
+      if (!S.tags.includes('preeclampsia')) { S.log.push(['操作', '当前病例无分娩处置指征', 'warn']); return; }
+      if (S.delivered) { S.log.push(['操作', '分娩流程已完成', 'warn']); return; }
+      if (Number.isFinite(S.deliveryStartedAt)) { S.log.push(['操作', '分娩流程进行中', 'warn']); return; }
+      S.deliveryStartedAt = S.t;
+      S.log.push([fmt(S.t), '已启动分娩流程，预计 10 分钟后完成', 'good']);
     },
   },
 
@@ -476,7 +511,8 @@ const ACTIONS = {
     apply: (S) => {
       if (S.rhythm === 'vf') {
         const early = Math.max(0, 1 - ((S._vfMin || 0) / 3.5));
-        const drugBonus = (S.eff.amio > 0.2 ? 0.15 : 0) + (S.eff.norepi > 0.3 ? 0.1 : 0);
+        const pressorActivity = Math.max(S.eff.norepi || 0, pumpEffect(S, 'norepi'));
+        const drugBonus = (S.eff.amio > 0.2 ? 0.15 : 0) + (pressorActivity > 0.3 ? 0.1 : 0);
         const prob = clamp(0.20 + 0.35 * early + drugBonus, 0.05, 0.85);
         if (Math.random() < prob) {
           restoreSinusRhythm(S, S.preArrestSv || 55);
@@ -530,14 +566,15 @@ const ACTIONS = {
   },
   oxygen_off: {
     name: '停止吸氧', cost: 0,
-    desc: '恢复室内空气（FiO₂ 21%）。血氧能维持时尽早撤氧，避免吸收性肺不张。',
+    desc: '将吸入氧浓度调至 21%。使用呼吸机时保留当前通气支持。',
     apply: (S) => {
       if (S.fio2 > 0.21 || S.o2 || S.vent) {
         S.hadOxygenSupport = true;
         S.roomAirStableSince = null;
       }
       S.fio2 = 0.21; S.o2 = 0;
-      S.log.push(['操作', '停止吸氧，改室内空气', 'info']);
+      const message = S.vent ? '呼吸机 FiO₂ 已设为 21%，继续机械通气' : '停止吸氧，改室内空气（FiO₂ 21%）';
+      S.log.push(['操作', message, 'info']);
     },
   },
   hyponatremia_care: {
@@ -575,12 +612,22 @@ const TESTS = {
 function makeInsult() {
   return { hypox: 0, dysoxia: 0, acid: 0, hypercapnia: 0, shock: 0, hyperthermia: 0, hypogly: 0, icp: 0, coma: 0 };
 }
-function makeEnv() { return { heat: 0, cold: 0, exercise: 0, sleep: 0 }; }
+function makeEnv() { return { heat: 0, cold: 0, exercise: 0, sleep: 0, cooling: 0, warming: 0 }; }
 function makeMod() { return { hr: 0, svr: 0, sv: 0, rr: 0, spo2: 0, temp: 0, gcs: 0 }; }
 function makeShunt() { return { airway: 0, clot: 0, edema: 0, op: 0, ptx: 0, other: 0 }; }
 
 /* ---------------- 引擎主体 ---------------- */
-function create(caseId) {
+function syncPatientFields(S) {
+  const { sex, age, weight, height } = S.patient;
+  Object.assign(S, { sex, age, weight, height });
+}
+
+function restorePatient(S) {
+  syncPatientFields(S);
+  if (S.traits && root.TRAITS) root.TRAITS.restore(S);
+}
+
+function create(caseId, identity = IDENTITY) {
   const C = (caseId && typeof caseId === 'object') ? caseId : (CASES[caseId] || CASES.hyperkalemia);
   /* 病人身份：病例可提供，缺省则随机生成 */
   const randName = (sx) => {
@@ -590,23 +637,22 @@ function create(caseId) {
     const p = sx === '女' ? FG : MG;
     return SUR[Math.floor(frand()*SUR.length)] + p[Math.floor(frand()*p.length)];
   };
-  /* 病人身份：每次开局都重新随机（同一疾病也会是不同的人），
-     自动化测试可用 E.setIdentity({...}) 固定，避免结果随性别/年龄漂移。 */
-  const forced = IDENTITY;
   const frand = () => Math.random();
-  const pt0 = (forced || (C && C.patient) || {});
-  const sex0 = (C && C.sexReq) || pt0.sex || (frand() < 0.5 ? '男' : '女');   /* 病例本身的性别约束优先 */
-  const age0 = pt0.age != null ? pt0.age : 20 + Math.floor(frand()*60);
-  const wt0 = pt0.weight != null ? pt0.weight : (sex0 === '男' ? 62 : 55) + Math.round(frand()*28);
-  const ht0 = pt0.height != null ? pt0.height : Math.round((sex0 === '男' ? 172 : 160) + (frand()-0.5)*12);
-  const patient = { name: pt0.name || (C && C.patientName) || randName(sex0), sex: sex0, age: age0, weight: wt0, height: ht0 };
+  const pt0 = { sex: C.sex, age: C.age, weight: C.weight, height: C.height, ...C.patient, ...identity };
+  const sex0 = C.sexReq || pt0.sex || (frand() < 0.5 ? '男' : '女');
+  const age0 = pt0.age ?? 20 + Math.floor(frand()*60);
+  const wt0 = pt0.weight ?? (sex0 === '男' ? 62 : 55) + Math.round(frand()*28);
+  const ht0 = pt0.height ?? Math.round((sex0 === '男' ? 172 : 160) + (frand()-0.5)*12);
+  const patient = { name: pt0.name || C.patientName || randName(sex0), sex: sex0, age: age0, weight: wt0, height: ht0 };
 
   const S = {
     t: 0, speed: 1, running: true, patient,
     rhythm: 'sinus',
     drugs: [], eff: { insulin: 0, norepi: 0, amio: 0, furo: 0, ppi: 0 },
-    pk: [], benzoPkVersion: 1, mod: makeMod(), modBase: makeMod(),
-    log: [], tests: {}, score: 100, death: null, discharged: false,
+    pk: [], pumps: {}, benzoPkVersion: 1, mod: makeMod(), modBase: makeMod(),
+    log: [], tests: {}, labSnap: {}, labPrevious: {}, lungExam: { latest: null, previous: null }, xrayReports: [],
+    score: 100, death: null, discharged: false,
+    delivered: false, deliveryStartedAt: null, deliveryAt: null,
     caProtectUntil: -1, dialysisUntil: -1, o2: 0, fio2: 0.21, mapBoost: 0,
     bleedStopped: false, cost: 0, events: [], arrests: 0, infection: 0,
     coag: 1.0, tox: { benzo: 0, op: 0, apap: 0 }, env: makeEnv(),
@@ -628,7 +674,7 @@ function create(caseId) {
     cholinergic: 0, acheActivity: 1, muscarinicBlock: 0,
     pvr: 1.8,                    // 肺血管阻力（Wood 单位量级）
     napqi: 0, gsh: 1, hepatotox: 0,
-    svrDrive: 0, hrDrive: 0, tempDrive: 0,
+    svrDrive: 0, hrDrive: 0, tempDrive: 0, heatstrokeDrive: 0, thyroidHeatDrive: 0,
     icp: 0, naRate: 0, odsRisk: 0,
     vt: 450, vdvt: 0.33, vco2: 200,
     renalFactor: 1, crProd: 1.0, diuresis: 0,
@@ -653,10 +699,10 @@ function create(caseId) {
   S.env = Object.assign(makeEnv(), C.init && C.init.env || {});
   S.tox = Object.assign({ benzo: 0, op: 0, apap: 0 }, C.init && C.init.tox || {});
 
-  S.weight = C.weight || 70;
+  syncPatientFields(S);
   S.caseId = C.id;
   S.cas = C;
-  if (root.TRAITS && C.traits) root.TRAITS.applyInit(S, C.traits);
+  if (root.TRAITS && C.traits) root.TRAITS.applyInit(S, C.traits, C.genVersion > 0 && C.genVersion < 4);
   S.tags = C.tags || ({ hyperkalemia: ['highK'], dka: ['dka'], bleed: ['bleed'],
                         sepsis: ['sepsis'], opioid: ['opioid'] }[C.id] || []);
   /* 红细胞质量由初始 Hb 反推：之后 hb = rbcMass / vol（失血先丢全血、补液才稀释） */
@@ -666,8 +712,8 @@ function create(caseId) {
   S.naMass = S.na * (S.ecfVd + (S.freeWater || 0));
   if (S.na0 == null) S.na0 = S.na;
   S.hb = S.rbcMass / S.vol;
-  S.sao2 = (1 - S.shunt) * hill(S.pao2) + S.shunt * 0.72;
-  S.spo2 = clamp(S.sao2 * 100, 20, 100);
+  S.endCapillaryPo2 = S.pao2;
+  updateOxygenation(S, S.svo2);
   S.pcwp = computePcwp(S);
   S.ph = computePh(S);
   S.history = [];
@@ -746,7 +792,7 @@ function applyDelta(S, key, d) {
     case 'estrogen': S.estrogenExo = clamp((S.estrogenExo || 0) + d, -1, 1.5); break;
     case 'testosterone': S.testosteroneExo = clamp((S.testosteroneExo || 0) + d, -1, 1.5); break;
     case 'coag': S.coag = clamp((S.coag || 1) + d, 0.05, 2.0); break;
-    case 'pao2': S.pao2 = clamp(S.pao2 + d, 30, 300); break;
+    case 'pao2': S.endCapillaryPo2 = clamp(S.endCapillaryPo2 + d, 25, 640); break;
     case 'cr':
       /* 肌酐不再被直接改写：nephrotoxin 通过降低肾清除表达（见 tick） */
       S.renalFactor = clamp((S.renalFactor || 1) * (1 - d / 400), 0.05, 1.5);
@@ -773,17 +819,73 @@ function computePcwp(S) {
 
 /* 模拟器在撤氧后拟合到室内空气；额外观察 5 分钟覆盖体征滞后。 */
 const ROOM_AIR_OBSERVATION = 5 * 60;
+/* 游戏内撤除循环支持后的连续稳定观察窗口。 */
+const CIRCULATION_OBSERVATION = 15 * 60;
+const CIRCULATION_MIN_SYSTOLIC = 90;
+const CIRCULATION_MIN_MAP = 65;
+const CIRCULATORY_PUMPS = new Set(['norepi', 'dobutamine', 'isoproterenol', 'vasopressin']);
+const TIMED_PRESSORS = new Set(['epi', 'dopamine', 'phenylephrine']);
 const DAY = 24 * 60 * 60;
 /* 游戏观察窗口，用近期超限拦截出院；超限提示风险，保留旧病历的既有损伤记录。 */
 const SODIUM_RISK_OBSERVATION = 2 * DAY;
 
-function oxygenEquilibrium(S, fio2, co2) {
-  const aaGrad = 5 + 40 * S.shunt + 25 * Math.max(0, S.vdvt - 0.33);
-  return clamp(fio2 * 713 - co2 / 0.8 - aaGrad, 25, 640);
+function endCapillaryOxygenPressure(S, fio2, co2) {
+  const ventilationDeficit = 5 + 25 * Math.max(0, S.vdvt - 0.33);
+  return clamp(fio2 * 713 - co2 / 0.8 - ventilationDeficit, 25, 640);
+}
+
+function oxygenCapacity(S) {
+  return 1.34 * S.hb * (1 - (S.coHb || 0));
+}
+
+/* Hb 以 g/L 计，氧含量以 mL O₂/L 计。COHb 占用 Hb 位点，溶解氧仍由分压决定。 */
+function oxygenContent(pressure, capacity) {
+  return capacity * hill(pressure) + 0.031 * pressure;
+}
+
+function oxygenPressure(content, capacity, upperPressure) {
+  let low = 0;
+  let high = upperPressure;
+  for (let i = 0; i < 16; i++) {
+    const middle = (low + high) / 2;
+    if (oxygenContent(middle, capacity) < content) low = middle;
+    else high = middle;
+  }
+  return (low + high) / 2;
+}
+
+function venousOxygenContent(S, capillaryContent, capacity) {
+  /* CaO₂ = (1−f)·CcO₂ + f·CvO₂，且 Fick 给出 CaO₂−CvO₂ = VO₂/CO。 */
+  const extraction = S.vo2 / (S.co * (1 - S.shunt));
+  return clamp(capillaryContent - extraction,
+    oxygenContent(MIN_VENOUS_PO2, capacity), oxygenContent(MAX_VENOUS_PO2, capacity));
+}
+
+function arterialOxygenPressure(shunt, capillaryPressure, capillaryContent, venousContent, capacity) {
+  if (shunt <= 0) return capillaryPressure;
+  const arterialContent = lerp(capillaryContent, venousContent, shunt);
+  return oxygenPressure(arterialContent, capacity, Math.max(capillaryPressure, MAX_VENOUS_PO2));
+}
+
+function updateOxygenation(S, initialVenousSaturation = null) {
+  const capacity = oxygenCapacity(S);
+  const capillaryPressure = S.endCapillaryPo2;
+  const capillaryContent = oxygenContent(capillaryPressure, capacity);
+  const venousContent = initialVenousSaturation == null
+    ? venousOxygenContent(S, capillaryContent, capacity)
+    : oxygenContent(inverseHill(clamp(initialVenousSaturation, 0.15, 0.85)), capacity);
+  S.svo2 = hill(oxygenPressure(venousContent, capacity, MAX_VENOUS_PO2));
+  S.pao2 = arterialOxygenPressure(S.shunt, capillaryPressure, capillaryContent, venousContent, capacity);
+  S.sao2 = hill(S.pao2);
+  S.spo2 = S.sao2 * 100;
 }
 
 function roomAirSaturation(S, co2 = S.paco2) {
-  return ((1 - S.shunt) * hill(oxygenEquilibrium(S, 0.21, co2)) + S.shunt * S.svo2) * 100;
+  const pressure = endCapillaryOxygenPressure(S, 0.21, co2);
+  const capacity = oxygenCapacity(S);
+  const capillaryContent = oxygenContent(pressure, capacity);
+  const venousContent = venousOxygenContent(S, capillaryContent, capacity);
+  return hill(arterialOxygenPressure(S.shunt, pressure, capillaryContent, venousContent, capacity)) * 100;
 }
 
 function recordSodiumSample(correction, t, sodium) {
@@ -815,6 +917,16 @@ function trackSodiumCorrection(S) {
 }
 
 function restoreDischargeObservation(S, saved) {
+  S.hadCirculatorySupport = saved.hadCirculatorySupport ?? (
+    Object.keys(S.pumps || {}).some(id => CIRCULATORY_PUMPS.has(id)) ||
+    S.pk?.some(p => p.scale > 0 && isTimedCirculatorySupport(p)) ||
+    S.given?.some(order => order.d > 0 && isTimedCirculatorySupport(order)) || false
+  );
+  if (S.hadCirculatorySupport) {
+    const since = saved.circulationStableSince;
+    S.circulationStableSince = Number.isFinite(since) && since >= 0 && since <= S.t ? since : null;
+    trackCirculationObservation(S);
+  }
   if (saved.respiratoryAssessmentAt == null) delete S.respiratoryAssessmentAt;
   if (saved.hadOxygenSupport == null && (S.vent || S.o2 || S.fio2 > 0.21 ||
       saved.log?.some(([, text]) => /提高吸氧浓度至|停止吸氧|气管插管成功|撤除机械通气/.test(text)))) {
@@ -837,13 +949,40 @@ function restoreDischargeObservation(S, saved) {
   trackSodiumCorrection(S);
 }
 
-/* --- 环境开关（语义不变） --- */
+/* --- 环境与体温处置 --- */
 function setEnv(S, key, on) {
   S.env = S.env || {};
   if (key === 'reset') { S.env = makeEnv(); return S.env; }
-  if (key === 'heat' || key === 'cold') { S.env.heat = 0; S.env.cold = 0; }
+  if (on && (key === 'heat' || key === 'cold')) { S.env.heat = 0; S.env.cold = 0; }
+  if (on && key === 'cooling') {
+    if (!(S.temp > COOLING_TARGET)) return S.env;
+    S.env.warming = 0;
+  }
+  if (on && key === 'warming') {
+    if (!Number.isFinite(S.temp) || S.temp >= WARMING_TARGET) return S.env;
+    S.env.cooling = 0;
+  }
   S.env[key] = on ? 1 : 0;
   return S.env;
+}
+
+function restoreTemperature(S, saved) {
+  if (saved.heatstrokeDrive != null && saved.thyroidHeatDrive != null) return;
+  const heatstroke = S.tags.includes('heatstroke');
+  const thyroid = S.tags.includes('thyroid');
+  if (!heatstroke && !thyroid && !S.tags.includes('seizure')) return;
+  // 旧复合病例只保存一份产热驱动，按各病因的初始占比分配现存负荷。
+  const drive = Math.max(0, saved.tempDrive ?? 0);
+  const heatShare = heatstroke && thyroid ? 1.3 / (1.3 + 0.7) : Number(heatstroke);
+  S.heatstrokeDrive = drive * heatShare;
+  S.thyroidHeatDrive = thyroid ? drive * (1 - heatShare) : 0;
+  S.tempDrive = 0;
+  S.env = Object.assign(makeEnv(), saved.env);
+  if (heatstroke && S.env.cold) {
+    S.env.cold = 0;
+    S.env.cooling = Number(S.temp > COOLING_TARGET);
+  }
+  if (heatstroke && S.temp <= COOLING_TARGET) S.heatstrokeCooled = true;
 }
 
 // Administration records are timestamped in simulation seconds and doses in mg.
@@ -917,16 +1056,138 @@ function restoreBenzodiazepines(S, saved) {
   S.benzoPkVersion = 1;
 }
 
+function infusionDetails(dose, unit, minutes) {
+  return `总量 ${dose} ${unit}，输注 ${minutes} 分钟`;
+}
+
+// 恒速输入和一阶清除后剩余的比例，以本次医嘱的总量为 1。
+function infusionActivity(elapsed, duration, ke) {
+  const supplied = clamp(elapsed, 0, duration);
+  const timeAfter = Math.max(0, elapsed - duration);
+  return -Math.expm1(-ke * supplied) * Math.exp(-ke * timeAfter) / (ke * duration);
+}
+
+function pumpRate(S, drugId) {
+  return S.pumps?.[drugId]?.rate || 0;
+}
+
+function pumpOrder(name, action, rate, unit) {
+  if (action === 'stop') return `停止泵入 ${name}（停泵前 ${rate} ${unit}）`;
+  if (action === 'adjust') return `调整 ${name} 泵速至 ${rate} ${unit}`;
+  return `开始持续静脉泵入 ${name}（${rate} ${unit}）`;
+}
+
+function pumpActivity(pump, route, time) {
+  if (!pump) return 0;
+  // 按默认泵速归一化，各次调速以调整时的实际药物浓度为起点。
+  const decay = -Math.LN2 * Math.max(0, time - pump.t) / (60 * route.pumpHalfLife);
+  return pump.activity * Math.exp(decay) + (pump.rate / route.d) * -Math.expm1(decay);
+}
+
+function pumpEffectScale(activity) {
+  return 4 / (3 / activity + 1);
+}
+
+function isTimedCirculatorySupport(order) {
+  return CIRCULATORY_PUMPS.has(order.id) ||
+    (order.route === '泵入' && TIMED_PRESSORS.has(order.id)) ||
+    (order.route === '静推' && (order.id === 'epi' || order.id === 'milrinone'));
+}
+
+function markCirculatorySupport(S) {
+  S.hadCirculatorySupport = true;
+  S.circulationStableSince = null;
+}
+
+function circulationStable(S, pressure) {
+  return S.rhythm === 'sinus' && pressure.sys >= CIRCULATION_MIN_SYSTOLIC && pressure.map >= CIRCULATION_MIN_MAP;
+}
+
+function activeCirculationSupport(S) {
+  const running = Object.keys(S.pumps || {}).filter(id => CIRCULATORY_PUMPS.has(id) && pumpRate(S, id) > 0);
+  // 旧版泵入医嘱仍走原有 PK 时程，维持和衰减直到该条 PK 记录移除。
+  const timed = (S.pk || []).filter(p => p.scale > 0 && isTimedCirculatorySupport(p) && S.t < timedSupportEndsAt(p));
+  return { running, timed };
+}
+
+function timedSupportEndsAt(order) {
+  return order.t + (order.dur * 1.8 + (order.infusionMinutes || 0)) * 60;
+}
+
+function trackCirculationObservation(S) {
+  if (!S.hadCirculatorySupport) return;
+  const support = activeCirculationSupport(S);
+  if (support.running.length || support.timed.length || !circulationStable(S, bp(S))) S.circulationStableSince = null;
+  else S.circulationStableSince ??= S.t;
+}
+
+function changePump(S, sub, route, rate) {
+  const previous = S.pumps?.[sub.id];
+  const oldRate = previous?.rate || 0;
+  if (rate === oldRate) return null;
+  const action = rate === 0 ? 'stop' : oldRate ? 'adjust' : 'start';
+  S.pumps ||= {};
+  S.pumps[sub.id] = { rate, activity: pumpActivity(previous, route, S.t), t: S.t };
+  if (CIRCULATORY_PUMPS.has(sub.id)) {
+    if (rate > 0) markCirculatorySupport(S);
+    else trackCirculationObservation(S);
+  }
+  const recordedRate = rate || oldRate;
+  S.given ||= [];
+  S.given.push({ id: sub.id, n: sub.n, d: recordedRate, unit: sub.unit, route: route.r, t: S.t, pumpAction: action });
+  if (action === 'start') {
+    S.cost += sub.cost || 0;
+    if (root.TRAITS) root.TRAITS.onDrug(S, sub, rate);
+  }
+  if (rate > 0 && S.lastGiven !== undefined) S.lastGiven = sub.id;
+  S.log.push([fmt(S.t), pumpOrder(sub.n, action, recordedRate, sub.unit), 'good']);
+  return recordedRate;
+}
+
+function stopPump(S, drugId) {
+  const sub = root.SUBSTANCES?.byId(drugId);
+  const route = sub?.routes?.find(rt => rt.pumpHalfLife);
+  return route ? changePump(S, sub, route, 0) : null;
+}
+
+function pumpEffect(S, drugId) {
+  const sub = root.SUBSTANCES?.byId(drugId);
+  const route = sub?.routes?.find(rt => rt.pumpHalfLife);
+  return route ? pumpEffectScale(pumpActivity(S.pumps?.[sub.id], route, S.t)) : 0;
+}
+
+const EFFECT_DECAY_MINUTES = 90;
+
+function insulinActivity(S) {
+  let activity = S.eff.insulin;
+  for (const p of S.pk || []) {
+    if (p.id === 'insulin' && p.infusionMinutes) {
+      activity += p.scale * infusionActivity((S.t - p.t) / 60, p.infusionMinutes, 1 / EFFECT_DECAY_MINUTES);
+    }
+  }
+  return Math.min(3.5, activity);
+}
+
 function give(S, drugId, dose, route) {
   const SUB = root.SUBSTANCES;
   if (SUB) {
     const s = SUB.byId(drugId);
     if (s) {
-      const d = (dose == null ? s.dose : dose);
-      if (s.cost) S.cost += s.cost;
-      let on = s.onset, du = s.dur, refDose = s.dose;
+      const pumpRoute = s.routes?.find(rt => rt.pumpHalfLife);
+      if (pumpRoute) {
+        const rate = dose ?? pumpRoute.d;
+        if ((route && route !== pumpRoute.r && route !== '泵入') || !(Number.isFinite(rate) && rate > 0)) return null;
+        return changePump(S, s, pumpRoute, rate);
+      }
       const selectedRoute = s.routes?.find(x => x.r === route);
-      if (selectedRoute) { on = selectedRoute.on; du = selectedRoute.du; refDose = selectedRoute.d; }
+      const infusionMinutes = selectedRoute?.infusionMinutes;
+      const d = dose ?? (infusionMinutes ? selectedRoute.d : s.dose);
+      if (infusionMinutes && !(Number.isFinite(d) && d > 0)) return null;
+      if (s.cost) S.cost += s.cost;
+      const on = selectedRoute?.on ?? s.onset;
+      const du = selectedRoute?.du ?? s.dur;
+      // 以同等总量的静推剂量作效应标尺，泵速只决定送入体内的时间。
+      const refDose = infusionMinutes ? s.dose : (selectedRoute?.d ?? s.dose);
       const perKg = /\/kg/.test(s.unit || '');
       const wScale = perKg ? (S.weight || 70) / 70 : 1;
       const scale = (d / (refDose || 1)) * wScale;
@@ -935,10 +1196,14 @@ function give(S, drugId, dose, route) {
       if (BENZODIAZEPINES.has(s.id) && benzodiazepineExposure(S).load <= 0.1) {
         S.benzoBaseline = { gcs: S.gcs, rr: S.rr };
       }
-      S.pk.push({ id: s.id, n: s.n, t: S.t, route: selectedRoute?.r || s.route,
-                  onset: on, dur: du * pkMul, eff: s.eff, scale });
+      const order = { id: s.id, n: s.n, t: S.t, route: selectedRoute?.r || s.route,
+                      onset: on, dur: du * pkMul, eff: s.eff, scale,
+                      ...(infusionMinutes ? { infusionMinutes, dose: d, unit: s.unit } : {}) };
+      S.pk.push(order);
+      if (scale > 0 && isTimedCirculatorySupport(order)) markCirculatorySupport(S);
       S.given = S.given || [];
-      S.given.push({ id: s.id, n: s.n, d, unit: s.unit, route: route || s.route, t: S.t });
+      S.given.push({ id: s.id, n: s.n, d, unit: s.unit, route: route || s.route, t: S.t,
+                     ...(infusionMinutes ? { infusionMinutes } : {}) });
       if (root.TRAITS) root.TRAITS.onDrug(S, s, d);
       /* 性激素类药物：给药后进入体内激素库（12 h 半衰期），由 tick 里的激素段合并到 S.estrogen/testosterone */
       if (s.eff && s.eff.estrogen) S.estrogenExo = clamp((S.estrogenExo || 0) + s.eff.estrogen * scale, -1, 1.6);
@@ -953,7 +1218,8 @@ function give(S, drugId, dose, route) {
           if (!(it.a === s.n && prev.includes(it.b)) && !(it.b === s.n && prev.includes(it.a))) continue;
           /* 只有另一种药此刻仍在体内（未过 1.8 个疗程）才算真正的相互作用 */
           const other = it.a === s.n ? it.b : it.a;
-          const alive = (S.pk || []).some(pp => pp.n === other && (S.t - pp.t) < pp.dur * 1.8);
+          const alive = (S.pk || []).some(pp => pp.n === other &&
+            (S.t - pp.t) / 60 < (pp.infusionMinutes || 0) + pp.dur * 1.8);
           if (!alive) continue;
           S._ix = S._ix || {};
           const key = [it.a, it.b].sort().join('|');
@@ -969,9 +1235,12 @@ function give(S, drugId, dose, route) {
       if (s.id === 'organophosphate') S.tox.op += d;
       if (s.id === 'pralidoxime') S.tox.op = Math.max(0, S.tox.op - d * 2);
       if (s.id === 'atropine' && S.tox.op > 0) S.tox.op = Math.max(0, S.tox.op - d);
-      S.log.push([fmt(S.t), `给予 ${s.n} ${d}${s.unit}（${route || s.route || '静推'}）`, 'good']);
+      const label = infusionMinutes
+        ? `开始泵入 ${s.n}（${infusionDetails(d, s.unit, infusionMinutes)}）`
+        : `给予 ${s.n} ${d}${s.unit}（${route || s.route || '静推'}）`;
+      S.log.push([fmt(S.t), label, 'good']);
       if (s.id === 'calcium' || s.id === 'calcium_cl') S.caProtectUntil = S.t + (s.dur || 45) * 60;
-      if (s.id === 'insulin') S.eff.insulin = Math.min(3.5, S.eff.insulin + d / 10);
+      if (s.id === 'insulin' && !infusionMinutes) S.eff.insulin = Math.min(3.5, S.eff.insulin + d / 10);
       if (s.id === 'mannitol') S.icp = Math.max(0, (S.icp || 0) - 0.30 * d / 250);
       /* 苯二氮卓：终止癫痫发作（但也会压低意识——这是本病例的教学点） */
       if ((s.id === 'diazepam' || s.id === 'lorazepam' || s.id === 'midazolam') && (S.seizure || 0) > 0)
@@ -996,6 +1265,7 @@ function give(S, drugId, dose, route) {
   }
   const D = DRUGS[drugId]; if (!D) return null;
   const d = (dose == null ? D.defaultDose : dose);
+  if (drugId === 'norepi' && !(Number.isFinite(d) && d > 0)) return null;
   if (D.cost) S.cost += D.cost;
   D.apply(S, d, route);
   return d;
@@ -1013,8 +1283,25 @@ function urineOutput(S, renalPerf) {
 /* =========================================================================
  * 每帧推进
  * ========================================================================= */
+function finishDelivery(S) {
+  if (!S.running || S.delivered || !Number.isFinite(S.deliveryStartedAt)) return;
+  const dueAt = S.deliveryStartedAt + DELIVERY_DURATION;
+  /* 0.2 秒模拟步长反复相加会在边界处产生微小舍入误差。 */
+  if (S.t < dueAt - 1e-7) return;
+  S.delivered = true;
+  S.deliveryAt = dueAt;
+  S.svr = Math.max(18, (S.svr || 26) - 3);
+  const pressure = bp(S);
+  const saturation = pulseOximetry(S);
+  const maternal = `胎盘已娩出，母体进入产后观察。血压 ${pressure.sys}/${pressure.dia} mmHg，SpO₂ ${saturation == null ? '无信号' : saturation + '%'}`;
+  const newborn = '已交接新生儿科观察，后续结局待随访';
+  S.deliveryRecord = { maternal, newborn };
+  S.log.push([fmt(dueAt), maternal + '。新生儿' + newborn, 'good']);
+}
+
 function tick(S, dtSec) {
   if (!S.running) return S;
+  if (S.circulationStableSince != null && !circulationStable(S, bp(S))) S.circulationStableSince = null;
   const dtMin = Math.max(1e-5, dtSec / 60);
   /* 一次按压操作代表一轮 CPR，灌注支持在两分钟内消退。 */
   S.mapBoost = Math.max(0, (S.mapBoost || 0) - 12.5 * dtMin);
@@ -1023,6 +1310,7 @@ function tick(S, dtSec) {
   if (inArrest) applyArrestPhysiology(S);
   const pleuralLoad = clamp(S.tensionPTX || 0, 0, 1);
   const thyroidDepression = clamp(S.myxedemaSeverity || 0, 0, 1);
+  const previousTime = S.t;
   S.t += dtSec;
 
   const env = S.env || {};
@@ -1052,11 +1340,22 @@ function tick(S, dtSec) {
    * 替代 v0.1 的「累计积分 + 每 45 min 指数衰减」——旧写法在重复给药时
    * 会一路叠加到封顶（例如每 15 min 追加多巴酚丁胺 → HR +60，肺水肿永远压不下来）。 */
   const drugMod = makeMod();
+  let feverReduction = 0;
   let opioidTone = 0;
   let arrestEpinephrine = 0;
   const opioidAntagonized = S.t < (S.naloxoneUntil || -1);
   const concOf = {};   /* 药名 → 当前有效浓度，供相互作用按 PK 时程缩放 */
   S.thyroidReplacement = 0;
+  S.thyroidTherapyActivity = {};
+  for (const [id, pump] of Object.entries(S.pumps || {})) {
+    const sub = root.SUBSTANCES?.byId(id);
+    const route = sub?.routes?.find(rt => rt.pumpHalfLife);
+    if (!route) continue;
+    const activity = pumpActivity(pump, route, S.t);
+    const effectScale = pumpEffectScale(activity);
+    for (const key of MOD_KEYS) drugMod[key] += (sub.eff[key] || 0) * effectScale;
+    concOf[sub.n] = activity;
+  }
   S.pk = S.pk || [];
   for (let i = S.pk.length - 1; i >= 0; i--) {
     const p = S.pk[i];
@@ -1064,6 +1363,23 @@ function tick(S, dtSec) {
     const hl = Math.max(1, p.dur / 4.5);            // 疗程 ≈ 4.5 个半衰期
     const ke = Math.LN2 / hl;
     const lag = Math.max(0, p.onset || 0) * 0.35;   // 起效延迟
+    const infusion = p.infusionMinutes;
+    if (infusion) {
+      const previousElapsed = (previousTime - p.t) / 60;
+      const finishedAt = p.t + infusion * 60;
+      if (previousTime < finishedAt && S.t >= finishedAt) {
+        S.log.push([fmt(finishedAt), `${p.n} 泵入完成（${infusionDetails(p.dose, p.unit, infusion)}）`, 'good', finishedAt]);
+      }
+      const age = el - lag;
+      const previousAge = previousElapsed - lag;
+      const active = infusionActivity(age, infusion, ke);
+      const supplied = (clamp(age, 0, infusion) - clamp(previousAge, 0, infusion)) / infusion;
+      const released = Math.max(0, supplied - active + infusionActivity(previousAge, infusion, ke));
+      for (const key in p.eff) applyDelta(S, key, p.eff[key] * p.scale * released);
+      concOf[p.n] = Math.max(concOf[p.n] || 0, p.scale * active);
+      if (el > infusion + p.dur * 1.8) S.pk.splice(i, 1);
+      continue;
+    }
     if (el > p.dur * 1.8) { S.pk.splice(i, 1); continue; }
     if (el < lag) continue;
     const c = Math.exp(-ke * (el - lag));           // 归一化浓度
@@ -1075,24 +1391,31 @@ function tick(S, dtSec) {
     const plateau = el <= lag + p.dur ? 1 : Math.exp(-ke * (el - lag - p.dur));
     const cMod = BENZODIAZEPINES.has(p.id) ? bolusActivity(p, S.t) * benzoAvailable : Math.max(0, ramp) * plateau;
     concOf[p.n] = Math.max(concOf[p.n] || 0, p.scale * cMod);
+    if (THYROID_THERAPY.has(p.id)) {
+      const activity = (S.thyroidTherapyActivity[p.id] || 0) + p.scale * cMod;
+      S.thyroidTherapyActivity[p.id] = clamp(activity, 0, 1);
+    }
     if (p.id === 'levothyroxine') S.thyroidReplacement = Math.max(S.thyroidReplacement, p.scale * cMod);
     if (inAsystole && p.id === 'epi' && p.route === '静推' && el <= p.dur) {
       arrestEpinephrine = Math.max(arrestEpinephrine, clamp(p.scale, 0, 1) * cMod);
     }
     /* 阿片类：记录当前最大的效应浓度（用于呼吸抑制深度） */
-    if (root.SUBSTANCES) {
-      const sub = root.SUBSTANCES.byId(p.id);
-      if (sub && sub.cls === '阿片') {
-        if (opioidAntagonized) continue;
-        opioidTone = Math.max(opioidTone, p.scale * c);
-      }
+    const sub = root.SUBSTANCES?.byId(p.id);
+    if (sub?.cls === '阿片') {
+      if (opioidAntagonized) continue;
+      opioidTone = Math.max(opioidTone, p.scale * c);
     }
     for (const key in p.eff) {
       if (MOD_KEYS.includes(key)) {
         /* Emax 饱和：E = Emax·D/(EC50+D)，取 EC50=3 使 D=1 时等于原有效应。
            替代线性放大——原来给 10 倍剂量就是 10 倍效应，10 mg 吗啡能把人打死。 */
         const sat = p.scale * 4 / (3 + p.scale);
-        drugMod[key] = (drugMod[key] || 0) + p.eff[key] * sat * cMod;
+        const effect = p.eff[key] * sat * cMod;
+        if (key === 'temp' && effect < 0 && ['NSAID', '解热镇痛', '糖皮质激素'].includes(sub?.cls)) {
+          feverReduction -= effect;
+        } else {
+          drugMod[key] = (drugMod[key] || 0) + effect;
+        }
       } else if (key === 'na') {
         /* 钠在 ECF 内 15–20 min 就完成分布：用更快的速率投递，
            否则 3% 高渗盐水要 2 小时才把血钠抬起来（与临床不符） */
@@ -1145,10 +1468,12 @@ function tick(S, dtSec) {
   S._opioidTone = opioidTone;
 
   /* 效应室（旧版内部通道）指数衰减 */
+  const effectDecay = Math.exp(-dtMin / EFFECT_DECAY_MINUTES);
   for (const k of Object.keys(S.eff)) {
-    S.eff[k] *= Math.exp(-dtMin / 90);
+    S.eff[k] *= effectDecay;
     if (S.eff[k] < 0.001) S.eff[k] = 0;
   }
+  const insulinEffect = insulinActivity(S);
   S.insulinLoad = (S.insulinLoad || 0) * Math.exp(-dtMin / 25);
   S.diuresis = Math.max(0, (S.diuresis || 0) - 0.02 * dtMin);
 
@@ -1234,7 +1559,7 @@ function tick(S, dtSec) {
   /* ---------- 6. 钾 ---------- */
   const kClear = 0.062 * (gfrNow / 110);
   const dialClear = (S.dialysisUntil > S.t) ? 0.20 * Math.max(0, S.k - 3.2) : 0;
-  const insShift = (S.eff.insulin + S.insulinLoad * 0.4) * 0.080 * Math.max(0, S.k - 3.6);
+  const insShift = (insulinEffect + S.insulinLoad * 0.4) * 0.080 * Math.max(0, S.k - 3.6);
   const acidShift = (S.ph < 7.30 ? (7.30 - S.ph) * 0.06 : -(S.ph - 7.30) * 0.04);
   const kExcrete = kClear * clamp((S.k - 3.7) / 1.3, 0, 2.2);   // 低钾时肾小管重吸收↑，排钾趋近 0
   const dk = (S.kProd - kExcrete - dialClear - insShift) / S.ecfVd
@@ -1242,7 +1567,7 @@ function tick(S, dtSec) {
   S.k = clamp(S.k + dk * dtMin, 1.2, 9.8);
 
   /* ---------- 7. 血糖 ---------- */
-  const insEff = S.eff.insulin + (S.insulinLoad || 0) + (S.insulinBase || 0) * 0.30;
+  const insEff = insulinEffect + (S.insulinLoad || 0) + (S.insulinBase || 0) * 0.30;
   /* 基础（胰岛素非依赖）摄取：脑组织每天约耗糖 120 g，折合约 0.10 mmol/min */
   const basalUptake = 0.10;
   const uptake = basalUptake + 0.0248 * S.glu * insEff * (1 + Math.max(0, S.glu - 10) * 0.085);
@@ -1268,17 +1593,10 @@ function tick(S, dtSec) {
   /* PaCO₂ = 0.863 × VCO₂(mL/min) / VA(L/min) —— 肺泡通气方程 */
   const paco2T = clamp(0.863 * S.vco2 / va, 10, 135);
   S.paco2 = lerp(S.paco2, paco2T, clamp(0.5 * dtMin, 0, 1));
-  /* 肺泡氧分压 → 动脉氧分压（A-a 梯度由分流与死腔决定） */
-  const pao2T = oxygenEquilibrium(S, S.fio2 ?? 0.21, S.paco2);
-  S.pao2 = lerp(S.pao2, pao2T, clamp(0.5 * dtMin, 0, 1));
-  /* 分流方程：SaO₂ = (1−Qs/Qt)·Hill(PaO₂) + Qs/Qt·SvO₂
-     混合静脉血氧饱和度不是一个常数：它由 Fick 方程决定（SvO₂ = 1 − VO₂/DO₂）。
-     低心排/高氧耗时 SvO₂ 下降，分流造成的低氧就会明显加重——这是"同一分流、
-     循环越差血氧越低"的机制。 */
-  const svo2Prev = clamp(1 - (S.vo2 || 250) / Math.max(80, S.do2 ?? 900), 0.15, 0.85);
-  S.svo2 = svo2Prev;
-  S.sao2 = clamp((1 - S.shunt) * hill(S.pao2) + S.shunt * svo2Prev, 0.15, 1);
-  S.spo2 = clamp(S.sao2 * 100, 35, 100);   /* 低于 35% 已与生命不相容，模型不再给更低的读数 */
+  /* 通气肺毛细血管先响应 FiO₂；与分流血按氧含量混合后，再求动脉 PaO₂ 和 SaO₂。 */
+  const capillaryTarget = endCapillaryOxygenPressure(S, S.fio2 ?? 0.21, S.paco2);
+  S.endCapillaryPo2 = lerp(S.endCapillaryPo2, capillaryTarget, clamp(0.5 * dtMin, 0, 1));
+  updateOxygenation(S);
 
   /* ---------- 9. 呼吸驱动 / 潮气量 ---------- */
   /* 气道阻力 + 胆碱能分泌物 + 肺水（僵硬肺）→ 呼吸做功
@@ -1414,11 +1732,12 @@ function tick(S, dtSec) {
     const meno = isF && age >= 52;                       // 绝经
     /* 月经周期：育龄女性 28 天一周期（游戏时间推进），雌激素随相位起伏、排卵后基础体温升高 */
     let cycle = 0;
-    if (isF && !meno) {
-      S.cycleDay = ((S.cycleDay || 14) + dtMin / 1440) % 28;
+    S.cycleLuteal = 0;
+    if (isF && age >= 12 && !meno) {
+      S.cycleDay = ((S.cycleDay ?? 14) + dtMin / 1440) % 28;
       const d = S.cycleDay;
       cycle = d < 13 ? 0.15 : (d < 15 ? 0.35 : (d < 23 ? 0.10 : -0.05));   // 排卵前后一个小峰
-      if (d >= 15) S.cycleLuteal = 1; else S.cycleLuteal = 0;
+      S.cycleLuteal = Number(d >= 15);
     }
     const baseE = isF ? (meno ? 0.15 + Math.max(0, (age - 75) * 0.002) : 0.55 - Math.max(0, age - 30) * 0.008)
                       : 0.12;
@@ -1457,9 +1776,27 @@ function tick(S, dtSec) {
     S.ddimer = clamp(S.ddimer, 0.1, 20);
   }
 
-  const tempT = 36.6 + (S.infection || 0) * 3.0 + (S.tempDrive || 0) * 4.6 + (S.flushDrive || 0) * 4.6
+  const fever = Math.max(0, (S.infection || 0) * 3 - feverReduction);
+  const seizureHeat = (S.seizure || 0) > 0.2 ? clamp(S.seizure * 0.55, 0, 0.95) : 0;
+  const heatDrive = (S.tempDrive || 0) + (S.heatstrokeDrive || 0) + (S.thyroidHeatDrive || 0) + seizureHeat;
+  let tempT = 36.6 + fever + 4.6 * (heatDrive + (S.flushDrive || 0)) + 0.25 * (S.cycleLuteal || 0)
       + envTemp + (S.mod.temp || 0) - 2.5 * thyroidDepression;
-  S.temp = lerp(S.temp, tempT, clamp(0.05 * dtMin, 0, 1));
+  if (env.warming) {
+    tempT += (env.cold ? 1 : 0) + clamp(36.6 - tempT, 0, 0.8);
+  }
+  if (env.cooling && S.temp > COOLING_TARGET) tempT -= 3;
+  const prevTemp = S.temp;
+  S.temp = lerp(S.temp, tempT, 1 - Math.exp(-0.05 * dtMin));
+  if (env.cooling && S.temp <= COOLING_TARGET) {
+    if (prevTemp > COOLING_TARGET) S.temp = COOLING_TARGET;
+    env.cooling = 0;
+    if (S.heatstrokeDrive > 0) S.heatstrokeCooled = true;
+    S.log.push([fmt(S.t), '已达降温目标，停止物理降温', 'info']);
+  }
+  if (env.warming && S.temp >= WARMING_TARGET) {
+    env.warming = 0;
+    S.log.push([fmt(S.t), '体温回到参考范围，停止被动保暖', 'info']);
+  }
 
   /* 肝毒性：凝血、乳酸、脑病、肾、血管张力（替代原来模块里直接写 coag/cr/bun） */
   if (S.hepatotox > 0) {
@@ -1483,7 +1820,7 @@ function tick(S, dtSec) {
   const lacProd = (S.lactProd || 0.015) + 0.30 * o2debt + 0.10 * (S.infection || 0)
                 + 0.06 * (S.hepatotox || 0);
   S.lac = clamp(S.lac + (lacProd - 0.02 * S.lac) * dtMin, 0.3, 25);
-  const ketone = (S.ketoneProd || 0) * (1 - clamp((S.eff.insulin + S.insulinLoad * 0.5), 0, 1) * 0.90);
+  const ketone = (S.ketoneProd || 0) * (1 - clamp((insulinEffect + S.insulinLoad * 0.5), 0, 1) * 0.90);
   /* 胰岛素充足时酮体被外周组织氧化，等量 HCO₃ 再生
      （β-羟丁酸是"潜在碳酸氢盐"）——替代原来"补碱之外没有任何回收途径"的写法 */
   const ketoRecover = 0.060 * clamp(insEff - 0.6, 0, 1.6);
@@ -1569,11 +1906,15 @@ function tick(S, dtSec) {
 
   }
 
+  finishDelivery(S);
+  trackCirculationObservation(S);
+
   /* ---------- 19. 历史 ---------- */
   if (!S._lastHist || S.t - S._lastHist >= 10) {
     S._lastHist = S.t;
     S.history.push({ t: S.t, hr: Math.round(S.hr), sys: bp(S).sys, dia: bp(S).dia, k: r1(S.k),
                      ph: r2(S.ph), spo2: pulseOximetry(S), na: Math.round(S.na),
+                     temp: Number.isFinite(S.temp) ? r1(S.temp) : null,
                      do2: Math.round(S.do2), lw: r2(S.lungWater), rr: Math.round(S.rr),
                      hco3: r1(S.hco3), paco2: Math.round(S.paco2), glu: r1(S.glu),
                      map: Math.round(S.map), vol: r2(S.vol), do2c: Math.round(S.do2Crit),
@@ -1600,7 +1941,7 @@ function computeMap(S) {
 function updateCirculation(S) {
   S.co = cardiacOutput(S);
   S.map = Math.round(computeMap(S));
-  S.do2 = S.co * S.hb * (1 - (S.coHb || 0)) * S.sao2 * 1.34;
+  S.do2 = S.co * oxygenContent(S.pao2, oxygenCapacity(S));
 }
 
 function applyArrestPhysiology(S) {
@@ -1611,6 +1952,7 @@ function applyArrestPhysiology(S) {
   S.gcs = 3;
   S.spontaneousRr = 0;
   S.roomAirStableSince = null;
+  if (S.hadCirculatorySupport) S.circulationStableSince = null;
   if (!S.vent) S.rr = 0;
   updateCirculation(S);
 }
@@ -1643,7 +1985,15 @@ function evaluateAsystole(S, dtMin, nativeSv, epinephrine) {
 }
 
 function restoreCardiorespiratory(S, saved) {
+  const oldOxygenModel = !Number.isFinite(saved.endCapillaryPo2) && Number.isFinite(saved.pao2);
+  if (oldOxygenModel) {
+    /* 旧档的 pao2 实际保存的是分流前的值。保留过去已出具的检验报告。 */
+    S.endCapillaryPo2 = saved.pao2;
+    updateOxygenation(S, Number.isFinite(saved.svo2) ? saved.svo2 : null);
+    if (roomAirSaturation(S) < 94) S.roomAirStableSince = null;
+  }
   if (S.rhythm !== 'sinus') applyArrestPhysiology(S);
+  else if (oldOxygenModel) updateCirculation(S);
   if (S.tags.includes('ptx') && saved.chestTubePlaced == null &&
       S.log.some(([, text]) => text === '胸腔闭式引流完成 → 气胸解除')) {
     S.chestTubePlaced = true;
@@ -1727,85 +2077,285 @@ function endCase(S, type, reason) {
 }
 
 /* --- 通用出院判据与病例专属判据 --- */
+function observationTime(seconds) {
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  if (!minutes) return `${remainder} 秒`;
+  return remainder ? `${minutes} 分钟 ${remainder} 秒` : `${minutes} 分钟`;
+}
+
+function assessCirculationObservation(S, pressure) {
+  if (!S.hadCirculatorySupport) return null;
+  const { running, timed } = activeCirculationSupport(S);
+  const minutes = CIRCULATION_OBSERVATION / 60;
+  if (running.length) {
+    const names = running.map(id => root.SUBSTANCES?.byId(id)?.n || id).join('、');
+    return { phase: 'active', remainingSeconds: null,
+      reason: `仍在持续静脉泵入${names}，停泵后需观察循环稳定至少 ${minutes} 分钟` };
+  }
+  if (timed.length) {
+    const names = [...new Set(timed.map(p => p.n || p.id))].join('、');
+    const remainingSeconds = Math.ceil(Math.max(...timed.map(timedSupportEndsAt)) - S.t);
+    return { phase: 'legacy', remainingSeconds,
+      reason: `${names}仍在起效，预计 ${observationTime(remainingSeconds)}后药效消退，再观察循环稳定 ${minutes} 分钟` };
+  }
+  if (!circulationStable(S, pressure)) {
+    return { phase: 'unstable', remainingSeconds: CIRCULATION_OBSERVATION,
+      reason: `撤除循环支持后，需窦性心律、收缩压 ≥${CIRCULATION_MIN_SYSTOLIC} mmHg 且平均动脉压 ≥${CIRCULATION_MIN_MAP} mmHg。当前 ${pressure.sys}/${pressure.dia} mmHg，平均动脉压 ${pressure.map} mmHg，达标后重新观察 ${minutes} 分钟` };
+  }
+  // 0.2 秒的模拟步长可能在观察窗口的边界留下舍入误差。
+  const elapsed = Math.max(0, S.t - (S.circulationStableSince ?? S.t));
+  const remainingSeconds = Math.max(0, Math.ceil(CIRCULATION_OBSERVATION - elapsed - 1e-7));
+  if (!remainingSeconds) return { phase: 'complete', remainingSeconds };
+  return { phase: 'observing', remainingSeconds,
+    reason: `撤除循环支持后需连续稳定 ${minutes} 分钟，观察还需 ${observationTime(remainingSeconds)}` };
+}
+
 function dischargeCheck(S) {
   const b = bp(S);
   const bad = [];
+  const tags = S.tags ?? [];
+  const opioid = S.opioidTox || tags.includes('opioid');
+  const lowSodium = tags.includes('hypona');
+  const hyperosmolar = tags.includes('hhs');
+  const observationDeadlines = S.cas?.observations?.(S).map(window => window.endsAt) ?? [];
   if (S.rhythm !== 'sinus') bad.push('心律异常');
-  if (b.sys < 90) bad.push(`收缩压 ${b.sys}`);
-  if (S.hr >= 115) bad.push(`心率 ${Math.round(S.hr)}`);
-  if (S.spo2 < 94) bad.push(`血氧 ${Math.round(S.spo2)}`);
+  if (b.sys < CIRCULATION_MIN_SYSTOLIC) bad.push(`收缩压 ${b.sys}`);
+  const minHr = S.cas?.minDischargeHR ?? 50;
+  const heartRateTarget = `${minHr}–119 次/分`;
+  const hr = Math.round(S.hr);
+  if (!Number.isFinite(S.hr)) bad.push('需复测心率');
+  else if (hr < minHr || hr >= 120) bad.push(`心率 ${hr} 次/分，出院目标 ${heartRateTarget}`);
+  if (!Number.isFinite(S.spo2) || S.rhythm !== 'sinus') bad.push('需确认室内空气下 SpO₂ ≥94%');
+  else if (S.spo2 < 94) bad.push(`SpO₂ ${S.spo2.toFixed(1)}%，出院目标为室内空气下 ≥94%`);
   if (S.vent) bad.push('仍需机械通气');
   else if (S.fio2 > 0.21 || S.o2) bad.push('仍在吸氧，需评估室内空气血氧');
   else if (S.hadOxygenSupport && (S.roomAirStableSince == null || S.t - S.roomAirStableSince < ROOM_AIR_OBSERVATION)) {
     bad.push('撤除呼吸支持后，室内空气血氧需稳定至少 5 分钟');
+    if (S.roomAirStableSince != null) observationDeadlines.push(S.roomAirStableSince + ROOM_AIR_OBSERVATION);
   }
-  if (S.rr < 10 || S.rr > 22) bad.push(`呼吸 ${Math.round(S.rr)} 次/分`);
-  if (S.temp > 37.8) bad.push(`体温 ${S.temp.toFixed(1)}℃`);
+  const circulationObservation = assessCirculationObservation(S, b);
+  if (circulationObservation?.reason) bad.push(circulationObservation.reason);
+  if (circulationObservation?.phase === 'observing') {
+    observationDeadlines.push((S.circulationStableSince ?? S.t) + CIRCULATION_OBSERVATION);
+  }
+  const minRespirations = tags.includes('opioid') ? 12 : 10;
+  if (S.rr < minRespirations || S.rr > 22) bad.push(`呼吸 ${Math.round(S.rr)} 次/分，出院目标 ${minRespirations}–22 次/分`);
+  if (!Number.isFinite(S.temp)) bad.push('需复测体温');
+  else if (S.temp < 36 || S.temp > 37.8) bad.push(`体温 ${S.temp.toFixed(1)}℃`);
   if (S.odsDamage) bad.push('渗透性脱髓鞘');
   const originalSodiumExceeded = S.na0 < 130 && S.t <= DAY && S.na - S.na0 > 10;
   if (originalSodiumExceeded || (S.naOvercorrectedAt != null && S.t - S.naOvercorrectedAt < SODIUM_RISK_OBSERVATION)) {
     bad.push('近期血钠纠正过快，需继续观察神经症状');
+    if (S.naOvercorrectedAt != null && S.t - S.naOvercorrectedAt < SODIUM_RISK_OBSERVATION) {
+      observationDeadlines.push(S.naOvercorrectedAt + SODIUM_RISK_OBSERVATION);
+    }
   }
   if ((S.naCorrection || S.na0 < 130) && S.pk?.some(p => p.eff?.na > 0 && S.t - p.t < 30 * 60)) {
     bad.push('最近补钠仍在起效，需复查血钠');
   }
-  if (S.na < 120) bad.push(`血钠 ${Math.round(S.na)}`);
+  const minSodium = lowSodium ? 130 : 120;
+  if (S.na < minSodium || ((lowSodium || hyperosmolar) && S.na > 145)) {
+    const target = lowSodium || hyperosmolar ? `${minSodium}–145` : `≥${minSodium}`;
+    bad.push(`血钠 ${S.na.toFixed(1)} mmol/L，出院目标 ${target} mmol/L`);
+  }
   if (S.hco3 < 14) bad.push(`HCO₃ ${S.hco3.toFixed(1)}`);
   if (S.ph < 7.28) bad.push(`pH ${S.ph.toFixed(2)}`);
-  if (S.k < 3.5 || S.k > 5.5) bad.push(`血钾 ${S.k.toFixed(1)}`);
-  if (S.glu < 4 || S.glu > 12) bad.push(`血糖 ${S.glu.toFixed(1)}`);
-  if (S.gcs < 13) bad.push(`意识 ${S.gcs}`);
-  if (S.opioidTox || S.tags?.includes('opioid')) {
+  const potassium = Number.isFinite(S.k) ? r1(S.k) : null;
+  if (potassium == null) bad.push(`血钾需复测，出院目标 ${potassiumTarget}`);
+  else if (potassium < DISCHARGE_K_MIN || potassium > DISCHARGE_K_MAX) {
+    bad.push(`血钾 ${potassium.toFixed(1)} mmol/L，出院目标 ${potassiumTarget}`);
+  }
+  const hasDka = S.caseId === 'dka' || S.tags?.includes('dka');
+  const glucoseTarget = glucoseDischargeTarget(hasDka, true);
+  const glucose = Number.isFinite(S.glu) ? r1(S.glu) : null;  /* 与监护快照的血糖精度一致。 */
+  if (glucose == null) bad.push(`血糖需复测，出院目标 ${glucoseTarget}`);
+  else if (glucose < DISCHARGE_GLUCOSE_MIN ||
+           (hasDka ? glucose >= DKA_DISCHARGE_GLUCOSE_MAX_EXCLUSIVE : glucose > DISCHARGE_GLUCOSE_MAX)) {
+    bad.push(`血糖 ${glucose.toFixed(1)} mmol/L，出院目标 ${glucoseTarget}`);
+  }
+  const needsFullConsciousness = opioid || lowSodium || hyperosmolar;
+  if (S.gcs < (needsFullConsciousness ? 15 : 13)) {
+    const target = needsFullConsciousness ? '15 分（本病例要求意识完全恢复）' : '≥13 分';
+    bad.push(`意识 GCS ${S.gcs} 分，出院目标 ${target}`);
+  }
+  if ((lowSodium || tags.includes('seizure')) && convulsionSigns(S)) bad.push('仍有抽搐，可在「脑」面板复查');
+  if (opioid) {
     const lastNaloxone = S.lastNaloxoneAt ?? (S.naloxoneUntil > 0 ? S.naloxoneUntil - 45 * 60 : -Infinity);
     const observationEnds = Math.max((Math.max(S.lastOpioidAt || 0, 0)) + 6 * 3600, lastNaloxone + 4 * 3600);
-    if (S.t < observationEnds) bad.push(`阿片中毒观察还需 ${Math.ceil((observationEnds - S.t) / 60)} 分钟`);
+    if (S.t < observationEnds) {
+      bad.push(`阿片中毒观察还需 ${Math.ceil((observationEnds - S.t) / 60)} 分钟`);
+      observationDeadlines.push(observationEnds);
+    }
     if (S.paco2 > 50) bad.push(`二氧化碳分压 ${Math.round(S.paco2)} mmHg`);
-    if (S.gcs < 15 && S.gcs >= 13) bad.push(`意识尚未完全恢复（${S.gcs} 分）`);
   }
   if (S.cas && S.cas.extra) for (const r of S.cas.extra(S)) bad.push(r);
-  return { ok: bad.length === 0, reasons: bad };
+  const observationEndsAt = observationDeadlines.length ? Math.min(...observationDeadlines) : null;
+  return { ok: bad.length === 0, reasons: [...new Set(bad)], heartRateTarget, circulationObservation, observationEndsAt };
 }
 
-/* --- 开检验：延迟出结果 --- */
+function convulsionSigns(S) {
+  const activity = S.seizure || 0;
+  const visibleThreshold = S.tags?.includes('hypona') ? 0.1 : 0.15;
+  if (activity >= 0.6) return S.tags?.includes('seizure') ? '持续肢体抽搐，伴牙关紧闭' : '持续肢体抽搐';
+  return activity > visibleThreshold ? '间断可见肢体抽动' : null;
+}
+
+/* --- 主动听诊、开检验 --- */
+function auscultate(S) {
+  const sounds = [];
+  const cholinergic = (1 - (S.acheActivity ?? 1)) * (1 - (S.muscarinicBlock ?? 0));
+  const airway = S.airwayResistance || 0;
+  const inhalationInjury = S.tags?.includes('burn');
+  if (S.lungWater >= 0.65) sounds.push('多肺区较多湿啰音');
+  else if (S.lungWater >= 0.32) sounds.push('肺底少量湿啰音');
+  if (cholinergic >= 0.25) sounds.push('痰鸣音');
+  if ((!inhalationInjury || S.tags?.includes('asthma')) && airway >= 0.30) {
+    sounds.push(airway >= 0.65 ? '广泛哮鸣音' : '散在哮鸣音');
+  }
+  const breathSound = (S.rr < 8 || (!S.vent && inhalationInjury && airway >= 0.55)) ? '呼吸音减弱' : '呼吸音可闻';
+  const bilateral = sounds.length ? `${breathSound}，伴${sounds.join('、')}` : breathSound;
+  /* 现有气胸病例设定为左侧，减压后残余气胸仍可使该侧呼吸音减弱。 */
+  const left = S.tensionPTX >= 0.65 ? '呼吸音消失' : S.tensionPTX > 0 ? '呼吸音减弱' : bilateral;
+  const result = { t: S.t, left, right: bilateral };
+  S.lungExam = { latest: result, previous: S.lungExam?.latest ?? null };
+  S.log.push([fmt(S.t), `双肺听诊 · 左肺${left}；右肺${bilateral}`, 'info']);
+  return result;
+}
+
+function isSerialBloodTest(id) {
+  return id === 'cbc' || id === 'abg';
+}
+
+const CXR_RECEIPT = `${TESTS.cxr.name} 结果已出`;
+const CXR_UNRECORDED = '旧版存档未保留本次影像所见。';
+
+function lungWaterFindings(lungWater) {
+  if (!Number.isFinite(lungWater)) return '肺水肿征象未记录。';
+  if (lungWater >= 0.65) return '双肺门周围可见较广泛的片状模糊影，符合肺水肿表现。';
+  if (lungWater >= 0.32) return '双肺间质纹理增多，符合轻度肺淤血或间质性水肿表现。';
+  return '双肺未见明显肺水肿征象。';
+}
+
+function chestXrayFindings(S) {
+  let pleuralFindings = '未见胸腔积气。';
+  /* 模拟中的气胸发生在左侧，针刺减压后可残留积气。 */
+  if (!Number.isFinite(S.tensionPTX)) pleuralFindings = '胸腔积气征象未记录。';
+  else if (S.tensionPTX >= 0.65) pleuralFindings = '左侧胸腔积气，左肺明显受压。';
+  else if (S.tensionPTX >= 0.20) pleuralFindings = '左侧胸腔积气，左肺部分受压。';
+  else if (S.tensionPTX > 0) pleuralFindings = '左侧少量胸腔积气。';
+  return lungWaterFindings(S.lungWater) + pleuralFindings;
+}
+
+function chestXrayReports(S) {
+  return S.xrayReports?.slice() ?? [];
+}
+
+function restoreChestXrayReports(S) {
+  const reports = S.xrayReports ??= [];
+  for (const report of reports) Object.freeze(report);
+  if (S.tests?.cxr?.sample) Object.freeze(S.tests.cxr.sample);
+  if (reports.length) return;
+
+  /* 旧版只保存最后一份胸片回报时的生理快照，缺少采集时间和气胸指标。 */
+  const legacy = S.labSnap?.cxr;
+  const reportedAt = Number.isFinite(legacy?.t) ? legacy.t : null;
+  const legacyFindings = Number.isFinite(legacy?.s?.lungWater)
+    ? '根据旧版回报时保存的肺水数据，' + lungWaterFindings(legacy.s.lungWater) + '旧版快照未记录胸腔积气征象。'
+    : CXR_UNRECORDED;
+  const receipts = S.log.filter(row => row[1] === CXR_RECEIPT && !row[4]);
+  let matching = [];
+  if (reportedAt != null) {
+    matching = receipts.filter(row => row[3] === reportedAt);
+    if (!matching.length) matching = receipts.filter(row => row[3] == null && row[0] === fmt(reportedAt));
+  }
+  const legacyReceipt = matching.length === 1 ? matching[0] : null;
+  function append(time, findings) {
+    const id = `cxr-legacy-${reports.length + 1}`;
+    reports.push(Object.freeze({ id, sampledAt: null, reportedAt: time, findings }));
+    return id;
+  }
+  for (const row of receipts) {
+    row[4] = row === legacyReceipt ? append(reportedAt, legacyFindings)
+      : append(Number.isFinite(row[3]) ? row[3] : null, CXR_UNRECORDED);
+  }
+  if (legacy && !legacyReceipt) append(reportedAt, legacyFindings);
+  else if (!reports.length && S.tests?.cxr?.done) append(null, CXR_UNRECORDED);
+}
+
+function testSample(S, id) {
+  const sample = snapshot(S);
+  if (id === 'cbc') {
+    sample.wbc = Number.isFinite(S.wbc) ? r1(S.wbc) : null;
+    sample.plt = Number.isFinite(S.plt) ? Math.round(S.plt) : null;
+  }
+  const test = TESTS[id];
+  return { t: S.t, s: sample, name: test.name, fields: test.fields };
+}
+
 function orderTest(S, id) {
   const T = TESTS[id]; if (!T) return null;
+  const serial = isSerialBloodTest(id);
+  const xray = id === 'cxr';
+  const current = S.tests[id];
+  if ((serial || xray) && current && !current.done) return current.readyAt;
   const readyAt = S.t + T.min * 60;
+  const order = { readyAt, done: false };
+  if (xray) order.sample = Object.freeze({ sampledAt: S.t, findings: chestXrayFindings(S) });
+  else if (serial) order.sample = testSample(S, id);
   S.cost += T.cost;
-  S.tests[id] = { readyAt, done: false };
+  S.tests[id] = order;
   S.log.push([fmt(S.t), `开出 ${T.name}（${T.min} 分钟后出结果）`, 'info']);
   return readyAt;
 }
 function pollTests(S) {
   for (const [id, t] of Object.entries(S.tests)) {
     if (!t.done && S.t >= t.readyAt) {
+      if (id === 'cxr') {
+        if (!S.xrayReports?.length) restoreChestXrayReports(S);
+        const reports = S.xrayReports;
+        const sample = t.sample ?? { sampledAt: null, findings: CXR_UNRECORDED };
+        const report = Object.freeze({ id: `cxr-${reports.length + 1}`, ...sample, reportedAt: S.t });
+        reports.push(report);
+        S.log.push([fmt(S.t), CXR_RECEIPT, 'good', S.t, report.id]);
+        t.done = true;
+        delete t.sample;
+        S.lastLabAt = S.t;
+        continue;
+      }
       t.done = true;
       S.log.push([fmt(S.t), `${TESTS[id].name} 结果已出`, 'good']);
-      /* 保存每项检查出结果时的快照，供之后查看和复查对照。 */
-      const sample = snapshot(S);
-      if (id === 'cbc') {
-        sample.wbc = Number.isFinite(S.wbc) ? r1(S.wbc) : null;
-        sample.plt = Number.isFinite(S.plt) ? Math.round(S.plt) : null;
+      S.labSnap ??= {};
+      const report = t.sample ?? testSample(S, id);
+      if (isSerialBloodTest(id)) {
+        /* 旧存档中的待出报告只保留了预计回报时间。 */
+        if (!t.sample) report.sampledAtKnown = false;
+        report.reportedAt = S.t;
+        S.labPrevious ??= {};
+        if (S.labSnap[id]?.s) S.labPrevious[id] = S.labSnap[id];
+        delete t.sample;
       }
-      S.labSnap = S.labSnap || {};
-      S.labSnap[id] = { t: S.t, s: sample, name: TESTS[id].name, fields: TESTS[id].fields };
+      S.labSnap[id] = report;
       S.lastLabAt = S.t;
     }
   }
 }
 function testValue(S, id) {
-  return TESTS[id] && S.tests[id]?.done ? S.labSnap?.[id]?.s ?? null : null;
+  if (id === 'cxr') return S.xrayReports?.at(-1) ?? null;
+  return TESTS[id] && (isSerialBloodTest(id) || S.tests[id]?.done) ? S.labSnap?.[id]?.s ?? null : null;
 }
 
 function snapshot(S) {
   const b = bp(S);
   return {
     hr: Math.round(S.hr), sys: b.sys, dia: b.dia, map: b.map,
-    rr: Math.round(S.rr), spo2: pulseOximetry(S), temp: r1(S.temp), gcs: S.gcs,
+    rr: Math.round(S.rr), spo2: pulseOximetry(S), temp: Number.isFinite(S.temp) ? r1(S.temp) : null, gcs: S.gcs,
     k: r1(S.k), na: Math.round(S.na), cl: Math.round(S.cl), ca: r2(S.ca),
     ph: r2(S.ph), paco2: Math.round(S.paco2), pao2: Math.round(S.pao2),
+    oxygenModelVersion: 2,
     hco3: Math.round(S.hco3), lac: r1(S.lac), glu: r1(S.glu),
     cr: Math.round(S.cr), bun: r1(S.bun), hb: Math.round(S.hb),
-    uo: r1(S.uo), rhythm: S.rhythm, vent: !!S.vent, ef: Math.round((S.cEff || S.contractility) * 100),
+    uo: S.uo, uoHourly: r2(S.uo * 60), rhythm: S.rhythm, vent: !!S.vent, ef: Math.round((S.cEff || S.contractility) * 100),
     /* v0.3 新增可读量 */
     sao2: Math.round(S.sao2 * 100), do2: Math.round(S.do2), co: r2(S.co),
     shunt: r2(S.shunt), fio2: r2(S.fio2 == null ? 0.21 : S.fio2),
@@ -1820,20 +2370,67 @@ const fmt = s => {
   return String(hh).padStart(2, '0') + ':' + String(mm).padStart(2, '0');
 };
 
+function scoreBreakdown(S) {
+  const base = 100;
+  const items = [];
+  let subtotal = base;
+  function add(label, delta) {
+    subtotal += delta;
+    if (delta !== 0) items.push({ label, delta });
+  }
+
+  add('心脏骤停', -(S.arrests || 0) * 22);
+  if (S.discharged) add('出院用时奖励', Math.max(0, 25 - (S.t / 60) / 6));
+  if (S.death) add('死亡结局', -45);
+  add('诊疗费用', -Math.min(15, Math.max(0, (S.cost - 800) / 120)));
+
+  const penalties = +(S.penalties || 0);
+  const penaltyDelta = -penalties * 6;
+  subtotal += penaltyDelta;
+  if (penaltyDelta !== 0) {
+    if (Number.isSafeInteger(penalties) && penalties > 0) {
+      let remaining = penalties;
+      const reasons = new Map();
+      for (const entry of Array.isArray(S.penaltyReasons) ? S.penaltyReasons : []) {
+        if (remaining === 0) break;
+        if (typeof entry?.label !== 'string' || !Number.isInteger(entry.count) || entry.count <= 0) continue;
+        const label = entry.label.trim();
+        if (!label) continue;
+        const count = Math.min(entry.count, remaining);
+        reasons.set(label, (reasons.get(label) || 0) + count);
+        remaining -= count;
+      }
+      for (const [label, count] of reasons) {
+        items.push({ label: `带教扣分（${label}，${count} 次）`, delta: -count * 6 });
+      }
+      if (remaining > 0) {
+        items.push({ label: `带教扣分（未记录原因，${remaining} 次）`, delta: -remaining * 6 });
+      }
+    } else {
+      items.push({ label: '带教扣分', delta: penaltyDelta });
+    }
+  }
+
+  const rounded = Math.round(subtotal);
+  if (Number.isFinite(subtotal) && rounded !== subtotal) {
+    items.push({ label: '四舍五入', delta: rounded - subtotal });
+  }
+  const score = Math.max(0, Math.min(100, rounded));
+  if (rounded > 100) items.push({ label: '100 分封顶', delta: score - rounded });
+  if (rounded < 0) items.push({ label: '0 分保底', delta: score - rounded });
+  return { base, items, score };
+}
+
 function finalScore(S) {
-  let sc = 100 - (S.arrests || 0) * 22;
-  const min = S.t / 60;
-  if (S.discharged) sc += Math.max(0, 25 - min / 6);
-  if (S.death) sc -= 45;
-  sc -= Math.min(15, Math.max(0, (S.cost - 800) / 120));
-  sc -= (S.penalties || 0) * 6;
-  return Math.max(0, Math.min(100, Math.round(sc)));
+  return scoreBreakdown(S).score;
 }
 
 const API = {
-  setIdentity(p) { IDENTITY = p || null; }, CASES, DRUGS, ACTIONS, TESTS, create, tick, give, acetaminophenExposure, setEnv, finalScore, bp, snapshot,
-              dischargeCheck, orderTest, pollTests, testValue, computeMap, fmt, endCase, setBleedingRate, restoreBleeding,
-              benzodiazepineExposure, restoreBenzodiazepines,
+  setIdentity(p) { IDENTITY = p || null; }, CASES, DRUGS, ACTIONS, TESTS, DELIVERY_DURATION, create, restorePatient, tick, give, acetaminophenExposure, setEnv, finalScore, scoreBreakdown, bp, snapshot,
+              dischargeCheck, glucoseDischargeTarget, potassiumTarget, convulsionSigns, auscultate, orderTest, pollTests, testValue, chestXrayReports, restoreChestXrayReports,
+              computeMap, fmt, endCase, setBleedingRate, restoreBleeding,
+              benzodiazepineExposure, restoreBenzodiazepines, temperatureStatus, restoreTemperature, infusionDetails, insulinActivity,
+              pumpRate, pumpOrder, pumpEffect, stopPump,
               hill, computePh, computePcwp, roomAirSaturation, restoreCardiorespiratory, restoreDischargeObservation };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 root.LIFE = API;

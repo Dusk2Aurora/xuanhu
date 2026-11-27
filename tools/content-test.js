@@ -8,7 +8,8 @@
  * 用法：
  *   node tools/content-test.js [--verbose] [--module=asthma] [--trace=asthma] [--seeds=5]
  * ========================================================================== */
-require('../prototype/substances.js');
+const assert = require('node:assert/strict');
+const substances = require('../prototype/substances.js');
 require('../prototype/mentor.js');
 const E = require('../prototype/engine.js');
 
@@ -28,6 +29,11 @@ const SEEDS = Array.from({ length: SEED_N }, (_, i) => (i + 1) * 101);
 
 const has = (S, id) => !!(S.pk && S.pk.some(p => p.id === id));
 const bp = S => E.bp(S);
+const norepiSupport = (S, startMap, stopMap, rate) => {
+  const pressure = bp(S);
+  if (!E.pumpRate(S, 'norepi') && pressure.map < startMap) E.give(S, 'norepi', rate);
+  if (E.pumpRate(S, 'norepi') && pressure.map >= stopMap && pressure.sys >= 100) E.stopPump(S, 'norepi');
+};
 const o2 = S => {
   const onO2 = (S.fio2 || 0.21) > 0.21 || S.o2 || S.vent;
   if (!onO2) { if (S.spo2 < 94) E.ACTIONS.oxygen.apply(S); return; }
@@ -68,7 +74,7 @@ const TREAT = {
   sepsis(S, t) {
     if (!S._p) { S._p = 1; E.give(S, 'nacl', 1000); }
     if (t >= 60 && !has(S, 'ceftriaxone')) E.give(S, 'ceftriaxone', 2);
-    if (bp(S).map < 70 && !has(S, 'norepi')) E.give(S, 'norepi', 12);
+    norepiSupport(S, 70, 80, 12);
     if (S.vol < 4.4 && !has(S, 'nacl')) E.give(S, 'nacl', 1000);
   },
   opioid(S, t) {
@@ -78,25 +84,20 @@ const TREAT = {
     if (!S._p) { S._p = 1; E.give(S, 'naloxone', 0.4); S._nAt = t; return; }
     if (poor && t >= (S._nAt || 0) + 180) { E.give(S, 'naloxone', 0.4); S._nAt = t; }
   },
-  edema(S, t) {
-    if (!S._p) { S._p = 1; o2(S); E.give(S, 'furosemide', 40); S._fuAt = t; }
-    /* 利尿要盯着容量：容量已经不高时再利尿会脱成休克 */
-    if ((S.lungWater || 0) > 0.42 && S.vol > 4.3 && t >= (S._fuAt || 0) + 900) {
-      E.give(S, 'furosemide', 40); S._fuAt = t;
-    }
-    if (bp(S).map < 62 && !has(S, 'norepi')) E.give(S, 'norepi', 8);
+  edema(S) {
+    if (!S._p) { S._p = 1; o2(S); E.give(S, 'furosemide', 30); }
+    const pressure = bp(S);
+    norepiSupport(S, 62, 75, 8);
     /* 肺水消了就把氧撤掉，否则永远卡在"仍在吸氧" */
     if ((S.lungWater || 0) <= 0.44 && S.spo2 >= 95 && ((S.fio2 || 0.21) > 0.21 || S.o2)) {
       E.ACTIONS.oxygen_off.apply(S);
     }
-    /* 降低后负荷：硝酸甘油 / 硝普钠（后负荷下降 → 衰竭心肌每搏量上升 → CO 上升 → 心率回落） */
-    if (bp(S).sys > 110 && !has(S, 'nitroglycerin')) E.give(S, 'nitroglycerin', 0.5);
-    if (bp(S).sys > 110 && !has(S, 'nitroprusside')) E.give(S, 'nitroprusside', 0.5);
-    /* 利尿减容：看肺水与容量，而不是"到点就给" */
-    if ((S.lungWater > 0.40 || S.vol > 4.9) && !has(S, 'furosemide')) E.give(S, 'furosemide', 40);
+    if (S.lungWater > 0.45 && pressure.sys >= 140 && !has(S, 'nitroglycerin')) E.give(S, 'nitroglycerin', 0.5);
+    if (S.lungWater > 0.42 && S.vol > 4.9 && !has(S, 'furosemide')) E.give(S, 'furosemide', 20);
     if (S.spo2 < 94) o2(S);
-    /* 只在真性低心排（收缩压 <90）时用正性肌力药，避免心率被堆上去 */
-    if (bp(S).sys < 90 && t >= (S._dobAt || 0) + 900) { E.give(S, 'dobutamine', 5); S._dobAt = t; }
+    const pump = E.pumpRate(S, 'dobutamine');
+    if (!pump && S.lungWater > 0.44 && pressure.sys < 90) E.give(S, 'dobutamine');
+    if (pump && S.lungWater < 0.40 && pressure.sys >= 90) E.stopPump(S, 'dobutamine');
     if (S.k < 3.8 && !has(S, 'kcl')) E.give(S, 'kcl', 20);
   },
   thyroid(S) {
@@ -190,14 +191,13 @@ const TREAT = {
   heatstroke(S) {
     S._fl4 = S._fl4 || 0;
     if (S._fl4 < 3 && S.vol < 4.3) { S._fl4++; E.give(S, 'nacl', 1000); }
-    if (S.temp > 38.5) E.setEnv(S, 'cold', true);
-    else E.setEnv(S, 'cold', false);
+    E.setEnv(S, 'cooling', S.temp > 38.5);
   },
 
   myxedema(S) {
     if (!S._t4) { S._t4 = 1; E.give(S, 'levothyroxine', 100); }
     if (!S._hc) { S._hc = 1; E.give(S, 'hydrocortisone', 100); }
-    if (S.temp < 35.5) E.setEnv(S, 'heat', true);
+    if (S.temp < 35.5) E.setEnv(S, 'warming', true);
     if (S.rr < 10) E.ACTIONS.oxygen.apply(S);
   },
   liverFailure(S) {
@@ -299,7 +299,7 @@ const TREAT = {
     o2(S);
     if (!S._p) { S._p = 1; E.give(S, 'alteplase', 100); E.give(S, 'heparin', 5000); }
     if (bp(S).sys < 90 && !has(S, 'nacl')) E.give(S, 'nacl', 500);
-    if (bp(S).map < 65 && !has(S, 'norepi')) E.give(S, 'norepi', 8);
+    norepiSupport(S, 65, 75, 8);
   },
 };
 
@@ -350,6 +350,22 @@ function traceOne(mod, mode, seed) {
 }
 
 if (require.main === module) {
+  assert.deepEqual(substances.search('罗氏芬').map(s => s.id), ['ceftriaxone']);
+  for (const [brand, generic] of [['先锋必', '头孢哌酮'], ['泰能', '亚胺培南/西司他丁']]) {
+    assert.deepEqual(substances.search(brand), [], brand + ' 不可代开其他药物');
+    assert.deepEqual(substances.searchUnlistedDrugs(brand), [generic]);
+  }
+  // 这两个种子在生成器 v3 分别会抽到不相符的老年与 2 型糖尿病体质。
+  const young = G.generate(5, 331);
+  assert.deepEqual([young.patient.age, young.traits.length, young.traits.some(t => t.id === 'elderly_renal')], [34, 2, false]);
+  const dka = G.generate(5, 13);
+  const type2 = G.generate(5, 0);
+  assert.ok(dka.comorbidities.includes('1 型糖尿病') && dka.complaint.includes('停用胰岛素')
+    && dka.traits.length === 2 && dka.traits.every(t => t.id !== 't2dm')
+    && type2.traits.some(t => t.id === 't2dm') && type2.comorbidities.includes('2 型糖尿病')
+    && type2.admission.background.filter(item => item.includes('糖尿病')).join() === '2 型糖尿病',
+  '糖尿病分型应与停药史、体质和入院背景一致');
+
   if (TRACE) {
     traceOne(TRACE, 'treat', SEEDS[0]);
     traceOne(TRACE, 'none', SEEDS[0]);

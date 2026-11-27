@@ -61,14 +61,14 @@ function snapshot(S) {
   return {
     hr: Math.round(num(S.hr) || 0), sys: sys || 0, dia: dia || 0, map: map || 0,
     rr: Math.round(num(S.rr) || 0), spo2: S.rhythm && S.rhythm !== 'sinus' ? null : num(S.spo2),
-    temp: Math.round((num(S.temp) || 0) * 10) / 10, gcs: Math.round(num(S.gcs) || 0),
+    temp: num(S.temp), gcs: Math.round(num(S.gcs) || 0),
     k: Math.round((num(S.k) || 0) * 10) / 10, na: Math.round(num(S.na) || 0),
     ca: Math.round((num(S.ca) || 0) * 100) / 100,
     ph: Math.round((S.ph != null ? num(S.ph) : 7.4) * 100) / 100,
     paco2: Math.round(num(S.paco2) || 0), pao2: Math.round(num(S.pao2) || 0),
     hco3: Math.round(num(S.hco3) || 0), lac: Math.round((num(S.lac) || 0) * 10) / 10,
     glu: Math.round((num(S.glu) || 0) * 10) / 10, cr: Math.round(num(S.cr) || 0),
-    hb: Math.round(num(S.hb) || 0), uo: Math.round((num(S.uo) || 0) * 10) / 10,
+    hb: Math.round(num(S.hb) || 0), uo: num(S.uo) || 0,
     rhythm: S.rhythm || 'sinus',
   };
 }
@@ -298,22 +298,34 @@ const SIGNS = [
 
   /* ===== 体温 ===== */
   {
-    id: 'fever', name: '发热', level: 'warning',
-    brief: '体温高于 38.5℃，需寻找感染或非感染性炎症灶。',
+    id: 'fever', name: '体温偏高', level: 'warning',
+    brief: '体温高于 37.5℃，结合病史评估感染或其他升温原因。',
     causes: '细菌/病毒感染、脓毒症、药物热、甲亢危象',
-    test: s => s.temp > 38.5 && s.temp <= 40,
+    test: (_, S) => Number.isFinite(S.temp) && S.temp > 37.5 && S.temp < 39.5,
+  },
+  {
+    id: 'high_fever', name: '高热', level: 'warning',
+    brief: '体温达到 39.5℃，在重症监护中评估病因并持续复测。',
+    causes: '脓毒症、甲亢危象、恶性高热、热射病',
+    test: (_, S) => Number.isFinite(S.temp) && S.temp >= 39.5 && S.temp <= 40,
   },
   {
     id: 'hyperpyrexia', name: '超高热', level: 'warning',
     brief: '体温高于 40℃，可迅速导致脱水、抽搐与多器官损伤。',
     causes: '脓毒症、甲亢危象、恶性高热、热射病',
-    test: s => s.temp > 40,
+    test: (_, S) => Number.isFinite(S.temp) && S.temp > 40,
+  },
+  {
+    id: 'low_temperature', name: '体温偏低', level: 'warning',
+    brief: '体温低于 36.1℃，留意冷暴露、代谢异常与体温变化。',
+    causes: '寒冷暴露、甲状腺功能减退、低血糖',
+    test: (_, S) => Number.isFinite(S.temp) && S.temp >= 35 && S.temp < 36.1,
   },
   {
     id: 'hypothermia', name: '低体温', level: 'warning',
     brief: '体温低于 35℃，可抑制心肌与凝血功能。',
     causes: '长时间暴露、甲减、脓毒症晚期、低血糖',
-    test: s => s.temp < 35,
+    test: (_, S) => Number.isFinite(S.temp) && S.temp < 35,
   },
 
   /* ===== 神经 ===== */
@@ -333,13 +345,13 @@ const SIGNS = [
   /* ===== 肾脏 / 血液 ===== */
   {
     id: 'oliguria', name: '少尿', level: 'warning',
-    brief: '尿量低于 0.5 mL/min，提示肾灌注不足或肾实质损伤。',
+    brief: '尿量低于 30 mL/h，提示肾灌注不足或肾实质损伤。',
     causes: '低血容量、休克、急性肾损伤、尿路梗阻',
     test: s => s.uo < 0.5 && s.uo >= 0.2,
   },
   {
     id: 'anuria', name: '无尿', level: 'warning',
-    brief: '尿量低于 0.2 mL/min，需排除梗阻与严重肾损伤。',
+    brief: '尿量低于 12 mL/h，需排除梗阻与严重肾损伤。',
     causes: '急性肾小管坏死、双侧梗阻、严重休克',
     test: s => s.uo < 0.2,
   },

@@ -8,6 +8,7 @@
 
 /* 体内是否还有某物质的药效（与 generator.js 的 active() 保持一致） */
 const active = (S, id) => !!(S && S.pk && S.pk.some(p => p.id === id));
+const insulinActivity = S => root.LIFE?.insulinActivity?.(S) ?? S.eff.insulin;
 
 const LEVELS = {
   learning:  { name:'学习',   detail: 3, auto: true,  note:'直接给答案，不计分、不解锁成就' },
@@ -24,7 +25,7 @@ const RULES = {
       c:'血钾已到危急值，心肌随时可能出问题',
       d:'先保护心肌，别急着降钾',
       s:'给葡萄糖酸钙 10 mL 缓慢静推' },
-    { id:'insulin', when: S => S.k > 5.5 && S.eff.insulin < 0.4,
+    { id:'insulin', when: S => S.k > 5.5 && insulinActivity(S) < 0.4,
       c:'钾还在高位',
       d:'把钾挪进细胞',
       s:'胰岛素 10 U + 50% 葡萄糖 25 mL 静推' },
@@ -46,7 +47,7 @@ const RULES = {
       c:'脱水是第一位的问题',
       d:'先补容量，再谈胰岛素',
       s:'生理盐水 1000 mL 快速静滴' },
-    { id:'insulin', when: S => S.glu > 11 && S.eff.insulin < 0.5,
+    { id:'insulin', when: S => S.glu > 11 && insulinActivity(S) < 0.5,
       c:'血糖和酮体都还没压下去',
       d:'小剂量胰岛素持续',
       s:'胰岛素 10 U 静推，必要时每小时追加' },
@@ -220,11 +221,11 @@ const RULES = {
 
   myxedema: [
     { id:'thyroxine', when: S => S.hr < 60 || S.temp < 35.5,
-      c:'甲状腺素严重不足', d:'评估激素替代与呼吸支持', s:'在给药面板选择左甲状腺素的静脉途径，随访意识、体温和通气' },
+      c:'甲状腺素严重不足', d:'评估激素替代与呼吸支持', s:'在给药面板选择左甲状腺素的静脉途径，随访意识、体温和通气。体温偏低时，在「菜单 → 环境 / 场景」开启「被动保暖」' },
     { id:'steroid', when: S => S.svr < 20,
       c:'可能合并肾上腺皮质功能不全', d:'激素要同时给', s:'氢化可的松 100 mg 静推' },
-    { id:'warm', when: S => S.temp < 35.5,
-      c:'低体温使药物代谢与心肌收缩都受抑', d:'被动复温', s:'提高室温、保温毯；避免快速体外复温' },
+    { id:'warm', when: S => Number.isFinite(S.temp) && S.temp < 36.1 && !S.env?.warming,
+      c:'体温偏低会减慢药物代谢并抑制心肌收缩', d:'开启被动保暖', s:'打开「菜单 → 环境 / 场景」，开启「被动保暖」并监测体温' },
   ],
   liver: [
     { id:'lactulose', when: S => S.gcs < 13,
@@ -242,8 +243,8 @@ const RULES = {
       c:'前负荷不足', d:'补液争取时间，但不能替代穿刺', s:'生理盐水 1000 mL 快速静滴' },
   ],
   heatstroke: [
-    { id:'cool', when: S => S.temp > 39.0,
-      c:'核心体温过高，蛋白变性', d:'先物理降温', s:'冰袋 + 冷水浸浴，目标 30 分钟内降到 38.5 以下' },
+    { id:'cool', when: S => S.temp > 38.5 && !S.env?.cooling,
+      c:'核心体温过高，可能造成多器官损伤', d:'先物理降温', s:'打开「菜单 → 环境 / 场景」，开启「物理降温」，体温降到 38.5℃ 时自动停止' },
     { id:'fluid', when: S => S.vol < 4.2,
       c:'大量出汗与血管扩张导致容量不足', d:'降温同时补液', s:'生理盐水 1000 mL 快速静滴' },
   ],
@@ -451,7 +452,7 @@ function evaluate(S, kind, id, payload) {
         return say(true, '时机正确：先保护心肌，再降钾');
       case 'insulin':
         if (hasTag(s, 'highK') && s.glu < 6) return say(false, '血糖不高，胰岛素必须配伍葡萄糖，小心低血糖');
-        if (s.eff.insulin > 2.5) return say(false, '胰岛素已经给得偏多，注意监测血糖和血钾');
+        if (insulinActivity(s) > 2.5) return say(false, '胰岛素已经给得偏多，注意监测血糖和血钾');
         if (hasTag(s, 'dka') && s.glu < 12) return say(false, '血糖已接近目标，继续给会有低血糖风险');
         return say(true, '剂量在常规范围');
       case 'bicarb':

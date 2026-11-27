@@ -102,15 +102,27 @@ function contrast(g, modA, modB, key, expect, minAbs) {
 }
 
 /* =========================================================================
- * 2) 吸氧：气道痉挛能救回来，真性分流救不回来
+ * 2) 吸氧改善氧合，分流会限制同一吸氧浓度下的动脉氧合
  * ========================================================================= */
 {
-  const g = group('提高 FiO₂ 至 0.85 / 8 min（氧疗对"通气不足"有效，对"分流"效果差）', '');
+  const g = group('提高 FiO₂ 至 1.00 / 8 min', '两种病例均比较吸氧前后；再固定吸氧浓度，单独改变分流。');
   const as = diff('asthma', S => E.ACTIONS.oxygen.apply(S), 8);
   add(g, 'asthma', 'spo2', as, 'up', 5);
   const ed = diff('edema', S => E.ACTIONS.oxygen.apply(S), 8);
   add(g, 'edema', 'spo2', ed, 'up', 0);         // 给氧不会降低血氧（严格方向）
-  contrast(g, 'asthma', 'edema', 'spo2', 'up', 2.5);   /* 窗口 8 min，差值等比缩小 */
+  function onOxygen(shunt) {
+    const S = E.create({ id: 'oxygen-test', init: { ...G.BASE, shuntSrc: { other: shunt } } });
+    E.ACTIONS.oxygen.apply(S);
+    for (let seconds = 0; seconds < 480; seconds += 2) E.tick(S, 2);
+    return E.snapshot(S);
+  }
+  const ctrl = onOxygen(0);
+  const test = onOxygen(0.35);
+  const shunt = { ctrl, test, d: { pao2: test.pao2 - ctrl.pao2, spo2: test.spo2 - ctrl.spo2 } };
+  add(g, '分流 0% → 35%', 'pao2', shunt, 'down', 1);
+  add(g, '分流 0% → 35%', 'spo2', shunt, 'down', 1);
+  const consistent = [ctrl, test].every(sample => Math.abs(E.hill(sample.pao2) * 100 - sample.spo2) < 1);
+  if (!consistent) { g.ok = false; console.log('  ↳ 动脉氧分压与饱和度不在同一条氧解离曲线上'); }
 }
 
 /* =========================================================================

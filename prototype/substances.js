@@ -357,6 +357,10 @@ const INTERACTIONS = [
 
 /* ---------- 多途径：同一种药合并成一条，给药时再选途径 ---------- */
 const ROUTE_MAP = {
+  norepi:     [{ r:'持续静脉泵入', on:1, pumpHalfLife:2 }],
+  vasopressin: [{ r:'持续静脉泵入', pumpHalfLife:5, pumpStep:0.005 }],
+  dobutamine: [{ r:'持续静脉泵入', on:2, pumpHalfLife:2 }],
+  isoproterenol: [{ r:'持续静脉泵入', on:0, pumpHalfLife:3 }],
   epi:         [{ r:'泵入', d:1, on:1, du:8 }, { r:'静推', d:1, on:1, du:5 }],
   levothyroxine: [{ r:'口服', d:100, on:240, du:1440 }, { r:'静推', d:100, on:60, du:1440 }],
   kcl:        [{ r:'静滴', d:20, on:5,  du:60  }, { r:'口服', d:20, on:45, du:120 }],
@@ -378,7 +382,7 @@ const ROUTE_MAP = {
   octreotide: [{ r:'静推', d:50, on:5,  du:120 }, { r:'泵入', d:25, on:5,  du:240 }],
   furosemide2: null,
   salbutamol: [{ r:'吸入', d:2.5,on:3,  du:60  }, { r:'静滴', d:5,  on:5,  du:60 }],
-  insulin:    [{ r:'静推', d:10, on:15, du:240 }, { r:'泵入', d:2,  on:30, du:720 }],
+  insulin:    [{ r:'静推', d:10, on:15, du:240 }, { r:'泵入', d:2,  on:30, du:720, infusionMinutes:60 }],
   heparin:    [{ r:'静推', d:5000,on:5, du:180 }, { r:'皮下', d:5000,on:30,du:360 }],
   naloxone:   [{ r:'静推', d:0.4,on:1,  du:45  }, { r:'肌注', d:0.8,on:5,  du:90 }],
 };
@@ -476,6 +480,9 @@ function build() {
         d: x.d != null ? x.d : item.dose,
         on: x.on != null ? x.on : item.onset,
         du: x.du != null ? x.du : item.dur,
+        ...(x.infusionMinutes ? { infusionMinutes: x.infusionMinutes } : {}),
+        ...(x.pumpHalfLife ? { pumpHalfLife: x.pumpHalfLife } : {}),
+        ...(x.pumpStep ? { pumpStep: x.pumpStep } : {}),
       }));
       item.route = item.routes[0].r;
       item.dose = item.routes[0].d;
@@ -508,7 +515,6 @@ function build() {
 const ALIASES = {
   '氢化可的松': '氢化皮质酮',
   '氢化考的松': '氢化皮质酮',
-  '可的松': '氢化皮质酮',
   '速尿': '呋塞米',
   '呋喃苯胺酸': '呋塞米',
   '小苏打': '碳酸氢钠',
@@ -528,16 +534,15 @@ const ALIASES = {
   '葡萄糖酸钙针': '葡萄糖酸钙',
   '氯化钾针': '氯化钾',
   '止血敏': '酚磺乙胺',
-  '垂体后叶素': '血管加压素',
   '肾上腺素注射液': '肾上腺素',
   '去甲肾上腺素注射液': '去甲肾上腺素',
   '异丙肾': '异丙肾上腺素',
   '多巴胺针': '多巴胺',
   '硝酸甘油片': '硝酸甘油',
-  '消心痛': '硝酸甘油',
+  '消心痛': '硝酸异山梨酯',
   '开搏通': '卡托普利',
   '洛赛克': '奥美拉唑',
-  '泰胃美': '法莫替丁',
+  '泰胃美': '西咪替丁',
   '吗丁啉': '多潘立酮',
   '胃复安': '甲氧氯普胺',
   '思密达': '蒙脱石',
@@ -565,14 +570,14 @@ const ALIASES = {
   '奥氮平片': '奥氮平',
   '氟哌啶醇针': '氟哌啶醇',
   '芬太尼针': '芬太尼',
-  '曲马多': '哌替啶',
   '布洛芬缓释': '布洛芬',
   '泰诺': '对乙酰氨基酚',
   '扑热息痛': '对乙酰氨基酚',
-  '青霉素': '阿莫西林',
-  '先锋必': '头孢曲松',
+  '先锋必': '头孢哌酮',
+  '头孢哌酮钠': '头孢哌酮',
   '罗氏芬': '头孢曲松',
-  '泰能': '美罗培南',
+  '泰能': '亚胺培南/西司他丁',
+  '亚胺培南西司他丁钠': '亚胺培南/西司他丁',
   '稳可信': '万古霉素',
   '大扶康': '氟康唑',
   '达菲': '奥司他韦',
@@ -580,7 +585,6 @@ const ALIASES = {
   '优甲乐': '左甲状腺素',
   '赛治': '甲巯咪唑',
   '他巴唑': '甲巯咪唑',
-  '碘赛罗宁': '左甲状腺素',
   '速尿针': '呋塞米',
   '安体舒通': '螺内酯',
   '双氢克尿噻': '氢氯噻嗪',
@@ -597,6 +601,8 @@ const ALIASES = {
 };
 
 const ALL = build();
+const UNLISTED_DRUGS = ['头孢哌酮', '亚胺培南/西司他丁', '硝酸异山梨酯', '西咪替丁',
+  '曲马多', '青霉素', '碘赛罗宁', '可的松', '垂体后叶素'];
 
 function byId(id) { return ALL.find(x => x.id === (id === 'paracetamol' ? 'acetaminophen' : id)); }
 function byClass() {
@@ -604,20 +610,28 @@ function byClass() {
   for (const s of ALL) (m[s.cls] = m[s.cls] || []).push(s);
   return m;
 }
+function aliasesFor(name) {
+  return Object.keys(ALIASES).filter(alias => ALIASES[alias] === name);
+}
+function matchesName(name, q) {
+  return name.includes(q) || aliasesFor(name).some(alias => alias.includes(q));
+}
 function search(q) {
-  q = (q || '').trim();
+  q = (q || '').trim().replace(/／/g, '/');
   if (!q) return ALL;
-  /* 别名：搜"氢化可的松"也要能找到"氢化皮质酮" */
-  const canon = ALIASES[q] || '';
+  if (UNLISTED_DRUGS.includes(ALIASES[q] || q)) return [];
   return ALL.filter(s =>
-    s.n.includes(q) || s.cls.includes(q) || (s.note || '').includes(q) ||
-    (canon && s.n === canon) ||
-    Object.keys(ALIASES).some(a => s.n === ALIASES[a] && a.includes(q))
+    s.cls.includes(q) || (s.note || '').includes(q) || matchesName(s.n, q)
   );
+}
+function searchUnlistedDrugs(q) {
+  q = (q || '').trim().replace(/／/g, '/');
+  if (!q) return [];
+  return UNLISTED_DRUGS.filter(name => matchesName(name, q));
 }
 
 const API = { ALL, INTERACTIONS, ALIASES, DRUGS: ALL.filter(x => x.kind === 'drug'), FOODS: ALL.filter(x => x.kind === 'food'),
-              CODEX, byId, byClass, search, CLS };
+              CODEX, byId, byClass, aliasesFor, search, searchUnlistedDrugs, CLS };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 root.SUBSTANCES = API;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

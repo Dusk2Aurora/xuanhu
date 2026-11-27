@@ -14,7 +14,8 @@ const TRIM = 0.9;         // 压缩后补偿；末端还有一个软限幅器兜
 
 let ctx = null, master = null, busLP = null, comp = null, trim = null, limiter = null, output = null;
 let space = null;         // 混响发送总线（ConvolverNode 输入）
-let monitorAlarm = null;
+const monitorAlarms = new Map();
+const bedPan = [-0.55, 0.55, -0.2, 0.2];
 let resumePending = false;
 let enabled = true;
 let lastVolume = 20;
@@ -195,10 +196,11 @@ function voice(o) {
   osc.stop(t0 + dur + 0.06);
 }
 
-function stopMonitorAlarm() {
-  if (!monitorAlarm) return;
-  const { osc, gain } = monitorAlarm;
-  monitorAlarm = null;
+function stopBedAlarm(patient) {
+  const alarm = monitorAlarms.get(patient);
+  if (!alarm) return;
+  const { osc, gain } = alarm;
+  monitorAlarms.delete(patient);
   const now = ctx.currentTime;
   const level = gain.value;
   gain.cancelScheduledValues(now);
@@ -207,22 +209,37 @@ function stopMonitorAlarm() {
   osc.stop(now + 0.015);
 }
 
+function stopMonitorAlarm(patient) {
+  if (patient !== undefined) stopBedAlarm(patient);
+  else for (const key of monitorAlarms.keys()) stopBedAlarm(key);
+}
+
 // 短声参考迈瑞 T1 的 Mode 2 节奏。心静止另用较轻的持续音，由心律调度停止。
-function playMonitorAlarm(kind) {
+function playMonitorAlarm(kind, patient, bedIndex) {
   const continuous = kind === 'flatline';
+  const monitorAlarm = monitorAlarms.get(patient);
   if (!enabled || (continuous && monitorAlarm?.kind === kind) || (kind === 'warning' && monitorAlarm)) return;
   const c = ensure();
   if (!c || (c.state !== 'running' && !c.startRendering)) return;
-  stopMonitorAlarm();
+  stopBedAlarm(patient);
   const osc = c.createOscillator(), amp = c.createGain();
   const start = c.currentTime;
   osc.connect(amp);
-  amp.connect(master);
-  monitorAlarm = { kind, osc, gain: amp.gain };
+  const pan = bedPan[bedIndex] ?? 0;
+  const panner = pan && c.createStereoPanner ? c.createStereoPanner() : null;
+  if (panner) {
+    panner.pan.value = pan;
+    amp.connect(panner);
+    panner.connect(master);
+  } else amp.connect(master);
+  // 同种报警在单声道播放时也能听出是两台监护仪。
+  osc.detune.value = pan * 16;
+  monitorAlarms.set(patient, { kind, osc, gain: amp.gain });
   osc.onended = () => {
-    if (monitorAlarm?.osc === osc) monitorAlarm = null;
+    if (monitorAlarms.get(patient)?.osc === osc) monitorAlarms.delete(patient);
     osc.disconnect();
     amp.disconnect();
+    panner?.disconnect();
   };
   amp.gain.setValueAtTime(0, start);
   if (continuous) {
@@ -285,10 +302,10 @@ const S = {
     }
   },
 
-  alarm() { playMonitorAlarm('vf'); },
-  flatline() { playMonitorAlarm('flatline'); },
-  get flatlinePlaying() { return monitorAlarm?.kind === 'flatline'; },
-  critical() { playMonitorAlarm('warning'); },
+  alarm(patient, bedIndex) { playMonitorAlarm('vf', patient, bedIndex); },
+  flatline(patient, bedIndex) { playMonitorAlarm('flatline', patient, bedIndex); },
+  flatlinePlaying(patient) { return monitorAlarms.get(patient)?.kind === 'flatline'; },
+  critical(patient, bedIndex) { playMonitorAlarm('warning', patient, bedIndex); },
   stopMonitorAlarm,
 
   /* 出院：C 大三和弦上行分解，每个音独立衰减 */

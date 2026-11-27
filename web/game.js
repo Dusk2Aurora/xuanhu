@@ -18,7 +18,7 @@ let beds = [];
 let activeIdx = 0;
 let selected = 'heart';
 let lastTs = 0, acc = 0, hudAcc = 0, saveAcc = 0, signsAcc = 0;
-let lastBeatAt = null, nextArrestAlarmAt = 0;
+let lastBeatAt = null;
 let speed = 1, ff = false;
 let observationUntil = null;
 let lastCaseReview = false;
@@ -926,7 +926,7 @@ function loop(ts) {
     }
     settleBeds();
     if (!beds.length) { silenceMonitor(); requestAnimationFrame(loop); return; }
-    let monitorWarning = false;
+    const warnings = new Set();
     hudAcc += dt;
     if (hudAcc >= 0.25) { hudAcc = 0; renderHUD(); }
     saveAcc += dt;
@@ -934,17 +934,18 @@ function loop(ts) {
 
     /* 首次体征提示：每 ~2 秒检查一次（非阻断；危急才用醒目 toast） */
     signsAcc += dt;
-    if (signsAcc >= 2) { signsAcc = 0; monitorWarning = checkSigns(); }
-    /* 后台床位危急警报 */
+    if (signsAcc >= 2) { signsAcc = 0; if (checkSigns()) warnings.add(S); }
+    /* 所有床位都记录危急状态，后台床位另有文字提醒。 */
     for (const b of beds) {
-      if (b.S === S) continue;
       const st = b.S;
       const crit = st.rhythm !== 'sinus' ? st.rhythm :
         (st.spo2 < 80 || st.k > 7 || E.bp(st).sys < 70 ? 'vitals' : null);
       if (crit && crit !== b.crit) {
-        const reason = crit === 'vf' ? '室颤' : crit === 'asystole' ? '心静止' : st.cas.name;
-        toast('⚠ 床位 ' + (beds.indexOf(b) + 1) + ' 危急：' + reason, true);
-        monitorWarning = true;
+        if (st !== S) {
+          const reason = crit === 'vf' ? '室颤' : crit === 'asystole' ? '心静止' : st.cas.name;
+          toast('⚠ 床位 ' + (beds.indexOf(b) + 1) + ' 危急：' + reason, true);
+        }
+        if (crit === 'vitals') warnings.add(st);
       }
       b.crit = crit;
     }
@@ -954,13 +955,13 @@ function loop(ts) {
       const nowSevere = isSevere(S);
       if (nowSevere && !S._wasSevere) {
         /* 只在"由轻转重"那一刻弹；开局即重症不弹（_ready 之前也不弹） */
-        if (S._ready && !severePopup) { showSeverePopup(); monitorWarning = true; }
+        if (S._ready && !severePopup) { showSeverePopup(); warnings.add(S); }
         S._wasSevere = 1;
       } else if (!nowSevere) {
         S._wasSevere = 0;
       }
     } catch (e) {}
-    pumpSound(ts, monitorWarning);
+    pumpSound(ts, warnings);
   }
   requestAnimationFrame(loop);
 }
@@ -968,32 +969,30 @@ function loop(ts) {
 /* ---------------- 音效调度 ---------------- */
 function silenceMonitor() {
   window.SOUND?.stopMonitorAlarm();
-  nextArrestAlarmAt = 0;
+  for (const bed of beds) bed.nextVfAlarmAt = 0;
   lastBeatAt = null;
 }
 document.addEventListener('visibilitychange', () => { if (document.hidden) silenceMonitor(); });
 window.addEventListener('pagehide', silenceMonitor);
 
-function pumpSound(ts, warning) {
+function pumpSound(ts, warnings) {
   if (!window.SOUND?.enabled || document.hidden) { silenceMonitor(); return; }
-  // 先听当前床的骤停报警；当前床有自主心律时，后台室颤优先于后台心静止。
-  let rhythm = S.rhythm;
-  if (rhythm === 'sinus') {
-    if (beds.some(b => b.S.rhythm === 'vf')) rhythm = 'vf';
-    else if (beds.some(b => b.S.rhythm === 'asystole')) rhythm = 'asystole';
-  }
-  if (rhythm !== 'asystole' && SOUND.flatlinePlaying) SOUND.stopMonitorAlarm();
-  if (rhythm === 'asystole') {
-    if (!SOUND.flatlinePlaying) SOUND.flatline();
-    nextArrestAlarmAt = 0;
-  } else if (rhythm === 'vf') {
-    if (ts >= nextArrestAlarmAt) {
-      SOUND.alarm();
-      nextArrestAlarmAt = ts + 1500;
+  for (const [i, bed] of beds.entries()) {
+    const patient = bed.S;
+    const bedIndex = beds.length > 1 ? i : undefined;
+    if (patient.rhythm === 'vf') {
+      if (ts >= (bed.nextVfAlarmAt ?? 0)) {
+        SOUND.alarm(patient, bedIndex);
+        bed.nextVfAlarmAt = ts + 1500;
+      }
+    } else if (patient.rhythm === 'asystole') {
+      if (!SOUND.flatlinePlaying(patient)) SOUND.flatline(patient, bedIndex);
+      bed.nextVfAlarmAt = 0;
+    } else {
+      if (bed.nextVfAlarmAt || SOUND.flatlinePlaying(patient)) SOUND.stopMonitorAlarm(patient);
+      bed.nextVfAlarmAt = 0;
+      if (warnings.has(patient)) SOUND.critical(patient, bedIndex);
     }
-  } else {
-    if (nextArrestAlarmAt) { SOUND.stopMonitorAlarm(); nextArrestAlarmAt = 0; }
-    if (warning) SOUND.critical();
   }
   if (S.rhythm !== 'sinus' || !(S.hr > 0)) { lastBeatAt = null; return; }
   const interval = 60000 / S.hr;
@@ -1139,6 +1138,7 @@ function settleBeds() {
   let review;
   for (const b of finished) {
     const st = b.S;
+    window.SOUND?.stopMonitorAlarm(st);
     const recap = archiveCase(st, wardCount);
     if (st === S) {
       review = { st, ...recap };
@@ -2240,6 +2240,7 @@ function startCase(spec, replace) {
 function installCase(st, replace) {
   prepareCase(st);
   if (replace && isCurrentPatient(S)) {
+    window.SOUND?.stopMonitorAlarm(S);
     try {
       if (window.DIAGNOSIS && window.HANDBOOK) {
         recordDiagnosis(S, window.DIAGNOSIS.classify(S), '#unfinished');

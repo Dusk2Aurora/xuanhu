@@ -111,13 +111,114 @@ for (const id of ['hyperkalemia', 'dka', 'bleed', 'sepsis', 'opioid']) {
   check('纠正过度 → 脱髓鞘且不能出院', !blocked || rise > 16, `升幅 ${rise.toFixed(1)}，拦截=${blocked}`);
 }
 
-/* 10. 去甲肾上腺素在感染性休克有效、在心衰可能反而降低 MAP */
+/* 10. 去甲肾上腺素在感染性休克中的升压及撤除支持后的循环观察 */
 {
   const se = E.create('sepsis');
   const m0 = E.bp(se).map;
   E.give(se, 'norepi', 8);
   for (let i = 0; i < 20; i++) E.tick(se, 30);
   check('去甲肾上腺素升压（脓毒症）', E.bp(se).map > m0 + 6, `${m0} → ${E.bp(se).map}`);
+}
+
+{
+  const makeBed = () => E.create({ id: 'circulation-test', init: { ...G.BASE } });
+  const observe = S => E.dischargeCheck(S).circulationObservation;
+  const setPressure = (S, map) => {
+    S.hr = 100;
+    S.sv = 32;
+    S.svr = (map - S.cvp) / (S.hr * S.sv / 1000);
+  };
+  const advance = (S, seconds) => {
+    const until = S.t + seconds;
+    while (S.running && S.t < until) E.tick(S, Math.min(10, until - S.t));
+  };
+  const bed = makeBed();
+  const untreated = makeBed();
+  check('未用过循环支持的病例沿用原出院条件', E.dischargeCheck(untreated).ok && !observe(untreated),
+    '入院即稳定，无循环支持医嘱');
+
+  bed.t = 158;
+  setPressure(bed, 73);
+  const firstPressure = E.bp(bed);
+  E.give(bed, 'norepi', 8, '泵入');
+  bed.t = 165;
+  setPressure(bed, 70);
+  const secondPressure = E.bp(bed);
+  E.give(bed, 'dobutamine');
+  bed.t = 170;
+  setPressure(bed, 81);
+  const thirdPressure = E.bp(bed);
+  bed.t = 173;
+  const supported = observe(bed);
+  E.stopPump(bed, 'norepi');
+  const onePump = observe(bed);
+  E.stopPump(bed, 'dobutamine');
+  const off = observe(bed);
+  check('02:53 循环支持下血压回升仍需留观', firstPressure.sys === 83 && firstPressure.dia === 68 &&
+    secondPressure.sys === 80 && secondPressure.dia === 65 && thirdPressure.sys === 91 && thirdPressure.dia === 76 &&
+    supported?.phase === 'active' && supported.reason.includes('去甲肾上腺素、多巴酚丁胺') &&
+    onePump?.phase === 'active' && onePump.reason.includes('多巴酚丁胺') &&
+    off?.phase === 'observing' && off.remainingSeconds === 900 && !E.dischargeCheck(bed).ok,
+    '83/68 → 80/65 → 91/76，两台泵全停才开始计时');
+
+  advance(bed, 120);
+  bed.running = false;
+  E.tick(bed, 900);
+  const paused = observe(bed);
+  bed.running = true;
+  E.give(bed, 'norepi', 8);
+  E.give(bed, 'norepi', 12);
+  const adjusted = E.pumpRate(bed, 'norepi') === 12 && bed.given.at(-1).pumpAction === 'adjust';
+  advance(bed, 120);
+  E.stopPump(bed, 'norepi');
+  const restarted = observe(bed);
+  check('循环观察按模拟时间推进，重新给药清空已观察时间', paused?.remainingSeconds === 780 && adjusted &&
+    restarted?.remainingSeconds === 900 && E.pumpEffect(bed, 'norepi') > 0.02,
+    '暂停后仍剩 13 分钟，新一轮停泵时即使有残效也从 15 分钟起计');
+
+  advance(bed, 180);
+  const relapseAt = bed.t;
+  setPressure(bed, 70);
+  const hypotensive = observe(bed);
+  advance(bed, 20);
+  for (let i = 0; i < 120 && observe(bed)?.phase === 'unstable'; i++) advance(bed, 1);
+  const stableSince = bed.circulationStableSince;
+  const checkpoint = observe(bed);
+  advance(bed, 120);
+  const { cas, ...snapshot } = bed;
+  const saved = JSON.parse(JSON.stringify(snapshot));
+  const restored = Object.assign(makeBed(), saved);
+  E.restoreDischargeObservation(restored, saved);
+  const restoredRemaining = observe(restored)?.remainingSeconds;
+  advance(restored, stableSince + 899 - restored.t);
+  const stillWaiting = !E.dischargeCheck(restored).ok && observe(restored)?.reason.includes('还需 1 秒');
+  advance(restored, 1);
+  check('低血压后重计，观察进度可存档并在满十五分钟时放行', hypotensive?.phase === 'unstable' &&
+    stableSince > relapseAt && checkpoint?.remainingSeconds >= 880 && restored.circulationStableSince === stableSince &&
+    restoredRemaining === checkpoint.remainingSeconds - 120 && stillWaiting && E.dischargeCheck(restored).ok &&
+    observe(restored)?.phase === 'complete', '恢复血压后重计，重载继续观察，边界前一秒仍未达标');
+
+  const oldOrder = { id: 'norepi', n: '去甲肾上腺素', route: '泵入', t: 0, onset: 1, dur: 8,
+                     scale: 1, eff: { svr: 6, hr: 2 } };
+  const oldSave = { t: 240, pk: [oldOrder] };
+  const legacy = Object.assign(makeBed(), oldSave);
+  E.restoreDischargeObservation(legacy, oldSave);
+  const legacyOn = observe(legacy);
+  advance(legacy, 540);
+  const effectPreserved = legacy.pk[0] === oldOrder && legacy.mod.svr > 0;
+  advance(legacy, 100);
+  check('旧去甲肾上腺素医嘱保留原药效并自动进入停药观察', legacyOn?.phase === 'legacy' &&
+    legacyOn.remainingSeconds === 624 && !E.pumpRate(legacy, 'norepi') && effectPreserved &&
+    legacy.pk.length === 0 && observe(legacy)?.phase === 'observing', '旧有限医嘱按原药代消退，无需为旧医嘱手动停泵');
+
+  const phaseAfter = (drug, route) => {
+    const patient = makeBed();
+    E.give(patient, drug, undefined, route);
+    return observe(patient)?.phase;
+  };
+  check('有限时程的升压强心药触发观察，常用降压和调心率药沿用原条件',
+    phaseAfter('epi', '静推') === 'legacy' && phaseAfter('milrinone') === 'legacy' &&
+    !phaseAfter('nitroprusside') && !phaseAfter('atropine'), '肾上腺素静推、米力农、硝普钠、阿托品');
 }
 
 {
@@ -395,6 +496,66 @@ for (const id of ['hyperkalemia', 'dka', 'bleed', 'sepsis', 'opioid']) {
     obstructed.left.includes('哮鸣音') && obstructed.left === obstructed.right &&
     wet.left.includes('湿啰音') && wet.left === wet.right,
     '气胸引流前后、哮喘、肺水肿');
+}
+
+{
+  const makeBed = () => E.create(G.generate(2, 101, ['ptx']));
+  const bed = makeBed();
+  Object.assign(bed, { t: 33, lungWater: 0.70 });
+  const firstReady = E.orderTest(bed, 'cxr');
+  E.ACTIONS.chestTube.apply(bed);
+  Object.assign(bed, { t: firstReady - 1, lungWater: 0.12 });
+  const duplicateReady = E.orderTest(bed, 'cxr');
+  E.pollTests(bed);
+  const waiting = !E.chestXrayReports(bed).length;
+  const restored = Object.assign(makeBed(), JSON.parse(JSON.stringify(bed)));
+  E.restoreChestXrayReports(restored);
+  restored.t = firstReady + 7;
+  E.pollTests(restored);
+  const [first] = E.chestXrayReports(restored);
+  const secondAt = restored.t + 20;
+  restored.t = secondAt;
+  const secondReady = E.orderTest(restored, 'cxr');
+  restored.t = secondReady + 5;
+  E.pollTests(restored);
+  const [prior, second] = E.chestXrayReports(restored);
+  const receipts = restored.log.filter(([, message]) => message === '床旁胸片 结果已出');
+  check('胸片按申请时病情生成，回报可逐份追溯', waiting && duplicateReady === firstReady &&
+    first?.sampledAt === 33 && first.reportedAt === firstReady + 7 && first.findings.includes('片状模糊影') &&
+    first.findings.includes('左肺明显受压') && prior === first && Object.isFrozen(first) &&
+    second?.sampledAt === secondAt && second.reportedAt === secondReady + 5 && second.findings.includes('未见胸腔积气') &&
+    second.findings.includes('未见明显肺水肿') && receipts.length === 2 &&
+    receipts[0][3] === first.reportedAt && receipts[0][4] === first.id && receipts[1][4] === second.id &&
+    first.id !== second.id && restored.cost === 2 * E.TESTS.cxr.cost && !E.chestXrayReports(makeBed()).length,
+    '引流后等候首份回报、带待出报告重载、复查和床位隔离');
+
+  const legacy = makeBed();
+  legacy.t = 3000;
+  legacy.lungWater = 0.12;
+  legacy.tests.cxr = { readyAt: 3000, done: false };
+  legacy.labSnap.cxr = { t: 1210, s: { lungWater: 0.70 } };
+  legacy.log.push(['00:16', '床旁胸片 结果已出', 'good'], ['00:20', '床旁胸片 结果已出', 'good']);
+  E.restoreChestXrayReports(legacy);
+  E.pollTests(legacy);
+  E.restoreChestXrayReports(legacy);
+  const [lost, archived, pending] = E.chestXrayReports(legacy);
+  const oldReceipts = legacy.log.filter(([, message]) => message === '床旁胸片 结果已出');
+  check('旧档胸片保留真实快照和资料缺失标记', lost?.reportedAt === null && lost.findings.includes('未保留') &&
+    archived?.sampledAt === null && archived.reportedAt === 1210 && archived.findings.includes('片状模糊影') &&
+    archived.findings.includes('未记录胸腔积气') && oldReceipts[0][4] === lost.id && oldReceipts[1][4] === archived.id &&
+    pending?.sampledAt === null && pending.reportedAt === 3000 && pending.findings.includes('未保留') &&
+    E.chestXrayReports(legacy).length === 3,
+    '旧版先前回执、已保存的最后一次快照、缺少采集资料的待出报告');
+
+  const ambiguous = makeBed();
+  ambiguous.labSnap.cxr = { t: 1210, s: { lungWater: 0.70 } };
+  ambiguous.log.push(['00:20', '床旁胸片 结果已出', 'good'], ['00:20', '床旁胸片 结果已出', 'good']);
+  E.restoreChestXrayReports(ambiguous);
+  const [oldFirst, oldSecond, oldSnapshot] = E.chestXrayReports(ambiguous);
+  check('同分钟旧回执的胸片快照单独保留', oldFirst?.reportedAt === null && oldSecond?.reportedAt === null &&
+    oldFirst.findings.includes('未保留') && oldSecond.findings.includes('未保留') &&
+    oldSnapshot?.reportedAt === 1210 && oldSnapshot.findings.includes('片状模糊影'),
+    '两个旧回执只有相同的分钟时间戳');
 }
 
 {

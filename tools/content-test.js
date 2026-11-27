@@ -29,6 +29,11 @@ const SEEDS = Array.from({ length: SEED_N }, (_, i) => (i + 1) * 101);
 
 const has = (S, id) => !!(S.pk && S.pk.some(p => p.id === id));
 const bp = S => E.bp(S);
+const norepiSupport = (S, startMap, stopMap, rate) => {
+  const pressure = bp(S);
+  if (!E.pumpRate(S, 'norepi') && pressure.map < startMap) E.give(S, 'norepi', rate);
+  if (E.pumpRate(S, 'norepi') && pressure.map >= stopMap && pressure.sys >= 100) E.stopPump(S, 'norepi');
+};
 const o2 = S => {
   const onO2 = (S.fio2 || 0.21) > 0.21 || S.o2 || S.vent;
   if (!onO2) { if (S.spo2 < 94) E.ACTIONS.oxygen.apply(S); return; }
@@ -69,7 +74,7 @@ const TREAT = {
   sepsis(S, t) {
     if (!S._p) { S._p = 1; E.give(S, 'nacl', 1000); }
     if (t >= 60 && !has(S, 'ceftriaxone')) E.give(S, 'ceftriaxone', 2);
-    if (bp(S).map < 70 && !has(S, 'norepi')) E.give(S, 'norepi', 12);
+    norepiSupport(S, 70, 80, 12);
     if (S.vol < 4.4 && !has(S, 'nacl')) E.give(S, 'nacl', 1000);
   },
   opioid(S, t) {
@@ -82,7 +87,7 @@ const TREAT = {
   edema(S) {
     if (!S._p) { S._p = 1; o2(S); E.give(S, 'furosemide', 30); }
     const pressure = bp(S);
-    if (pressure.map < 62 && !has(S, 'norepi')) E.give(S, 'norepi', 8);
+    norepiSupport(S, 62, 75, 8);
     /* 肺水消了就把氧撤掉，否则永远卡在"仍在吸氧" */
     if ((S.lungWater || 0) <= 0.44 && S.spo2 >= 95 && ((S.fio2 || 0.21) > 0.21 || S.o2)) {
       E.ACTIONS.oxygen_off.apply(S);
@@ -294,7 +299,7 @@ const TREAT = {
     o2(S);
     if (!S._p) { S._p = 1; E.give(S, 'alteplase', 100); E.give(S, 'heparin', 5000); }
     if (bp(S).sys < 90 && !has(S, 'nacl')) E.give(S, 'nacl', 500);
-    if (bp(S).map < 65 && !has(S, 'norepi')) E.give(S, 'norepi', 8);
+    norepiSupport(S, 65, 75, 8);
   },
 };
 
@@ -310,7 +315,7 @@ function runOne(mod, seed, mode) {
     E.tick(S, DT);
     G.step(S, DT, E);                    // 与 game.js 主循环一致：先 tick 再推进病程
     E.pollTests(S);
-    if (!S.death && E.dischargeCheck(S).ok && E.pumpEffect(S, 'dobutamine') < 0.02) {
+    if (!S.death && E.dischargeCheck(S).ok) {
       E.endCase(S, 'discharge', '达到出院标准');
       break;
     }

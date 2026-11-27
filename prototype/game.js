@@ -382,13 +382,14 @@ function closeDetail() {
 function openDetail(name, sub, kv, warn) {
   stopObservation();
   const detail = $('#detail');
+  delete detail.dataset.view;
   detail.classList.remove('case-review', 'case-review-success', 'case-review-failure');
   detail.querySelector('.case-review-body')?.remove();
   detail.querySelector('.card').scrollTop = 0;
   $('#dName').textContent = name;
   $('#dSub').textContent = sub || '';
   $('#dKv').innerHTML = kv.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
-  const w = $('#dWarn'); w.textContent = warn || ''; w.style.display = warn ? 'block' : 'none';
+  const w = $('#dWarn'); w.classList.remove('eligible'); w.textContent = warn || ''; w.style.display = warn ? 'block' : 'none';
   $('#detail').classList.add('on');
 }
 
@@ -753,6 +754,84 @@ function examineLungs() {
   openDetail('双肺听诊', patient.patient.name, rows, '');
 }
 
+function chestXrayRows(report) {
+  return [['采集时间', caseTime(report.sampledAt)], ['报告时间', caseTime(report.reportedAt)],
+    ['影像所见', escapeHtml(report.findings)]];
+}
+
+function chestXrayEntries(patient) {
+  const reports = E.chestXrayReports(patient);
+  if (!reports.length) return [];
+  return [{ sec: '已回报 · 影像检查' }, ...reports.slice().reverse().map(report => ({
+    n: '床旁胸片结果', tag: caseTime(report.reportedAt), amt: '查看报告',
+    run: () => openDetail('床旁胸片报告', patient.patient.name, chestXrayRows(report), ''),
+  }))];
+}
+
+function openChecks(patient) {
+  if (!isCurrentPatient(patient)) return;
+  const rows = [...chestXrayEntries(patient), { sec: '床旁查体' }, { n: '双肺听诊', tag: '床旁', amt: '立即查体', run: examineLungs },
+    { sec: '检查开单' }, ...testRows(patient)];
+  const d = E.dischargeCheck(patient);
+  rows.push({ sec: '结局' });
+  if (!d.ok && (d.circulationObservation?.phase === 'observing' || patient.opioidTox || patient.tags.some(tag => ['hhs', 'hypona', 'sepsis'].includes(tag)))) {
+    rows.push({ n: '稳定期留观快进', tag: '全病房 · 遇重症或检查出结果时停止', amt: '最多 6 小时', run: startObservation });
+  }
+  rows.push({
+    n: d.ok ? '办理出院' : '出院评估', tag: d.ok ? '可出院' : '未达标',
+    amt: d.ok ? '✓' : '—',
+    run: () => {
+      const current = E.dischargeCheck(patient);
+      if (!current.ok || !d.ok) {
+        const rows = [
+          ['本例治疗目标', escapeHtml(patient.cas.goals.join('；'))],
+          ['出院心率范围', current.heartRateTarget],
+          ['当前心率', '<span id="dischargeHr"></span>'],
+          ['当前血压', '<span id="dischargeBp"></span>'],
+        ];
+        if (patient.tags.includes('htn')) {
+          rows.push(['循环指标', '<span id="assessmentTone"></span> <button type="button" class="pill" id="inspectTone">查看心脏面板</button>']);
+        }
+        if (patient.tags.includes('preeclampsia')) rows.push(['产科进程', deliveryStatus(patient)]);
+        openDetail('出院评估', patient.patient.name, rows, current.reasons.join('\n'));
+        $('#detail').dataset.view = 'discharge';
+        refreshDischargeAssessment(patient, current);
+        $('#inspectTone')?.addEventListener('click', () => {
+          if (!isCurrentPatient(patient)) return;
+          closeSheet();
+          closeDetail();
+          selectOrgan('heart');
+          $('#vascularTone').scrollIntoView({ block: 'nearest' });
+          $('#opTitle').focus({ preventScroll: true });
+        });
+        return;
+      }
+      E.endCase(patient, 'discharge', '达到出院标准');
+      settleBeds();
+      try { if (navigator.vibrate) navigator.vibrate(200); } catch (e) {}
+    },
+  });
+  openSheet('检查 / 结局', patient.patient.name + ' · 开单后出结果', rows, patient);
+  $('#sheetTitle').dataset.view = 'checks';
+  $('#sheetTitle').dataset.eligible = String(d.ok);
+}
+
+function refreshDischargeAssessment(patient, assessment) {
+  const pressure = E.bp(patient);
+  $('#dischargeHr').textContent = Math.round(patient.hr) + ' 次/分';
+  $('#dischargeBp').textContent = `${pressure.sys}/${pressure.dia} mmHg · MAP ${pressure.map} mmHg`;
+  const tone = $('#assessmentTone');
+  if (tone) {
+    const reading = CASEGEN.vascularTone(patient);
+    tone.textContent = reading.controlled ? reading.text : '';
+  }
+  const warning = $('#dWarn');
+  warning.classList.toggle('eligible', assessment.ok);
+  const message = assessment.ok ? '已达到出院标准，可返回检查页办理出院。' : assessment.reasons.join('\n');
+  if (message !== warning.textContent) warning.textContent = message;
+  warning.style.display = 'block';
+}
+
 function testRows(patient) {
   return Object.entries(E.TESTS).map(([id, t]) => ({
     n: t.name, tag: patient.tests[id] && !patient.tests[id].done ? '待出报告' : t.min + ' min',
@@ -1019,6 +1098,7 @@ function loadGame() {
       E.restoreCardiorespiratory(st, item.s);
       E.restoreTemperature(st, item.s);
       E.restoreDischargeObservation(st, item.s);
+      E.restoreChestXrayReports(st);
       if (st.death || st.discharged) st.running = false;
       if (i <= savedActive) rebuiltActive = rebuilt.length;
       rebuilt.push({ S: st });
@@ -1052,10 +1132,12 @@ function pushRecord(rec) {
       } catch (err) {
         if (err.name !== 'QuotaExceededError') throw err;
         // 优先保留每份病历的结局和评分；空间不足时从最旧的日志开始腾空间。
-        const oldest = list.slice().reverse().find(r => r.操作日志?.length);
+        const oldest = list.slice().reverse().find(r => r.操作日志?.length || r.胸片报告?.length);
         if (!oldest) throw err;
         const i = list.indexOf(oldest);
-        list[i] = { ...oldest, 操作日志: null, 日志已清理: true };
+        list[i] = oldest.操作日志?.length
+          ? { ...oldest, 操作日志: null, 日志已清理: true }
+          : { ...oldest, 胸片报告: null };
       }
     }
   } catch (e) {}
@@ -1181,7 +1263,10 @@ function loop(ts) {
       }
       acc -= 0.2;
     }
+    const pendingFilm = S.tests.cxr && !S.tests.cxr.done;
     for (const b of beds) { try { E.pollTests(b.S); } catch (e) {} }
+    if (pendingFilm && S.tests.cxr.done && $('#sheet').classList.contains('on') &&
+        $('#sheetTitle').dataset.view === 'checks' && isCurrentPatient(S)) openChecks(S);
     if (observationUntil != null && (S.t >= observationUntil - 0.1 || beds.some(b => needsAttention(b.S)) || E.dischargeCheck(S).ok)) {
       stopObservation();
       saveGame();
@@ -1294,6 +1379,11 @@ function renderHUD() {
   renderVitals();
   renderStates();
   syncEnvSheet();
+  if ($('#sheetTitle').dataset.view === 'checks' && $('#sheet').classList.contains('on')) {
+    const assessment = E.dischargeCheck(S);
+    if ($('#sheetTitle').dataset.eligible !== String(assessment.ok)) openChecks(S);
+    if ($('#detail').dataset.view === 'discharge' && $('#detail').classList.contains('on')) refreshDischargeAssessment(S, assessment);
+  }
   syncBedSeverity();
   if (selected) renderOrganPanel();
   checkCrucial();
@@ -1367,13 +1457,14 @@ function buildTimeline(st) {
     byLabel.set(e.label, samples);
   }
   // 时间轴仅保留最近的处置快照，从最新日志向前匹配同名操作。
-  return st.log.slice().reverse().map(([stamp, message, , seconds]) => {
+  return st.log.slice().reverse().map(([stamp, message, , seconds, reportId]) => {
     const samples = byLabel.get(message) || byLabel.get(String(message).slice(0, 40));
     const e = samples?.[samples.length - 1];
     const matched = e && (seconds == null || e.t === seconds) ? samples.pop() : null;
     const time = seconds ?? matched?.t;
     const row = [time == null ? stamp : E.fmt(time), message];
     if (matched) row.push(vitals(matched));
+    if (reportId) row[3] = reportId;
     return row;
   }).reverse();
 }
@@ -1711,6 +1802,7 @@ function archiveCase(st, wardCount) {
     费用: Math.round(st.cost),
     评分: breakdown.score,
     计分明细: breakdown,
+    胸片报告: E.chestXrayReports(st),
     操作日志: buildTimeline(st),
     设置: settings,
   };
@@ -1770,6 +1862,17 @@ function openCaseRecord(r) {
   };
   const scoreRows = breakdown ? [['基础分', breakdown.base], ...breakdown.items.map(x => [x.label, points(x.delta)])] : [];
   const log = r.操作日志;
+  const films = new Map((r.胸片报告 || []).map(report => [report.id, report]));
+  const filmDetails = (title, report) => `<details><summary>${escapeHtml(title)}</summary><dl>${
+    chestXrayRows(report).map(([label, value]) => `<dt>${label}</dt><dd>${value}</dd>`).join('')
+  }</dl></details>`;
+  const renderLog = ([stamp, message, sample, reportId]) => {
+    const report = films.get(reportId);
+    const receipt = report ? filmDetails(message, report) : escapeHtml(message);
+    if (report) films.delete(reportId);
+    const oldReceipt = !report && message === '床旁胸片 结果已出' ? '<small>此回执未保存对应的报告正文。</small>' : '';
+    return `<li><time>${escapeHtml(stamp)}</time><div>${receipt}${oldReceipt}${sample ? '<small>' + escapeHtml(sample) + '</small>' : ''}</div></li>`;
+  };
   const empty = r.日志已清理 ? '存储空间不足，此病历的日志已清理。' : (log ? '本例没有操作记录。' : '旧病历未保存操作日志。');
   body.innerHTML = `
     <section class="case-review-section case-review-summary"><h5>病例摘要</h5><dl>
@@ -1780,8 +1883,10 @@ function openCaseRecord(r) {
       ${breakdown ? '' : '<p>旧病历未保存加扣分明细。</p>'}</section>
     <section class="case-review-section case-review-log-panel"><h5 id="caseReviewLogHeading">操作日志${log?.length ? ' · ' + log.length + ' 条' : ''}</h5>
       <div class="case-review-log" tabindex="0" role="region" aria-labelledby="caseReviewLogHeading">${log?.length ?
-        '<ol>' + log.map(([stamp, message, sample]) => `<li><time>${escapeHtml(stamp)}</time><div>${escapeHtml(message)}${sample ? '<small>' + escapeHtml(sample) + '</small>' : ''}</div></li>`).join('') + '</ol>'
-        : '<p>' + empty + '</p>'}</div></section>`;
+        '<ol>' + log.map(renderLog).join('') + '</ol>'
+        : '<p>' + empty + '</p>'}</div></section>
+    ${films.size ? '<section class="case-review-section"><h5>胸片报告</h5>' +
+      [...films.values()].map(report => filmDetails('床旁胸片 · ' + caseTime(report.reportedAt), report)).join('') + '</section>' : ''}`;
   detail.querySelector('.card').appendChild(body);
 }
 
@@ -2030,7 +2135,7 @@ function openFeedback() {
 }
 
 /* ---------------- 版本 / 更新检查 ---------------- */
-const APP_VERSION = '1.54.2';
+const APP_VERSION = '1.54.3';
 const releaseRoot = document.querySelector('meta[name="xuanhu-release-root"]')?.content;
 const releaseBase = releaseRoot ? new URL(releaseRoot, location.href).href.replace(/\/$/, '') : '';
 const platformName = location.protocol === 'file:' ? '离线 HTML' :
@@ -2492,53 +2597,7 @@ function bind() {
   $('#btnOps').addEventListener('click', () => {
     if (isCurrentPatient(S)) openSheet('操作', S.patient.name + ' · 急救与介入', actionRows(), S);
   });
-  $('#btnBody').addEventListener('click', () => {
-    const patient = S;
-    if (!isCurrentPatient(patient)) return;
-    const rows = [{ sec: '床旁查体' }, { n: '双肺听诊', tag: '床旁', amt: '立即查体', run: examineLungs },
-      { sec: '检查开单' }, ...testRows(patient)];
-    const d = E.dischargeCheck(patient);
-    rows.push({ sec: '结局' });
-    if (!d.ok && (patient.opioidTox || patient.tags.some(tag => ['hhs', 'hypona', 'sepsis'].includes(tag)))) {
-      rows.push({ n: '稳定期留观快进', tag: '全病房 · 遇重症或检查出结果时停止', amt: '最多 6 小时', run: startObservation });
-    }
-    rows.push({
-      n: d.ok ? '办理出院' : '出院评估', tag: d.ok ? '可出院' : '未达标',
-      amt: d.ok ? '✓' : '—',
-      run: () => {
-        const current = E.dischargeCheck(patient);
-        if (!current.ok) {
-          const rows = [
-            ['本例治疗目标', escapeHtml(patient.cas.goals.join('；'))],
-            ['出院心率范围', current.heartRateTarget],
-            ['当前心率', Math.round(patient.hr) + ' 次/分'],
-          ];
-          if (patient.tags.includes('htn')) {
-            const s = E.snapshot(patient);
-            rows.push(['当前血压', s.sys + '/' + s.dia + ' mmHg'],
-              ['循环指标', '<button type="button" class="pill" id="inspectTone">查看心脏面板</button>']);
-            const tone = CASEGEN.vascularTone(patient);
-            if (tone.controlled) rows.push(['已达标', escapeHtml(tone.text)]);
-          }
-          if (patient.tags.includes('preeclampsia')) rows.push(['产科进程', deliveryStatus(patient)]);
-          openDetail('出院评估', patient.patient.name, rows, current.reasons.join('\n'));
-          $('#inspectTone')?.addEventListener('click', () => {
-            if (!isCurrentPatient(patient)) return;
-            closeSheet();
-            closeDetail();
-            selectOrgan('heart');
-            $('#vascularTone').scrollIntoView({ block: 'nearest' });
-            $('#opTitle').focus({ preventScroll: true });
-          });
-          return;
-        }
-        E.endCase(patient, 'discharge', '达到出院标准');
-        settleBeds();
-        try { if (navigator.vibrate) navigator.vibrate(200); } catch (e) {}
-      },
-    });
-    openSheet('检查 / 结局', patient.patient.name + ' · 开单后出结果', rows, patient);
-  });
+  $('#btnBody').addEventListener('click', () => openChecks(S));
   $('#btnBlood').addEventListener('click', bloodReport);
   $('#btnMenu').addEventListener('click', () => openSheet('菜单', '', [
     {n:'音效设置', tag:SOUND.enabled ? SOUND.volume + '%' : '静音', amt:'调节', run:openSoundSettings},
@@ -2869,6 +2928,10 @@ function renderAll() {
 
 /* 更新公告：每次发版在这里加一条（新的放最前面） */
 const RELEASES = [
+  { v: '1.54.3', notes: [
+    '出院评估区分循环支持中和撤药后稳定观察，显示血压和剩余观察时间',
+    '检查页可复阅历次床旁胸片，结算和病历里的结果回执可展开影像所见',
+  ] },
   { v: '1.54.2', notes: [
     '修正先锋必、罗氏芬和泰能的商品名归属与搜索结果',
     '多巴酚丁胺按持续静脉输注运行，给药页可查看速率、调速或停泵',

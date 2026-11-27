@@ -357,6 +357,7 @@ const INTERACTIONS = [
 
 /* ---------- 多途径：同一种药合并成一条，给药时再选途径 ---------- */
 const ROUTE_MAP = {
+  norepi:     [{ r:'持续静脉泵入', on:1, pumpHalfLife:2 }],
   dobutamine: [{ r:'持续静脉泵入', on:2, pumpHalfLife:2 }],
   isoproterenol: [{ r:'持续静脉泵入', on:0, pumpHalfLife:3 }],
   epi:         [{ r:'泵入', d:1, on:1, du:8 }, { r:'静推', d:1, on:1, du:5 }],

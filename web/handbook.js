@@ -365,8 +365,10 @@ function stats() {
 /* ---------------- 渲染 ---------------- */
 function renderEvidence(ev) {
   if (!Array.isArray(ev) || !ev.length) return '';
+  const display = ev.map(x => esc(x).replace(/尿量 (\d+(?:\.\d+)?) mL\/min\b/g,
+    (_, rate) => `尿量 ${Math.round(Number(rate) * 60 * 100) / 100} mL/h`));
   return '<div style="font-size:11.5px;color:#6b6b6b;margin-top:3px">证据：'
-    + ev.map(x => esc(x)).join('；') + '</div>';
+    + display.join('；') + '</div>';
 }
 
 function renderTherapy(t, idx) {

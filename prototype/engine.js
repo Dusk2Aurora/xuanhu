@@ -2355,7 +2355,7 @@ function snapshot(S) {
     oxygenModelVersion: 2,
     hco3: Math.round(S.hco3), lac: r1(S.lac), glu: r1(S.glu),
     cr: Math.round(S.cr), bun: r1(S.bun), hb: Math.round(S.hb),
-    uo: r1(S.uo), rhythm: S.rhythm, vent: !!S.vent, ef: Math.round((S.cEff || S.contractility) * 100),
+    uo: S.uo, uoHourly: r2(S.uo * 60), rhythm: S.rhythm, vent: !!S.vent, ef: Math.round((S.cEff || S.contractility) * 100),
     /* v0.3 新增可读量 */
     sao2: Math.round(S.sao2 * 100), do2: Math.round(S.do2), co: r2(S.co),
     shunt: r2(S.shunt), fio2: r2(S.fio2 == null ? 0.21 : S.fio2),

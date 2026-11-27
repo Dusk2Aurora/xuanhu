@@ -103,7 +103,7 @@ const CASE_MEASURES = {
   cr: (S, max) => S.cr > max && { label: '肌酐', value: `${Math.round(S.cr)} µmol/L`, target: `≤${max} µmol/L` },
   coag: (S, min) => (S.coag || 1) < min && { label: '凝血功能', value: S.coag.toFixed(2), target: `≥${min.toFixed(2)}` },
   vol: (S, min) => S.vol < min && { label: '有效循环血量', value: `${S.vol.toFixed(1)} L`, target: `≥${min} L` },
-  uo: (S, min) => S.uo < min && { label: '尿量', value: `${S.uo.toFixed(1)} mL/min`, target: `≥${min} mL/min` },
+  uo: (S, min) => S.uo < min && { label: '尿量', value: `${Math.round(S.uo * 60 * 100) / 100} mL/h`, target: `≥${min * 60} mL/h` },
   urinePerKg(S, min) {
     const rate = S.uo * 60 / (S.weight || 70);
     return rate <= min && { label: '尿量', value: `${rate.toFixed(2)} mL/kg/h`, target: `>${min} mL/kg/h` };
@@ -519,7 +519,7 @@ const MODULES = [
            contractility:0.88, ca:1.05 },
     drivers:{ kProd:0.010, lactProd:0.055 },
     history:[[480, '病史回顾', '出现上腹剧痛并向背部放射，伴频繁呕吐，弯腰时疼痛稍缓。']],
-    goal:['平均动脉压 ≥ 65','尿量 ≥ 0.5 mL/min','疼痛缓解'],
+    goal:['平均动脉压 ≥ 65','尿量 ≥ 30 mL/h','疼痛缓解'],
     measures: { vol: 3.9, uo: 0.5 },
     hint:'胰腺炎的头 24 小时死于第三间隙丢失，不是死于疼痛——先补液，再谈镇痛。',
     advance(S, dtMin){
@@ -709,7 +709,7 @@ const MODULES = [
            contractility:0.86, airwayResistance:0.75 },
     drivers:{ kProd:0.020, lactProd:0.055 },
     history:[[null, '院前交接', '从密闭空间火灾中救出，伴面颈部烧伤、声音嘶哑及炭末样痰，估计烧伤面积约 35%。']],
-    goal:['血氧回升','血压稳定','尿量 ≥ 0.5 mL/min'],
+    goal:['血氧回升','血压稳定','尿量 ≥ 30 mL/h'],
     check:S=> (S.map || 100) < 68 ? ['平均动脉压不足'] : [],
     hint:'烧伤先看气道：声音嘶哑 + 炭末痰 = 吸入性损伤，气道会肿到堵死，宁可早插管。补液按体重×面积算。',
     advance(S, dtMin){
@@ -782,7 +782,7 @@ const MODULES = [
            contractility:0.90, bleedRate:0.034 },
     drivers:{ kProd:0.012, lactProd:0.055 },
     history:[[null, '院前交接', '左上腹受撞击后疼痛，向左肩放射，伴面色苍白、冷汗。']],
-    goal:['血压稳定','乳酸下降','尿量 ≥ 0.5 mL/min'],
+    goal:['血压稳定','乳酸下降','尿量 ≥ 30 mL/h'],
     measures: { vol: 3.6, uo: 0.5 },
     ...observeAfter(S => S.bleedingSites.spleen === 0 ? (S.surgicalHemostasisAt ?? 0) : null, 900, '止血术后观察未满 15 分钟', S => [
                S.bleedingSites.spleen > 0 ? '脾脏仍在出血' : null,
@@ -805,7 +805,7 @@ const MODULES = [
            contractility:0.92, bleedRate:0.032 },
     drivers:{ kProd:0.011, lactProd:0.06 },
     history:[[null, '院前病史', '停经七周，送医前突发下腹撕裂样痛、肛门坠胀，曾晕厥。']],
-    goal:['血压稳定','尿量 ≥ 0.5 mL/min','腹腔出血已控制'],
+    goal:['血压稳定','尿量 ≥ 30 mL/h','腹腔出血已控制'],
     measures: { vol: 3.6, uo: 0.5 },
     ...observeAfter(S => S.bleedingSites.ectopic === 0 ? (S.surgicalHemostasisAt ?? 0) : null, 900, '止血术后观察未满 15 分钟', S => [
                S.bleedingSites.ectopic > 0 ? '盆腔仍在出血' : null,
@@ -826,7 +826,7 @@ const MODULES = [
            contractility:0.90, coag:0.82, svrDrive:PREECLAMPSIA_SVR_DRIVE },
     drivers:{ kProd:0.011, lactProd:0.035 },
     history:[[2880, '病史回顾', '开始头痛、视物模糊，伴双下肢水肿。']],
-    goal:['血压下降','头痛缓解','尿量 ≥ 0.5 mL/min'],
+    goal:['血压下降','头痛缓解','尿量 ≥ 30 mL/h'],
     measures: { coag: 0.65 },
     ...observeAfter(S => S.delivered ? (S.deliveryAt ?? 0) : null, 900, '产后观察未满 15 分钟', S => [
                !S.delivered ? '重度子痫前期的产科病因尚未解除' : null,

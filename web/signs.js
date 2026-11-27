@@ -68,7 +68,7 @@ function snapshot(S) {
     paco2: Math.round(num(S.paco2) || 0), pao2: Math.round(num(S.pao2) || 0),
     hco3: Math.round(num(S.hco3) || 0), lac: Math.round((num(S.lac) || 0) * 10) / 10,
     glu: Math.round((num(S.glu) || 0) * 10) / 10, cr: Math.round(num(S.cr) || 0),
-    hb: Math.round(num(S.hb) || 0), uo: Math.round((num(S.uo) || 0) * 10) / 10,
+    hb: Math.round(num(S.hb) || 0), uo: num(S.uo) || 0,
     rhythm: S.rhythm || 'sinus',
   };
 }
@@ -345,13 +345,13 @@ const SIGNS = [
   /* ===== 肾脏 / 血液 ===== */
   {
     id: 'oliguria', name: '少尿', level: 'warning',
-    brief: '尿量低于 0.5 mL/min，提示肾灌注不足或肾实质损伤。',
+    brief: '尿量低于 30 mL/h，提示肾灌注不足或肾实质损伤。',
     causes: '低血容量、休克、急性肾损伤、尿路梗阻',
     test: s => s.uo < 0.5 && s.uo >= 0.2,
   },
   {
     id: 'anuria', name: '无尿', level: 'warning',
-    brief: '尿量低于 0.2 mL/min，需排除梗阻与严重肾损伤。',
+    brief: '尿量低于 12 mL/h，需排除梗阻与严重肾损伤。',
     causes: '急性肾小管坏死、双侧梗阻、严重休克',
     test: s => s.uo < 0.2,
   },

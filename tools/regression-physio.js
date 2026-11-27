@@ -432,7 +432,7 @@ for (const id of ['hyperkalemia', 'dka', 'bleed', 'sepsis', 'opioid']) {
   check('重复血红蛋白合并，两个出血部位分别保留', count(bleeding, '血红蛋白') === 1 &&
     bleeding.includes('消化道出血未止') && bleeding.includes('创伤出血未控制'), '不同处置原因仍逐项可见');
   const urine = assess(['pancreatitis', 'hhs'], { uo: 0.3, weight: 70 }).filter(r => r.startsWith('尿量'));
-  check('合并病例可区分两种尿量要求', urine.length === 1 && urine[0].includes('≥0.5 mL/min') &&
+  check('合并病例可区分两种尿量要求', urine.length === 1 && urine[0].includes('18 mL/h') && urine[0].includes('≥30 mL/h') &&
     urine[0].includes('>0.5 mL/kg/h'), '尿量和按体重折算的尿量各保留单位与目标');
   const bed = E.create(G.generate(3, 13, ['seizure', 'hyponatremia']));
   check('床旁抽搐征象与出院拦截同步', [0.79, 0.54, 0.15, 0.11, 0.10, 0].every(seizure => {

@@ -757,7 +757,7 @@ for (const id of ['hyperkalemia', 'dka', 'bleed', 'sepsis', 'opioid']) {
   check('分娩按模拟时间完成一次并开始产后观察', stayedPaused && stillPending && atBoundary &&
     restored.cost === action.cost && restored.log.filter(([, msg]) => completion.test(msg)).length === 1,
     '暂停期间冻结，临界点前重载，完成后再次执行');
-  check('病情复评在分娩完成时暂停', E.conditionReviewChange(bed, beforeDelivery) === null &&
+  check('病情复评在分娩完成时触发', E.conditionReviewChange(bed, beforeDelivery) === null &&
     E.conditionReviewChange(restored, beforeDelivery) === '分娩已完成，胎盘已娩出，进入产后观察' &&
     E.conditionReviewChange(restored, E.conditionReviewBaseline(restored)) === null,
     '临界点前继续等待，分娩完成触发一次');

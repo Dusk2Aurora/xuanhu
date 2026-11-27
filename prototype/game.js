@@ -1481,11 +1481,15 @@ function syncSpeedUI() {
     x.classList.toggle('on', active);
     x.setAttribute('aria-pressed', active);
   });
+  const pauseButton = $('#pause');
+  pauseButton.textContent = paused ? '继续' : '暂停';
+  pauseButton.classList.toggle('on', paused);
+  pauseButton.setAttribute('aria-pressed', String(paused));
   const f = $('#ff');
-  f.classList.toggle('on', ff);
-  f.setAttribute('aria-pressed', ff);
-  f.textContent = paused ? '继续模拟' : observation?.kind === 'steady' ? '结束留观' :
-    observation ? '结束等待' : ff ? '20× 快进中' : '快进 20×';
+  f.classList.toggle('on', ff && !paused);
+  f.setAttribute('aria-pressed', String(ff && !paused));
+  f.textContent = observation?.kind === 'steady' ? '结束留观' :
+    observation ? '结束等待' : ff && !paused ? '20× 快进中' : '快进 20×';
   const wardWait = $('#conditionWait');
   const waiting = observation?.kind === 'ward';
   wardWait.textContent = waiting ? '结束等待' : '等病情变化';
@@ -1586,7 +1590,7 @@ function finishReview(event) {
     result.textContent = message;
   }
   patient.log.push([E.fmt(patient.t), message, event.urgent ? 'warn' : 'info', patient.t]);
-  paused = true;
+  paused = false;
   ff = false;
   speed = 1;
   syncSpeedUI();
@@ -2798,9 +2802,7 @@ function bind() {
   });
   $('#btnBody').addEventListener('click', () => openChecks(S));
   $('#btnBlood').addEventListener('click', openReports);
-  $('#btnMenu').addEventListener('click', () => {
-    stopObservation();
-    openSheet('菜单', '', [
+  $('#btnMenu').addEventListener('click', () => openSheet('菜单', '', [
     {n:'音效设置', tag:SOUND.enabled ? SOUND.volume + '%' : '静音', amt:'调节', run:openSoundSettings},
     {sec:'存档与测试'},
     {n:'重置游戏存档', tag:'清空游戏进度及设置', amt:'', run:confirmSaveReset},
@@ -2833,26 +2835,31 @@ function bind() {
       showAdvice(false);
       toast(autoHint ? '已开启主动提示' : '已改为求助制：点「问上级」才给提示');
     }},
-    {n: paused ? '继续（已暂停）' : '暂停', tag:'', amt:'', run: () => { paused = !paused; closeSheet(); syncSpeedUI(); toast(paused ? '已暂停' : '继续'); }},
     {n:'返回大厅', tag:'床位 / 成就 / 手册', amt:'进入', run: () => { closeSheet(); showLobby(); }},
     {n:'病房床位', tag: beds.length + ' / ' + MAX_BEDS, amt:'切换', run: () => openBeds()},
     {n:'重新开始本病例', tag:'', amt:'', run: () => confirmRestart()},
     {n:'切换病例', tag:'', amt:'', run: () => pickCase()},
     {n:'教程 · 怎么玩', tag:(window.TUTORIAL?window.TUTORIAL.PAGES.length:6)+' 页', amt:'', run: () => { if (window.TUTORIAL) TUTORIAL.open(0); }},
     {n:'病例说明', tag:'入院记录', amt:'查看', run: openAdmission},
-    ]);
-  });
+  ]));
   $('#mask').addEventListener('click', dismissSheet);
   $('#detailX').addEventListener('click', closeDetail);
   $('#detail').addEventListener('click', e => { if (e.target.id === 'detail') closeDetail(); });
 
   $('#speed').addEventListener('click', e => {
     const p = e.target.closest('.pill'); if (!p) return;
+    if (p.id === 'pause') {
+      if (observation) stopObservation();
+      paused = !paused;
+      syncSpeedUI();
+      return;
+    }
     if (p.id === 'conditionWait') { startConditionReview(); return; }
     if (p.id === 'ff') {
       if (observation) { stopObservation(); return; }
-      if (paused) { paused = false; syncSpeedUI(); return; }
-      ff = !ff; syncSpeedUI(); return;
+      ff = paused || !ff;
+      paused = false;
+      syncSpeedUI(); return;
     }
     if (observation) stopObservation();
     paused = false;
@@ -3145,8 +3152,8 @@ function renderAll() {
 /* 更新公告：每次发版在这里加一条（新的放最前面） */
 const RELEASES = [
   { v: '1.54.6', notes: [
-    '病房顶部可点「等病情变化」，任一床出现明显改善或恶化、检查回报或需复评时自动暂停',
-    '胰腺面板可等待血糖复评：达标、进一步恶化、任一床出现危情或报告回报时自动暂停，最长 30 个模拟分钟',
+    '病房顶部可点「等病情变化」，遇到明显变化或检查回报时恢复 1×；倍速左侧可手动暂停和继续',
+    '胰腺面板可单独等待血糖复评，达标、恶化、危情或报告回报时恢复 1×，最长 30 个模拟分钟',
   ] },
   { v: '1.54.5', notes: [
     '出院评估合并同一指标的重复提示；合并病种对同一化验值有不同要求时，可在同一行查看',

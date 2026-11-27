@@ -13,6 +13,7 @@
 (function (root) {
 'use strict';
 const clamp = (x,a,b)=>Math.min(b,Math.max(a,x));
+const VERSION = 2;
 
 /* 随机数（可复现） */
 function mulberry32(a){ return function(){ a|=0; a=a+0x6D2B79F5|0; let t=Math.imul(a^a>>>15,1|a);
@@ -779,20 +780,58 @@ function pick(rnd, arr, n) {
   return out;
 }
 
+/* 性别及年龄要求在同一患者身上必须有交集。 */
+function demographicsFor(modules) {
+  return {
+    sexReq: modules.map(m => m.sexReq).find(Boolean),
+    ageLo: modules.reduce((age, m) => m.ageRange ? Math.max(age, m.ageRange[0]) : age, 18),
+    ageHi: modules.reduce((age, m) => m.ageRange ? Math.min(age, m.ageRange[1]) : age, 88),
+  };
+}
+
+function fitsDemographics(module, { sexReq, ageLo, ageHi }) {
+  if (sexReq && module.sexReq && sexReq !== module.sexReq) return false;
+  return !module.ageRange || Math.max(ageLo, module.ageRange[0]) <= Math.min(ageHi, module.ageRange[1]);
+}
+
 /* 按权重抽病理：weight 越大越常见 */
-function pickWeighted(rnd, arr, n) {
+function weightedIndex(rnd, pool) {
+  const total = pool.reduce((s, m) => s + (m.weight || 1), 0);
+  let r = rnd() * total, k = 0;
+  for (; k < pool.length; k++) { r -= (pool[k].weight || 1); if (r <= 0) break; }
+  return Math.min(k, pool.length - 1);
+}
+
+function pickWeighted(rnd, arr, n, legacy) {
   const pool = arr.slice();
   const out = [];
   for (let i = 0; i < n && pool.length; i++) {
-    const total = pool.reduce((s, m) => s + (m.weight || 1), 0);
-    let r = rnd() * total, k = 0;
-    for (; k < pool.length; k++) { r -= (pool[k].weight || 1); if (r <= 0) break; }
-    out.push(pool.splice(Math.min(k, pool.length - 1), 1)[0]);
+    let index = weightedIndex(rnd, pool);
+    if (!legacy) {
+      const demographics = demographicsFor(out);
+      /* 优先保留原抽样结果，保证有效旧种子的随机序列不变。 */
+      if (!fitsDemographics(pool[index], demographics)) {
+        const eligible = pool.filter(m => fitsDemographics(m, demographics));
+        if (!eligible.length) throw new RangeError('缺少符合患者性别和年龄的病理模块');
+        index = pool.indexOf(eligible[weightedIndex(rnd, eligible)]);
+      }
+    }
+    out.push(pool.splice(index, 1)[0]);
   }
   return out;
 }
 
 function generate(difficulty, seed, only) {
+  return generateCase(difficulty, seed, only, VERSION);
+}
+
+/* 旧存档与会诊码依赖原抽样序列。 */
+function generateLegacy(difficulty, seed) {
+  return generateCase(difficulty, seed, undefined, 1);
+}
+
+function generateCase(difficulty, seed, only, genVersion) {
+  const legacy = genVersion === 1;
   const diff = clamp(difficulty || 2, 1, 5);
   const actualSeed = seed == null ? (Date.now() & 0x7fffffff) : seed;
   const rnd = mulberry32(actualSeed);
@@ -804,12 +843,14 @@ function generate(difficulty, seed, only) {
   const severity = 0.75 + diff * 0.06;        // 保留（模块已自带严重度）
   const primary = (only && only.length)
     ? only.map(id => MODULES.find(m => m.id === id)).filter(Boolean).slice(0, nMods)
-    : pickWeighted(rnd, MODULES, nMods);
+    : pickWeighted(rnd, MODULES, nMods, legacy);
 
-  /* 性别/年龄约束：某些病只发生在特定性别与年龄段（宫外孕、前列腺增生…） */
-  const sexReq = primary.map(x => x.sexReq).find(Boolean);
-  const ageLo = primary.reduce((a, x) => (x.ageRange ? Math.max(a, x.ageRange[0]) : a), 18);
-  const ageHi = primary.reduce((a, x) => (x.ageRange ? Math.min(a, x.ageRange[1]) : a), 88);
+  if (!primary.length) throw new RangeError('缺少有效的病理模块');
+  const demographics = demographicsFor(primary);
+  if (!legacy && !primary.every(m => fitsDemographics(m, demographics))) {
+    throw new RangeError('指定病理模块的性别或年龄要求冲突');
+  }
+  const { sexReq, ageLo, ageHi } = demographics;
 
   const init = Object.assign({}, BASE);
   const drivers = {};
@@ -878,11 +919,12 @@ function generate(difficulty, seed, only) {
 
   init.seed = actualSeed;
   init.diff = diff;
+  init.genVersion = genVersion;
   /* 整体上调：病例推进速度随难度提高（原来所有难度都是 1.0） */
   init.hardScale = diff <= 2 ? (1.05 + diff * 0.10) : (1.30 + (diff - 2) * 0.22);   /* 1.15 / 1.25 / 1.52 / 1.74 / 1.96 */
 
   return {
-    id: 'gen', name: names, tags, diff,
+    id: 'gen', name: names, tags, diff, genVersion,
     age, sex, weight, patient, bloodType: ['A','B','O','AB'][Math.floor(rnd()*4)],
     complaint, traits,
     comorbidities,
@@ -906,7 +948,7 @@ function step(S, dtSec, E) {
   }
 }
 
-const API = { generate, step, MODULES, BASE };
+const API = { generate, generateLegacy, step, MODULES, BASE, VERSION };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 root.CASEGEN = API;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

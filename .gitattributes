@@ -1,3 +1,4 @@
 tools/*.js export-ignore
+tools/archive export-ignore
 package.json export-ignore
 package-lock.json export-ignore

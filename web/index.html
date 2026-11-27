@@ -40,8 +40,6 @@
   --pad: clamp(12px, 2.2vw, 34px);
   --dock-h: 69px;
   --work-width: 1320px;
-  --organ-small: 1;
-  --organ-spleen: 1.25;
 }
 
 body.night {
@@ -253,49 +251,17 @@ button { color: inherit; }
   background: linear-gradient(160deg, var(--card), var(--anatomy-bg));
 }
 .anatomy-view { position: relative; min-height: 0; }
-.anatomy-guide, .anat { position: absolute; inset: 0; width: 100%; height: 100%; display: block; overflow: visible; }
-.anatomy-guide { pointer-events: none; fill: var(--anatomy-fill); stroke: var(--anatomy-line); stroke-width: 1.3; }
-.anatomy-guide .axis { fill: none; stroke: var(--anatomy-axis); stroke-dasharray: 3 7; opacity: .65; }
-.org { cursor: pointer; transform-box: fill-box; transform-origin: center; }
-.org .shape { filter: brightness(.79) saturate(1.08); transition: filter .15s; }
-body.night .org .shape { filter: brightness(1.1); }
-.org .halo { pointer-events: none; }
-.org:hover .halo, .org:focus-visible .halo { opacity: .44; }
-.org.sel .halo { opacity: .72; }
-.org.sel .shape { filter: brightness(.65) saturate(1.9); }
-body.night .org.sel .shape { filter: brightness(1.26) saturate(1.55); }
-.hit { fill: transparent; }
-.org[data-o="brain"] { transform: scale(var(--organ-small)); }
-.org[data-o="lung"] { transform: translateY(-28px); }
-.org[data-o="heart"] { transform: translateY(5px) scale(var(--organ-small)); }
-.org[data-o="liver"], .org[data-o="stomach"] { transform: scale(var(--organ-small)); }
-.org[data-o="spleen"] { transform: translateX(12px) scale(var(--organ-spleen)); }
-.org[data-o="pancreas"] { transform: translateY(8px) scale(var(--organ-small)); }
-.org[data-o="kidney"] { transform: translateY(13px); }
-.org[data-o="brain"] .hit { r: 24px; }
-.org[data-o="lung"] .hit { r: 48px; }
-.org[data-o="heart"] .hit { r: 22px; }
-.org[data-o="liver"] .hit { r: 24.6px; }
-.org[data-o="stomach"] .hit { r: 21.3px; }
-.org[data-o="spleen"] .hit { r: 11.1px; }
-.org[data-o="pancreas"] .hit { r: 20.25px; }
-.org[data-o="kidney"] .hit { r: 26.3px; }
-.org[data-o="gut"] .hit { r: 30.35px; }
-.bname { position: absolute; inset: auto 0 0; text-align: center; color: var(--ink-2); pointer-events: none; }
+.anat { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.atlas-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 4px; }
+.atlas-heading small { color: var(--ink-2); font-size: 11px; }
+.organ-picker { width: 100%; min-height: 44px; margin-bottom: 6px; padding: 6px 10px; border: 1px solid var(--line);
+  border-radius: 8px; background: var(--subtle); color: var(--ink); font-family: inherit; font-size: 14px; font-weight: 650; cursor: pointer; }
+.organ-picker:focus-visible { outline: 2px solid var(--accent); }
+.organ-picker[data-state="crit"] { background: var(--danger-bg); color: var(--red); }
+.organ-picker[data-state="warn"] { background: var(--amber-bg); color: var(--amber); }
 
 .opan { display: grid; gap: 6px; }
 .opan.hide { display: none; }
-.opan .title {
-  justify-self: start;
-  background: var(--danger-bg);
-  color: var(--red);
-  border-radius: 8px;
-  padding: 4px 9px;
-  font-size: 13px;
-  font-weight: 750;
-}
-.opan .title.ok { background: var(--green-bg); color: var(--green); }
-.opan .title.warn { background: var(--amber-bg); color: var(--amber); }
 .opan .row {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -485,7 +451,6 @@ button.drow { width: 100%; border: 0; background: transparent; color: inherit; f
 }
 
 @media (max-width: 835px) {
-  :root { --organ-small: 1.18; --organ-spleen: 1.7; }
   .stage { grid-template-columns: minmax(175px, 1fr) minmax(150px, 1.3fr) minmax(168px, 1fr); }
 }
 
@@ -628,6 +593,7 @@ button.drow { width: 100%; border: 0; background: transparent; color: inherit; f
   background: var(--accent-soft);
 }
 #lobby .bed.empty[data-new="0"] { color: var(--ink-2); border-color: var(--line); background: var(--subtle); }
+#lobby .bed.empty:nth-child(2) { grid-column: auto; }
 #lobby .no {
   width: 32px;
   height: 34px;
@@ -719,14 +685,9 @@ button.drow { width: 100%; border: 0; background: transparent; color: inherit; f
     </div>
 
     <section class="panel bodywrap" aria-labelledby="anatomyTitle">
-      <h2 class="panel-title" id="anatomyTitle">人体视图</h2>
+      <div class="atlas-heading"><h2 class="panel-title" id="anatomyTitle">人体图谱</h2><small>正面观</small></div>
       <div class="anatomy-view">
-        <svg class="anatomy-guide" viewBox="80 18 290 580" aria-hidden="true">
-          <path d="M210 31c-27 0-43 20-43 46 0 23 14 40 25 50l-4 19c-24 8-66 12-76 33-9 18-9 41-6 62l17 154-10 102c-4 39 17 60 32 89h130c15-29 36-50 32-89l-10-102 17-154c3-21 3-44-6-62-10-21-52-25-76-33l-4-19c11-10 25-27 25-50 0-26-16-46-43-46Z"/>
-          <path class="axis" d="M210 146v414m-76-310h152m-156 115h160m-151 115h142"/>
-        </svg>
-        <svg class="anat" id="anat" viewBox="80 18 290 580" preserveAspectRatio="xMidYMid meet" role="group" aria-label="可选择的器官"></svg>
-        <div class="bname" id="bname"></div>
+        <svg class="anat" id="anat" preserveAspectRatio="xMidYMid meet" role="group" aria-label="正面人体图谱，可点选器官"></svg>
       </div>
     </section>
 
@@ -737,6 +698,7 @@ button.drow { width: 100%; border: 0; background: transparent; color: inherit; f
       </section>
       <section class="panel organ-panel" aria-labelledby="organTitle">
         <h2 class="panel-title" id="organTitle">器官参数</h2>
+        <select class="organ-picker" id="opTitle" aria-label="选择器官"></select>
         <div class="opan hide" id="opan"></div>
       </section>
     </div>

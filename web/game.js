@@ -1,6 +1,6 @@
 /* ==========================================================================
  * 游戏层：把生理引擎接到界面上
- * 依赖：engine.js（全局 LIFE）、organs.js（全局 ORGAN_SVG）
+ * 依赖：engine.js（全局 LIFE）、organs.js（交互式器官图谱）
  * ========================================================================== */
 (function () {
 'use strict';
@@ -44,59 +44,24 @@ let caseDiff = (function(){
 })();
 
 /* ---------------- 人体 ---------------- */
-/* 生殖系统图标：organs.js 里没有现成图标，运行时补两个极简轮廓 */
-(function addReproIcons() {
-  if (typeof ORGAN_SVG === 'undefined') return;   /* organs.js 用 const 声明，不是 window 属性 */
-  ORGAN_SVG['uterus-outline'] = {
-    vb: '0 0 48 48',
-    inner: '<path d="M18 14c0-2 2-3 4-2 1 .6 1.6 1.6 2 2.6.4-1 1-2 2-2.6 2-1 4 0 4 2 0 3-3 4-4 7-.5 1.6-.7 3-.7 4.6 0 4 1.4 7 3.7 9.4 1 1 .4 2.6-1 2.4-3-.4-5.2-2.2-6-5.2-.8 3-3 4.8-6 5.2-1.4.2-2-1.4-1-2.4 2.3-2.4 3.7-5.4 3.7-9.4 0-1.6-.2-3-.7-4.6-1-3-4-4-4-7z" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><circle cx="10" cy="16" r="3" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="38" cy="16" r="3" fill="none" stroke="currentColor" stroke-width="2"/>'
-  };
-  ORGAN_SVG['prostate-outline'] = {
-    vb: '0 0 48 48',
-    inner: '<path d="M24 10c6 0 10 3.4 10 9 0 5.4-3.4 9-6 14-1 2-2.4 3-4 3s-3-1-4-3c-2.6-5-6-8.6-6-14 0-5.6 4-9 10-9z" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"/><path d="M24 20v14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>'
-  };
-})();
-
-const PLACE = {
-  brain:   {x:210, y: 66, s:64, ic:'neurology-outline',  c:'#d98b98'},
-  lung:    {x:210, y:196, s:128,ic:'lungs-outline',      c:'#e0a3ac'},
-  heart:   {x:192, y:244, s:66, ic:'heart-organ-outline',c:'#cf7b86'},
-  liver:   {x:160, y:320, s:80, ic:'liver-outline',      c:'#d79a94'},
-  stomach: {x:262, y:316, s:62, ic:'stomach-outline',    c:'#dda79a'},
-  spleen:  {x:308, y:286, s:38, ic:'spleen-outline',     c:'#d9a1ae'},
-  pancreas:{x:214, y:374, s:54, ic:'pancreas-outline',   c:'#d9a48f'},
-  kidney:  {x:210, y:428, s:78, ic:'kidneys-outline',    c:'#cf93a2'},
-  gut:     {x:210, y:530, s:104,ic:'intestine-outline',  c:'#d98f92'},
-  uterus:  {x:300, y:466, s:42, ic:'uterus-outline',     c:'#d98fa0', sex:'女'},
-  prostate:{x:300, y:466, s:40, ic:'prostate-outline',   c:'#cf93a2', sex:'男'},
-};
-
 function drawBody() {
-  const svg = $('#anat');
-  let g = `<defs>
-    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="11"/></filter>
-  </defs>`;
-  const mySex = (S && S.patient && S.patient.sex) || '男';
-  g += Object.entries(PLACE).map(([id, p]) => {
-    if (p.sex && p.sex !== mySex) return '';        // 生殖器官按性别显示
-    const o = ORGAN_SVG[p.ic]; if (!o) return '';
-    const s = p.s / 48, x = p.x - p.s / 2, y = p.y - p.s / 2;
-    return `<g class="org" data-o="${id}" role="button" tabindex="0" aria-label="${ORGAN_META[id].n}">
-      <circle cx="${p.x}" cy="${p.y}" r="${p.s*0.56}" fill="${p.c}" opacity="0" filter="url(#glow)" class="halo"/>
-      <g class="shape" transform="translate(${x},${y}) scale(${s})" fill="${p.c}" opacity=".95">${String(o.inner).replace(/currentColor/g, p.c)}</g>
-      <circle class="hit" cx="${p.x}" cy="${p.y}" r="${p.s*0.55}"/>
-    </g>`;
-  }).join('');
-  svg.innerHTML = g;
-  svg.querySelectorAll('.org').forEach(el => {
-    el.addEventListener('click', () => selectOrgan(el.dataset.o));
-    el.addEventListener('keydown', event => {
+  const svg = $('#anat'), sex = S.patient?.sex;
+  svg.setAttribute('viewBox', WARD_ANATOMY.viewBox);
+  svg.innerHTML = WARD_ANATOMY.render(sex);
+  const groups = Array.from(svg.querySelectorAll('.org'));
+  const picker = $('#opTitle');
+  const ids = ['brain', 'lung', 'heart', 'liver', 'stomach', 'spleen', 'pancreas', 'kidney', 'gut',
+    sex === '女' ? 'uterus' : 'prostate'];
+  picker.replaceChildren(...ids.map(id => new Option(ORGAN_META[id].n, id)));
+  for (const group of groups) {
+    group.addEventListener('click', () => selectOrgan(group.dataset.o));
+    group.addEventListener('keydown', event => {
       if (event.key === 'Enter' || event.key === ' ') {
         event.preventDefault();
-        selectOrgan(el.dataset.o);
+        selectOrgan(group.dataset.o);
       }
     });
-  });
+  }
   selectOrgan('heart');
 }
 
@@ -177,8 +142,7 @@ function renderOrganPanel() {
     organBuiltFor = selected;
     const panel = $('#opan');
     panel.classList.remove('hide');
-    panel.innerHTML = '<span class="title" id="opTitle"></span>'
-      + meta.f(E.snapshot(S)).map(([k], i) =>
+    panel.innerHTML = meta.f(E.snapshot(S)).map(([k], i) =>
           `<div class="row"><span class="lab">${k}</span><span class="val" data-oi="${i}"></span></div>`).join('')
       + (selected === 'heart' ? '<canvas id="miniEcg" height="92"></canvas>' : '');
     updateOrganValues();
@@ -191,7 +155,7 @@ function updateOrganValues() {
   const s = E.snapshot(S), meta = ORGAN_META[selected];
   const st = organState(selected, s);
   const t = $('#opTitle');
-  if (t) { t.textContent = meta.n; t.className = 'title ' + (st === 'crit' ? '' : st === 'warn' ? 'warn' : 'ok'); }
+  if (t) { t.value = selected; t.dataset.state = st; }
   meta.f(s).forEach(([k, v, u], i) => {
     const el = document.querySelector('[data-oi="' + i + '"]');
     if (el) el.innerHTML = `${v}${u ? `<span style="font-size:9px;color:#9a9a9a"> ${u}</span>` : ''}`;
@@ -2022,6 +1986,7 @@ function checkSigns() {
 /* ---------------- 按钮 ---------------- */
 function bind() {
   bindLobby();
+  $('#opTitle').addEventListener('change', event => selectOrgan(event.target.value));
   $('#btnLobby').addEventListener('click', showLobby);
   $('#sheetClose').addEventListener('click', dismissSheet);
   $('#btnDrug').addEventListener('click', () => openDrugSheet());

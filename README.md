@@ -117,6 +117,7 @@ prototype/
   generator.js    33 个病理模块 + 随机病例生成
   substances.js   215 种物质、别名、相互作用
   game.js         UI 与交互
+  organs.js       正面人体图谱及各器官可点选的 SVG 轮廓
   diagnosis.js    诊断推理
   handbook.js     病例档案
   mentor.js       上级医师规则

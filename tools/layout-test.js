@@ -4,8 +4,8 @@ const path = require('node:path');
 const { gameUrl, launchBrowser } = require('./browser');
 
 const profiles = [
-  { name: 'desktop', viewport: { width: 1440, height: 900 } },
-  { name: 'mobile', viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true },
+  { name: 'desktop', seed: 104, pelvicOrgan: 'prostate', viewport: { width: 1440, height: 900 } },
+  { name: 'mobile', seed: 1, pelvicOrgan: 'uterus', viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true },
 ];
 
 async function checkHorizontalFit(page, sections) {
@@ -35,14 +35,46 @@ async function checkDock(page) {
   }
 }
 
+async function checkAtlas(page, touch, pelvicOrgan) {
+  const groups = page.locator('#anat .org');
+  const ids = await groups.evaluateAll(items => items.map(el => el.dataset.o));
+  const picker = page.locator('#opTitle');
+  const options = await picker.locator('option').evaluateAll(items => items.map(el => el.value));
+  assert.deepEqual(ids.slice().sort(), options.sort());
+  assert.equal(ids.length, 10);
+  assert.ok(ids.includes(pelvicOrgan));
+  for (const id of ids) {
+    const organ = page.locator(`#anat [data-o="${id}"]`);
+    await organ.scrollIntoViewIfNeeded();
+    const point = await organ.evaluate(el => {
+      // A paired organ's bounding-box center can fall in a different organ.
+      const r = el.getBoundingClientRect();
+      for (let y = Math.ceil(r.top + 1); y < r.bottom; y += 2) {
+        for (let x = Math.ceil(r.left + 1); x < r.right; x += 2) {
+          if ([[0, 0], [-1, 0], [1, 0], [0, -1], [0, 1]].every(([dx, dy]) =>
+            el.contains(document.elementFromPoint(x + dx, y + dy)))) return { x, y };
+        }
+      }
+    });
+    assert.ok(point, `器官有可点选的可见区域：${id}`);
+    if (touch) await page.touchscreen.tap(point.x, point.y);
+    else await page.mouse.click(point.x, point.y);
+    assert.equal(await picker.inputValue(), id);
+  }
+  await picker.selectOption('lung');
+  assert.equal(await page.locator('#anat .org.sel').getAttribute('data-o'), 'lung');
+}
+
 async function checkLayout(browser, profile, screenshotDir) {
-  const { name, ...options } = profile;
+  const { name, seed, pelvicOrgan, ...options } = profile;
   const page = await browser.newPage({ ...options, reducedMotion: 'reduce' });
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   page.setDefaultTimeout(7000);
   const activate = options.hasTouch ? locator => locator.tap() : locator => locator.click();
   try {
+    // The default admission takes its seed from the low 31 bits of the clock.
+    await page.clock.setFixedTime(new Date(800 * 2 ** 31 + seed));
     await page.goto(gameUrl);
     assert.equal(await page.evaluate(() => window.innerWidth), options.viewport.width);
     const lobby = page.locator('#lobby');
@@ -81,6 +113,9 @@ async function checkLayout(browser, profile, screenshotDir) {
     if (screenshotDir) {
       if (!options.hasTouch) await page.mouse.move(0, 0);
       await page.screenshot({ path: path.join(screenshotDir, `ward-${name}.png`) });
+      if (name === 'desktop') {
+        await page.locator('.bodywrap').screenshot({ path: path.join(screenshotDir, 'anatomy.png') });
+      }
     }
 
     const drug = page.locator('#btnDrug');
@@ -100,7 +135,8 @@ async function checkLayout(browser, profile, screenshotDir) {
     assert.ok(await brainHasFocus(), 'Tab 可聚焦器官');
     await page.keyboard.press('Enter');
     assert.equal(await brain.getAttribute('aria-pressed'), 'true');
-    assert.equal(await page.locator('#opTitle').textContent(), '脑');
+    assert.equal(await page.locator('#opTitle').inputValue(), 'brain');
+    await checkAtlas(page, !!options.hasTouch, pelvicOrgan);
     assert.deepEqual(errors, []);
     console.log(`${name} ${options.viewport.width}×${options.viewport.height} 界面验收通过`);
   } finally {

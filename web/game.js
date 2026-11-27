@@ -917,10 +917,11 @@ function renderHUD() {
         el.style.cssText = 'margin-right:6px';
         const host = document.querySelector('.top .seg') || document.querySelector('.top');
         if (host) host.parentNode.insertBefore(el, host);
+        el.title = '家庭自付 / 可承受上限';
       }
       const cs = costSummary();
       const over = cs.selfPay > cs.cap;
-      el.textContent = '自付 ¥' + cs.selfPay + ' / ' + cs.cap;
+      el.textContent = '自付 ¥' + cs.selfPay + '/' + cs.cap;
       el.style.color = over ? '#c0392b' : '';
       el.style.display = '';
     } else if (el) {
@@ -1491,7 +1492,7 @@ function openFeedback() {
 }
 
 /* ---------------- 版本 / 更新检查 ---------------- */
-const APP_VERSION = '1.50.0';
+const APP_VERSION = '1.50.1';
 const UPDATE_BASE = (function () {
   try { return localStorage.getItem('life.updateBase') || 'https://xuanhu.netlify.app'; } catch (e) { return 'https://xuanhu.netlify.app'; }
 })();
@@ -2204,6 +2205,9 @@ function renderAll() {
 
 /* 更新公告：每次发版在这里加一条（新的放最前面） */
 const RELEASES = [
+  { v: '1.50.1', notes: [
+    '修复：现实模式下医保「自付」标签与时钟重叠（竖屏改独立一行）',
+  ] },
   { v: '1.50.0', notes: [
     '新增「关于 · 隐私」页：数据说明、权限、医学免责',
     '隐私政策可在游戏内直接查看',

@@ -7,17 +7,19 @@
 const E = window.LIFE;
 const $ = s => document.querySelector(s);
 const r1 = x => Math.round(x * 10) / 10;
+const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, ch =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]);
 
 /* ---------------- 状态 ---------------- */
-let S = E.create('hyperkalemia');
+let S;
 /* 病房床位：同时最多 MAX_BEDS 个病例，时间同步流逝，可随时切换 */
 const MAX_BEDS = 4;
-let beds = [{ S: S }];
+let beds = [];
 let activeIdx = 0;
 let selected = 'heart';
 let lastTs = 0, acc = 0, hudAcc = 0, saveAcc = 0, nextBeat = 0, nextAlarm = 0, signsAcc = 0;
 let speed = 1, ff = false;
-let ended = false;
+let lastCaseReview = false;
 let paused = false;
 let bigFont = false;
 /* 白天 / 夜间：夜间难度显著提升（病情推进更快、提示更少、界面转暗） */
@@ -119,7 +121,7 @@ function bindBedSwipe() {
     if (beds.length < 2) return;
     if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.6) return;   // 竖向滑动交给页面
     const next = (activeIdx + (dx < 0 ? 1 : -1) + beds.length) % beds.length;
-    switchBed(next);
+    switchBed(beds[next].S);
   }, { passive: true });
 }
 
@@ -319,21 +321,37 @@ function renderStates() {
 }
 
 /* ---------------- 抽屉 ---------------- */
-let sheetRows = [];
-function openSheet(title, sub, rows) {
-  $('#sheetTitle').innerHTML = `${title} <small>${sub}</small>`;
-  $('#sheetList').innerHTML = rows.map((r, i) => r.sec
+function isCurrentPatient(st) {
+  return !!st?.running && st === S && beds[activeIdx]?.S === st;
+}
+
+function openSheet(title, sub, rows, patient) {
+  const list = $('#sheetList');
+  $('#sheetTitle').innerHTML = `${escapeHtml(title)} <small>${escapeHtml(sub)}</small>`;
+  delete $('#sheetTitle').dataset.view;
+  list.innerHTML = rows.map((r, i) => r.sec
     ? `<div class="sec">${r.sec}</div>`
     : `<div class="drow" data-i="${i}"><span class="nm">${r.n}</span>
         <span class="tag">${r.tag}</span><span class="amt">${r.amt}</span></div>`).join('');
-  sheetRows = rows;
-  $('#sheetList').querySelectorAll('.drow').forEach(el => {
-    el.addEventListener('click', () => rows[+el.dataset.i].run());
+  list.querySelectorAll('.drow').forEach(el => {
+    el.addEventListener('click', () => {
+      if (!list.contains(el) || !$('#sheet').classList.contains('on')) return;
+      if (patient && !isCurrentPatient(patient)) return;
+      rows[+el.dataset.i].run();
+    });
   });
   $('#sheet').classList.add('on');
   $('#mask').classList.add('on');
 }
 function closeSheet() { $('#sheet').classList.remove('on'); $('#mask').classList.remove('on'); }
+
+function closeDetail() {
+  $('#detail').classList.remove('on');
+  if (lastCaseReview) {
+    lastCaseReview = false;
+    showLobby();
+  }
+}
 
 function openDetail(name, sub, kv, warn) {
   $('#dName').textContent = name;
@@ -355,8 +373,11 @@ const PIN_DRUGS = {
 
 function openDrugSheet() {
   const SUB = window.SUBSTANCES;
-  if (!SUB) { openSheet('给药', '', drugRows()); return; }
-  $('#sheetTitle').innerHTML = `给药 <small>搜索全库 · 分标签浏览</small>`;
+  const patient = S;
+  if (!isCurrentPatient(patient)) return;
+  if (!SUB) { openSheet('给药', patient.patient.name, drugRows(), patient); return; }
+  $('#sheetTitle').innerHTML = `给药 <small>${escapeHtml(patient.patient.name)} · 搜索全库</small>`;
+  delete $('#sheetTitle').dataset.view;
   const list = $('#sheetList');
   list.innerHTML = `
     <div style="padding:2px 10px 8px">
@@ -432,7 +453,10 @@ function openDrugSheet() {
       `<div style="padding:18px;color:#9a9a9a;font-size:13px">没有匹配的物质</div>`;
 
     host.querySelectorAll('.drow').forEach(el => {
-      el.addEventListener('click', () => openGiveConfig(SUB.byId(el.dataset.id)));
+      el.addEventListener('click', () => {
+        if (!list.contains(el) || !$('#sheet').classList.contains('on') || !isCurrentPatient(patient)) return;
+        openGiveConfig(SUB.byId(el.dataset.id), patient);
+      });
     });
   };
 
@@ -459,20 +483,21 @@ function describeEff(eff) {
 
 
 /* 选完药 → 选途径 + 调剂量（允许给错、给过量） */
-function openGiveConfig(it) {
+function openGiveConfig(it, patient) {
   const routes = (it.routes && it.routes.length) ? it.routes : [{ r: it.route, d: it.dose, on: it.onset, du: it.dur }];
   let ri = 0;
   let dose = routes[0].d;
   const fmt = v => (Math.round(v * 100) / 100).toString();
 
   const render = () => {
+    if (!isCurrentPatient(patient)) return;
     const rt = routes[ri];
     const lo = it.doseRange ? it.doseRange[0] : rt.d * 0.2;
     const hi = it.doseRange ? it.doseRange[1] : rt.d * 10;
     const over = dose > rt.d * 2.5, under = dose < rt.d * 0.4;
     const warn = over ? '⚠ 剂量明显高于常规，注意中毒风险'
                 : under ? '⚠ 剂量偏低，可能达不到治疗浓度' : '';
-    $('#sheetTitle').innerHTML = `${it.n} <small>${it.cls}</small>`;
+    $('#sheetTitle').innerHTML = `${it.n} <small>${escapeHtml(patient.patient.name)} · ${it.cls}</small>`;
     $('#sheetList').innerHTML = `
       <div style="padding:2px 14px 14px">
         ${routes.length > 1 ? `<div class="sec">给药途径</div>
@@ -513,8 +538,9 @@ function openGiveConfig(it) {
     if (pl) pl.addEventListener('click', () => { dose = Math.min(hi, +(dose + step).toFixed(2)); render(); });
     const go = $('#sheetList').querySelector('#dGo');
     if (go) go.addEventListener('click', () => {
-      E.give(S, it.id, dose, routes[ri].r);
-    checkBudget();
+      if (!$('#sheetList').contains(go) || !$('#sheet').classList.contains('on') || !isCurrentPatient(patient)) return;
+      E.give(patient, it.id, dose, routes[ri].r);
+      checkBudget();
       if (window.SOUND) SOUND.drug();
       judge('drug', it.id);
       saveGame();
@@ -528,6 +554,7 @@ function openGiveConfig(it) {
 
 /* 环境 / 场景切换（炎热、寒冷、运动、睡眠） */
 function openEnvSheet() {
+  if (!isCurrentPatient(S)) return;
   const env = S.env || {};
   const rows = [
     { n: '炎热环境', tag: env.heat ? '开' : '关', amt: '', run: () => { E.setEnv(S, 'heat', !env.heat); openEnvSheet(); } },
@@ -536,7 +563,7 @@ function openEnvSheet() {
     { n: '睡眠',     tag: env.sleep ? '开' : '关', amt: '', run: () => { E.setEnv(S, 'sleep', !env.sleep); openEnvSheet(); } },
     { n: '恢复正常', tag: '', amt: '', run: () => { E.setEnv(S, 'reset'); openEnvSheet(); } },
   ];
-  openSheet('环境 / 场景', '影响体温、心率、呼吸', rows);
+  openSheet('环境 / 场景', S.patient.name + ' · 影响体温、心率、呼吸', rows, S);
 }
 
 /* 给药列表（旧接口，保留给不支持 SUBSTANCES 的场合） */
@@ -578,6 +605,7 @@ function testRows() {
     n: t.name, tag: t.min + ' min', amt: '¥' + t.cost,
     run: () => {
       E.orderTest(S, id);
+      saveGame();
       closeSheet();
       toast(`已开 ${t.name}，${t.min} 分钟后出结果`);
       renderAll();
@@ -592,14 +620,15 @@ let mentorBar = null;
 function ensureMentorDOM() {
   if (mentorBar) return;
   const wrap = document.createElement('div');
+  const slot = document.getElementById('mentorSlot');
   wrap.id = 'mentorWrap';
-  wrap.style.cssText = 'position:fixed;left:14px;bottom:78px;max-width:330px;z-index:15';
+  if (!slot) wrap.style.cssText = 'position:fixed;left:14px;bottom:78px;max-width:330px;z-index:15';
   wrap.innerHTML = `<div id="mentorCard" style="background:var(--card);color:var(--ink);border:1px solid var(--line);border-radius:14px;padding:10px 13px;
       box-shadow:0 6px 24px rgba(0,0,0,.10);font-size:12.5px;line-height:1.55;display:none">
       <div style="font-size:10px;letter-spacing:1.2px;color:var(--ink-3);margin-bottom:4px">
         上级医师 · <span id="mLevel"></span></div>
       <div id="mText"></div></div>`;
-  document.body.appendChild(wrap);
+  (slot || document.body).appendChild(wrap);
   mentorBar = wrap;
   const pill = document.createElement('span');
   pill.id = 'levelPill';
@@ -638,7 +667,14 @@ function showAdvice(force) {
   if (!card) return;
   if (!force && !autoHint) {
     /* 求助制：不问就不显示；点评后保留 20 秒让玩家看清 */
-    if (S._lastJudgeAt && (S.t - S._lastJudgeAt) < 20) { card.style.display = 'block'; return; }
+    if (S._lastJudgeAt != null && (S.t - S._lastJudgeAt) < 20) {
+      const lastJudge = S.log.slice().reverse().find(row => typeof row[1] === 'string' && row[1].startsWith('带教点评：'));
+      if (lastJudge) {
+        txt.textContent = (lastJudge[2] === 'good' ? '✓ ' : '⚠ ') + lastJudge[1].slice('带教点评：'.length);
+        card.style.display = 'block';
+        return;
+      }
+    }
     card.style.display = 'none';
     return;
   }
@@ -682,50 +718,67 @@ function judge(kind, id) {
 }
 
 /* ---------------- 存档 ---------------- */
+function wardRecordId(st) {
+  if (!st._wardRecordId) st._wardRecordId = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+  return st._wardRecordId;
+}
+
 function serState(st) {
+  wardRecordId(st);
   const copy = {};
   for (const k of Object.keys(st)) if (k !== 'cas') copy[k] = st[k];
-  return { s: copy, caseId: st.caseId, seed: st.seed, diff: st.diff };
+  return { s: copy, caseId: st.caseId, seed: st.seed, diff: st.diff, genVersion: st.cas.genVersion };
 }
+
 function saveGame() {
   try {
+    if (!beds.length) {
+      localStorage.removeItem('life.save');
+      return;
+    }
     localStorage.setItem('life.save', JSON.stringify({
       v: 3, level, caseDiff, activeIdx,
       beds: beds.map(b => serState(b.S)),
     }));
   } catch (e) {}
 }
+
 function loadGame() {
   try {
     const raw = localStorage.getItem('life.save');
     if (!raw) return false;
     const d = JSON.parse(raw);
-    if (!d || !d.beds || !d.beds.length) return false;
+    if (!d || !Array.isArray(d.beds) || !d.beds.length) return false;
     if (d.v !== 3) { try { localStorage.removeItem('life.save'); } catch (err) {} window.__saveDiscarded = true; return false; }
+
     const rebuilt = [];
-    for (const item of d.beds) {
+    const savedActive = Math.min(Math.max(0, d.activeIdx | 0), d.beds.length - 1);
+    let rebuiltActive = 0;
+    for (const [i, item] of d.beds.entries()) {
+      if (!item || !item.s) continue;
       let base;
-      if (!item.s) continue;
       if (item.caseId === 'gen' && window.CASEGEN && item.seed != null) {
-        base = E.create(window.CASEGEN.generate(item.diff || 3, item.seed));
+        const generate = (!item.genVersion || item.genVersion === 1) && CASEGEN.generateLegacy
+          ? CASEGEN.generateLegacy : CASEGEN.generate;
+        base = E.create(generate(item.diff || 3, item.seed));
       } else {
         base = E.create(item.caseId);
       }
-      const st = Object.assign(base, item.s);
-      st.cas = base.cas;
+      const cas = base.cas;
+      const st = Object.assign(base, item.s, { cas });
+      if (st.death || st.discharged) st.running = false;
+      if (i <= savedActive) rebuiltActive = rebuilt.length;
       rebuilt.push({ S: st });
     }
     if (!rebuilt.length) return false;
     beds = rebuilt;
-    activeIdx = Math.min(Math.max(0, d.activeIdx || 0), beds.length - 1);
+    activeIdx = rebuiltActive;
     S = beds[activeIdx].S;
-    ended = !!S.death || !!S.discharged;
     if (d.level) level = d.level;
     if (d.caseDiff) caseDiff = d.caseDiff;
     return true;
   } catch (e) { return false; }
 }
-function clearSave() { try { localStorage.removeItem('life.save'); } catch (e) {} }
 
 /* ---------------- 病历档案 ---------------- */
 const REC_KEY = 'life.records';
@@ -736,6 +789,7 @@ function loadRecords() {
 function pushRecord(rec) {
   try {
     const list = loadRecords();
+    if (list.some(row => row.recordId === rec.recordId)) return;
     list.unshift(rec);
     localStorage.setItem(REC_KEY, JSON.stringify(list.slice(0, 30)));   // 只保留最近 30 条
   } catch (e) {}
@@ -831,6 +885,8 @@ function loop(ts) {
       acc -= 0.2;
     }
     for (const b of beds) { try { E.pollTests(b.S); } catch (e) {} }
+    settleBeds();
+    if (!beds.length) { requestAnimationFrame(loop); return; }
     pumpSound(ts);
     hudAcc += dt;
     if (hudAcc >= 0.25) { hudAcc = 0; renderHUD(); }
@@ -868,20 +924,6 @@ function loop(ts) {
       }
     } catch (e) {}
 
-    /* 逐床结算：哪个床结束就记录并释放；前台那张显示复盘卡 */
-    for (let i = beds.length - 1; i >= 0; i--) {
-      const b = beds[i];
-      if (b.S.running || b.done) continue;
-      b.done = true;
-      if (b.S === S) { onEnd(); }
-      else { recordBackground(b.S); }
-      beds.splice(i, 1);
-    }
-    if (beds.length) {
-      if (activeIdx >= beds.length) activeIdx = beds.length - 1;
-      if (!beds[activeIdx].S.running) activeIdx = 0;
-      if (beds[activeIdx] && S !== beds[activeIdx].S) { S = beds[activeIdx].S; renderAll(); }
-    }
   }
   requestAnimationFrame(loop);
 }
@@ -963,48 +1005,80 @@ function toast(msg, urgent) {
 }
 
 /* ---------------- 结束 / 复盘 ---------------- */
-function buildTimeline() {
-  const rows = (S.tl || []).map(e =>
+function buildTimeline(st) {
+  const rows = (st.tl || []).map(e =>
     `${E.fmt(e.t)}  ${e.label}　|　BP ${e.sys}/${e.dia}　HR ${e.hr}　SpO₂ ${e.spo2}%　K ${e.k}　pH ${e.ph}`);
-  if (!rows.length) return S.log.slice(-8).map(l => `${l[0]}  ${l[1]}`).join('\n');
+  if (!rows.length) return st.log.slice(-8).map(l => `${l[0]}  ${l[1]}`).join('\n');
   if (rows.length > 16) return rows.slice(0, 4).concat(['…']).concat(rows.slice(-11)).join('\n');
   return rows.join('\n');
 }
 
-function recordBackground(st) {
-  try { st._level = level; st._beds = beds.length; } catch (e) {}
-  try {
-    if (window.DIAGNOSIS && window.HANDBOOK) {
-      const dx = window.DIAGNOSIS.classify(st);
-      window.HANDBOOK.record(window.HANDBOOK.fromCase(st, dx));
-    }
-  } catch (e) { console.warn('[beds] 后台结算记录失败', e); }
-  try {
-    pushRecord({ 时间: new Date().toLocaleString('zh-CN', { hour12: false }),
-      病例名: (st.cas && st.cas.name) || st.caseId,
-      诊断: (st.cas && st.cas.name) || st.caseId,
-      结局: st.discharged ? '出院' : '死亡', 耗时: Math.round(st.t / 60),
-      费用: Math.round(st.cost), 评分: E.finalScore(st) });
-  } catch (e) {}
-}
-
-function switchBed(i) {
-  if (i < 0 || i >= beds.length) return;
-  if (beds[i].S === S) { closeSheet(); return; }
+function focusBed(i) {
   activeIdx = i;
   S = beds[i].S;
-  ended = false; lastCrit = '';
+  lastCrit = '';
   organBuiltFor = null;
+  lastCaseReview = false;
   closeSheet();
-  document.querySelector('#detail')?.classList.remove('on');
+  $('#detail').classList.remove('on');
+  if (severePopup) { severePopup.remove(); severePopup = null; }
+  if (realism && !S.ins) initInsurance();
   drawBody();
-  selectOrgan('heart');
   renderAll();
   showAdvice(false);
   flashBedBar(4200);
-  toast(`切换到床位 ${i + 1}：${S.cas.name}`);
 }
 
+function switchBed(patient) {
+  const index = beds.findIndex(b => b.S === patient && b.S.running);
+  if (index < 0) return false;
+  if (patient === S) {
+    closeSheet();
+    return true;
+  }
+  focusBed(index);
+  saveGame();
+  toast(`切换到床位 ${index + 1}：${S.cas.name}`);
+  return true;
+}
+
+function settleBeds() {
+  const finished = beds.filter(b => !b.S.running);
+  if (!finished.length) return;
+
+  const wardCount = beds.length;
+  let review;
+  for (const b of finished) {
+    const st = b.S;
+    const recap = archiveCase(st, wardCount);
+    if (st === S) {
+      review = { st, ...recap };
+    } else {
+      toast(`床位 ${beds.indexOf(b) + 1} · ${escapeHtml(st.patient.name)}${st.discharged ? '已出院' : '已死亡'}`, !st.discharged);
+    }
+  }
+  const nextBed = beds.slice(activeIdx + 1).find(b => b.S.running);
+  beds = beds.filter(b => b.S.running);
+  if (review) {
+    hideLobby();
+    if (beds.length) {
+      focusBed(nextBed ? beds.indexOf(nextBed) : beds.length - 1);
+    } else {
+      activeIdx = 0;
+      closeSheet();
+      if (severePopup) { severePopup.remove(); severePopup = null; }
+      renderAll();
+      lastCaseReview = true;
+    }
+    showCaseReview(review.st, review);
+  } else {
+    activeIdx = beds.findIndex(b => b.S === S);
+    renderBedBar();
+    if ($('#sheet').classList.contains('on') && $('#sheetTitle').dataset.view === 'beds') openBeds();
+  }
+  if (document.getElementById('lobby')?.style.display === 'flex') showLobby();
+  saveGame();
+}
 
 /* ---------------- 统计面板 ---------------- */
 function openStats() {
@@ -1158,37 +1232,44 @@ function openBeds() {
       n: `床位 ${i + 1} · ${st.cas.name}`,
       tag: (b.S === S ? '当前 · ' : '') + tag,
       amt: b.S === S ? '—' : '切换',
-      run: () => switchBed(i),
+      run: () => switchBed(st),
     };
   });
   rows.push({ sec: '操作' });
   rows.push({ n: '开一个新病例（占用空床）', tag: `${beds.length}/${MAX_BEDS}`, amt: '新建',
               run: () => { closeSheet(); startCase(window.CASEGEN.generate(diffFromLevel())); } });
   openSheet('病房床位', `${beds.length} / ${MAX_BEDS} 张在用`, rows);
+  $('#sheetTitle').dataset.view = 'beds';
 }
 
-function onEnd() {
-  try { S._level = level; S._beds = beds.length; } catch (e) {}
-  ended = true;
-  if (window.SOUND) { if (S.discharged) SOUND.success(); else SOUND.fail(); }
-  clearSave();
-  const s = E.snapshot(S);
-  const ok = S.discharged;
-  const score = E.finalScore(S);
-  const min = Math.round(S.t / 60);
-  const name = (S.cas && S.cas.name) || S.caseId;
+function recordDiagnosis(st, dx, suffix = '', outcome) {
+  const rec = window.HANDBOOK.fromCase(st, dx);
+  if (!rec) return;
+  rec.sessionId = wardRecordId(st) + suffix;
+  if (rec.therapy) rec.therapy.sessionId = rec.sessionId;
+  if (outcome) rec.outcome = outcome;
+  window.HANDBOOK.record(rec);
+}
+
+function archiveCase(st, wardCount) {
+  st._level = level;
+  st._beds = wardCount;
+  const ok = st.discharged;
+  const score = E.finalScore(st);
+  const min = Math.round(st.t / 60);
+  const name = (st.cas && st.cas.name) || st.caseId;
 
   /* === HANDBOOK PATCH: 诊断分类 + 行医手册（只记录本局实际发生的事） === */
   try {
     if (window.DIAGNOSIS && window.HANDBOOK) {
-      const endDx = window.DIAGNOSIS.classify(S);
+      const endDx = window.DIAGNOSIS.classify(st);
       /* 出院时异常已被纠正，此时分类会给出"残留下游诊断"（例如高钾治好后只剩急性肾损伤）。
          优先采用入院时的诊断，除非结束时诊断更严重且证据更强。 */
-      const dx = (S.dx0 && (endDx.confidence || 0) <= (S.dx0.confidence || 0)) ? S.dx0 : endDx;
-      window.HANDBOOK.record(window.HANDBOOK.fromCase(S, dx));
-      /* 合并诊断（如 高钾 + DKA）分别建档；sessionId 加后缀以绕过同局去重 */
+      const dx = (st.dx0 && (endDx.confidence || 0) <= (st.dx0.confidence || 0)) ? st.dx0 : endDx;
+      recordDiagnosis(st, dx);
+      /* 合并诊断（如 高钾 + DKA）分别建档 */
       try {
-        const all = window.DIAGNOSIS.classifyAll ? window.DIAGNOSIS.classifyAll(S, 0.70) : [];
+        const all = window.DIAGNOSIS.classifyAll ? window.DIAGNOSIS.classifyAll(st, 0.70) : [];
         let k = 0;
         for (const dx2 of all) {
           if (!dx2 || dx2.name === dx.primary) continue;
@@ -1196,27 +1277,16 @@ function onEnd() {
           const t2 = dx2.tags || [];
           if (t2.length && t2.every(x => pTags.has(x))) continue;  // 只是主诊断的组分，不单独建档
           k++;   /* 不再限制个数：每个独立诊断各记一笔 */
-          const rec2 = window.HANDBOOK.fromCase(S, dx2);
-          if (!rec2) continue;
-          const sid = (rec2.sessionId || ('sess' + Date.now())) + '#' + k;
-          rec2.sessionId = sid;
-          if (Array.isArray(rec2.therapies)) rec2.therapies.forEach(t => { t.sessionId = sid; });
-          window.HANDBOOK.record(rec2);
+          recordDiagnosis(st, dx2, '#' + k);
         }
       } catch (e2) { console.warn('[handbook] 合并诊断记录失败：', e2); }
       /* 合并症（慢性肾病、糖尿病…）：这些是真诊断，但不会作为"主诊断"出现，单独记一笔 */
       try {
-        const comorb = (S.cas && S.cas.comorbidities) || [];
+        const comorb = (st.cas && st.cas.comorbidities) || [];
         comorb.forEach((name, ci) => {
           if (!name || name === dx.primary) return;
-          const rc = window.HANDBOOK.fromCase(S, { primary: name, name, confidence: 0.9,
-                                                    evidence: ['既往史'], severity: 'moderate', tags: ['comorbid'] });
-          if (!rc) return;
-          const sid2 = (rc.sessionId || ('sess' + Date.now())) + '#c' + ci;
-          rc.sessionId = sid2;
-          if (Array.isArray(rc.therapies)) rc.therapies.forEach(t => { t.sessionId = sid2; });
-          rc.outcome = 'unknown';
-          window.HANDBOOK.record(rc);
+          recordDiagnosis(st, { primary: name, name, confidence: 0.9,
+                                evidence: ['既往史'], severity: 'moderate', tags: ['comorbid'] }, '#c' + ci, 'unknown');
         });
       } catch (e3) { console.warn('[handbook] 合并症记录失败：', e3); }
     }
@@ -1227,32 +1297,40 @@ function onEnd() {
 
   /* 病历归档：每例结束追加一条，只留最近 30 条 */
   pushRecord({
+    recordId: wardRecordId(st),
     时间: new Date().toLocaleString('zh-CN', { hour12: false }),
     病例名: name,
     诊断: name,
     结局: ok ? '出院' : '死亡',
     耗时: min,
-    费用: Math.round(S.cost),
+    费用: Math.round(st.cost),
     评分: score,
   });
 
   /* 成就判定：只报新解锁的，避免刷屏；学习模式按说明不解锁成就 */
-  const newAch = (window.ACHIEVEMENTS && level !== 'learning') ? window.ACHIEVEMENTS.evaluate(S) : [];
+  const newAch = (window.ACHIEVEMENTS && level !== 'learning') ? window.ACHIEVEMENTS.evaluate(st) : [];
   const achNames = newAch.map(id => {
     const a = window.ACHIEVEMENTS.list.find(x => x.id === id);
     return a ? a.name : id;
   });
 
-  const tl = buildTimeline();
+  return { ok, score, min, achNames };
+}
+
+function showCaseReview(st, { ok, score, min, achNames }) {
+  const s = E.snapshot(st);
+  if (window.SOUND) { if (ok) SOUND.success(); else SOUND.fail(); }
+  const tl = buildTimeline(st);
   const key = ok
-    ? [['诊断', S.cas.name], ['结局', '痊愈出院'], ['耗时', min + ' 分钟'],
-       ['总费用', '¥' + Math.round(S.cost)], ['评分', score + ' / 100']]
-    : [['诊断', S.cas.name], ['结局', '死亡'], ['死因', S.death ? S.death.reason : '—'],
+    ? [['诊断', st.cas.name], ['结局', '痊愈出院'], ['耗时', min + ' 分钟'],
+       ['总费用', '¥' + Math.round(st.cost)], ['评分', score + ' / 100']]
+    : [['诊断', st.cas.name], ['结局', '死亡'], ['死因', st.death ? st.death.reason : '—'],
        ['终末血钾', s.k + ' mmol/L'], ['终末 pH', s.ph], ['评分', score + ' / 100']];
+  key.unshift(['患者', escapeHtml(st.patient.name)]);
   if (achNames.length) key.push(['新成就', achNames.join('、')]);
   openDetail(ok ? '患者出院' : '患者死亡',
-    ok ? `住院 ${min} 分钟 · 费用 ¥${Math.round(S.cost)}`
-       : `${E.fmt(S.t)} · ${S.death ? S.death.reason : ''}`,
+    ok ? `住院 ${min} 分钟 · 费用 ¥${Math.round(st.cost)}`
+       : `${E.fmt(st.t)} · ${st.death ? st.death.reason : ''}`,
     key,
     (ok ? '处理流程符合规范。' : '复盘下面这条时间线，找出第一次错过的窗口：') + '\n\n' + tl);
   if (achNames.length) {
@@ -1424,7 +1502,7 @@ function buildFeedbackText() {
     /* 会诊码：作者拿到可以原样复现这一例 */
     try {
       if (window.SHARE && window.SHARE.make) {
-        const code = window.SHARE.make(S);
+        const code = window.SHARE.make(patient);
         if (code) {
           lines.push('会诊码（可复现本例）：');
           lines.push(code);
@@ -1764,6 +1842,7 @@ function openOnlineMode() {
 
 /* ---------------- 会诊（分享码） ---------------- */
 function openConsult() {
+  const patient = S;
   if (!window.SHARE) { openDetail('会诊', '', [['状态', '会诊模块未加载']], ''); return; }
   openSheet('会诊', '把这一例分享给别的医生，或接手别人的病例', []);
   const list = document.querySelector('#sheetList');
@@ -1804,29 +1883,30 @@ function openConsult() {
     const raw = list.querySelector('#cIn').value;
     const r = window.SHARE.parse(raw);
     const pv = list.querySelector('#cPreview');
-    if (!r.ok) { pv.innerHTML = '<div style="color:#c0392b;font-size:12.5px">' + r.err + '</div>'; return; }
+    if (!r.ok) { pv.innerHTML = '<div style="color:#c0392b;font-size:12.5px">' + escapeHtml(r.err) + '</div>'; return; }
     const d = r.data;
     const caseName = d.c === 'gen' ? (window.CASEGEN ? (function () {
       try { const S2 = window.SHARE.rebuild(d, E); return S2 ? S2.cas.name : '随机病例'; } catch (e) { return '随机病例'; }
     })() : '随机病例') : ((E.CASES && E.CASES[d.c] && E.CASES[d.c].name) || d.c);
+    const p = d.p || {};
     const acts = (d.a || []).map(x => (x[0] === 'd' ? '给药 ' : '操作 ') + x[2] + (x[3] ? ' ' + x[3] : ''));
+    const outcome = d.o === 'death' ? ('死亡' + (d.r ? '（' + d.r + '）' : ''))
+      : d.o === 'discharge' ? '出院' : '未结束';
     pv.innerHTML =
       '<div style="font-size:13px;line-height:1.7">' +
-      '<div><b>' + caseName + '</b></div>' +
-      '<div style="color:#8a8078">病人：' + (d.p.n || '—') + ' · ' + (d.p.x || '') + ' · ' + (d.p.a || '') + ' 岁 · ' + (d.p.w || '') + ' kg</div>' +
-      '<div style="color:#8a8078">结局：' + (d.o === 'death' ? ('死亡' + (d.r ? '（' + d.r + '）' : '')) : d.o === 'discharge' ? '出院' : '未结束') + ' · 用时 ' + d.t + ' 分钟 · 评分 ' + d.sc + '</div>' +
-      '<div style="margin-top:6px;color:#6b625d">处置 ' + acts.length + ' 条：' + (acts.slice(0, 6).join('；') || '无') + (acts.length > 6 ? ' …' : '') + '</div>' +
+      '<div><b>' + escapeHtml(caseName) + '</b></div>' +
+      '<div style="color:#8a8078">病人：' + escapeHtml(p.n || '—') + ' · ' + escapeHtml(p.x) + ' · ' + escapeHtml(p.a) + ' 岁 · ' + escapeHtml(p.w) + ' kg</div>' +
+      '<div style="color:#8a8078">结局：' + escapeHtml(outcome) + ' · 用时 ' + escapeHtml(d.t) + ' 分钟 · 评分 ' + escapeHtml(d.sc) + '</div>' +
+      '<div style="margin-top:6px;color:#6b625d">处置 ' + acts.length + ' 条：' + escapeHtml(acts.slice(0, 6).join('；') || '无') + (acts.length > 6 ? ' …' : '') + '</div>' +
       '</div>' +
       '<button id="cTake" class="pill" style="margin-top:10px;padding:10px 16px;cursor:pointer;background:#f7e6e6;color:#a33;font-weight:700">接手这一例</button>';
-    pv.querySelector('#cTake').addEventListener('click', () => {
+    const take = pv.querySelector('#cTake');
+    take.addEventListener('click', () => {
+      if (patient !== S || !list.contains(take) || !$('#sheet').classList.contains('on')) return;
       const ns = window.SHARE.rebuild(d, E);
       if (!ns) { toast('无法重建该病例', true); return; }
-      beds[activeIdx] = { S: ns };
-      S = ns;
-      ended = false; lastCrit = ''; organBuiltFor = null;
-      closeSheet();
-      drawBody(); selectOrgan('heart'); renderAll(); showAdvice(false);
-      toast('已接手该会诊病例' + (d.p.n ? '：' + d.p.n : ''));
+      installCase(ns, true);
+      toast('已接手该会诊病例' + (p.n ? '：' + escapeHtml(p.n) : ''));
     });
   });
 }
@@ -1886,7 +1966,7 @@ function handbookTag() {
   catch (e) { return '查看'; }
 }
 function checkSigns() {
-  if (ended || !window.SIGNS) return;
+  if (!isCurrentPatient(S) || !window.SIGNS) return;
   let list = [];
   try { list = window.SIGNS.detect(S) || []; } catch (e) { return; }
   if (!list.length) return;
@@ -1908,27 +1988,30 @@ function checkSigns() {
 /* ---------------- 按钮 ---------------- */
 function bind() {
   $('#btnDrug').addEventListener('click', () => openDrugSheet());
-  $('#btnOps').addEventListener('click', () => openSheet('操作', '急救与介入', actionRows()));
+  $('#btnOps').addEventListener('click', () => {
+    if (isCurrentPatient(S)) openSheet('操作', S.patient.name + ' · 急救与介入', actionRows(), S);
+  });
   $('#btnBody').addEventListener('click', () => {
+    const patient = S;
+    if (!isCurrentPatient(patient)) return;
     const rows = testRows();
-    const d = E.dischargeCheck(S);
+    const d = E.dischargeCheck(patient);
     rows.push({ sec: '结局' });
     rows.push({
       n: d.ok ? '办理出院' : '出院评估', tag: d.ok ? '可出院' : '未达标',
       amt: d.ok ? '✓' : '—',
       run: () => {
-        /* 防重复结算：本局一旦结束（出院或死亡），不能再点 */
-        if (ended || S.discharged || S.death) {
-          closeSheet();
-          toast('本病例已经结束，不能再结算');
+        const current = E.dischargeCheck(patient);
+        if (!current.ok) {
+          toast('还不能出院：' + current.reasons.join('、'), true);
           return;
         }
-        if (d.ok) { E.endCase(S, 'discharge', '达到出院标准'); closeSheet(); onEnd();
-          try { if (navigator.vibrate) navigator.vibrate(200); } catch (e) {} }
-        else { toast('还不能出院：' + d.reasons.join('、'), true); }
+        E.endCase(patient, 'discharge', '达到出院标准');
+        settleBeds();
+        try { if (navigator.vibrate) navigator.vibrate(200); } catch (e) {}
       },
     });
-    openSheet('检查 / 结局', '开单后出结果', rows);
+    openSheet('检查 / 结局', patient.patient.name + ' · 开单后出结果', rows, patient);
   });
   $('#btnBlood').addEventListener('click', bloodReport);
   $('#btnMenu').addEventListener('click', () => openSheet('菜单', '', [
@@ -1962,7 +2045,7 @@ function bind() {
     {n: paused ? '继续（已暂停）' : '暂停', tag:'', amt:'', run: () => { paused = !paused; closeSheet(); toast(paused ? '已暂停' : '继续'); }},
     {n:'返回大厅', tag:'床位 / 成就 / 手册', amt:'进入', run: () => { closeSheet(); showLobby(); }},
     {n:'病房床位', tag: beds.length + ' / ' + MAX_BEDS, amt:'切换', run: () => openBeds()},
-    {n:'重新开始本病例', tag:'', amt:'', run: () => location.reload()},
+    {n:'重新开始本病例', tag:'', amt:'', run: () => confirmRestart()},
     {n:'切换病例', tag:'', amt:'', run: () => pickCase()},
     {n:'教程 · 怎么玩', tag:(window.TUTORIAL?window.TUTORIAL.PAGES.length:6)+' 页', amt:'', run: () => { if (window.TUTORIAL) TUTORIAL.open(0); }},
     {n:'病例说明', tag:'', amt:'', run: () => openDetail(S.cas.name, S.cas.complaint,
@@ -1972,8 +2055,8 @@ function bind() {
        ['提示', S.cas.hint]], '')},
   ]));
   $('#mask').addEventListener('click', closeSheet);
-  $('#detailX').addEventListener('click', () => $('#detail').classList.remove('on'));
-  $('#detail').addEventListener('click', e => { if (e.target.id === 'detail') $('#detail').classList.remove('on'); });
+  $('#detailX').addEventListener('click', closeDetail);
+  $('#detail').addEventListener('click', e => { if (e.target.id === 'detail') closeDetail(); });
 
   $('#speed').addEventListener('click', e => {
     const p = e.target.closest('.pill'); if (!p) return;
@@ -2012,53 +2095,51 @@ function difficultyRows() {
 function diffFromLevel() {
   return caseDiff;
 }
-function captureInitialDx() {
-  try {
-    if (!window.DIAGNOSIS || !S) return;
-    S.dx0 = window.DIAGNOSIS.classify(S);
-  } catch (e) {}
+function prepareCase(st) {
+  try { if (window.DIAGNOSIS) st.dx0 = window.DIAGNOSIS.classify(st); } catch (e) {}
+  return st;
 }
 
 function startCase(spec, replace) {
-  /* 上一局若在进行中就被切换，记一笔"未结"，避免玩家的经历丢失 */
-  try {
-    if (S && S.running && !S.death && !S.discharged && window.DIAGNOSIS && window.HANDBOOK) {
-      const dx = window.DIAGNOSIS.classify(S);
-      const rec = window.HANDBOOK.fromCase(S, dx);
-      rec.outcome = 'unknown';
-      window.HANDBOOK.record(rec);
-    }
-  } catch (e) { console.warn('[handbook] 未结记录失败：', e); }
   if (!replace && beds.length >= MAX_BEDS) {
     closeSheet();
     toast(`床位已满（最多 ${MAX_BEDS} 张），先处理或结束一个病例`, true);
     return;
   }
-  const keepLevel = level;
-  const ns = ensurePresentation(E.create(spec));
-  S = ns;
-  if (realism) initInsurance();   /* 现实模式：开局生成参保类型与家庭承受力 */
-  if (replace && beds.length) {
-    /* 切换病例：占用当前床，而不是新开一张 */
-    beds[activeIdx] = { S: ns };
+  const st = ensurePresentation(E.create(spec));
+  installCase(st, replace);
+  const tr = (st.traits && st.traits.length) ? '（' + st.traits.map(x => x.short || x.n).join('、') + '）' : '';
+  toast(`新病例：${st.cas.name}${tr}`);
+}
+
+function installCase(st, replace) {
+  prepareCase(st);
+  if (replace && isCurrentPatient(S)) {
+    try {
+      if (window.DIAGNOSIS && window.HANDBOOK) {
+        recordDiagnosis(S, window.DIAGNOSIS.classify(S), '#unfinished');
+      }
+    } catch (e) { console.warn('[handbook] 未结记录失败：', e); }
+    beds[activeIdx] = { S: st };
   } else {
-    beds.push({ S: ns });
+    beds.push({ S: st });
     activeIdx = beds.length - 1;
   }
-  level = keepLevel;
-  ended = false; lastCrit = '';
-  $('#detail').classList.remove('on');
-  closeSheet();
-  organBuiltFor = null;
-  drawBody();
-  selectOrgan('heart');
-  renderAll();
+  focusBed(activeIdx);
   syncLevel();
-  showAdvice(false);
-  captureInitialDx();
-  const tr = (S.traits && S.traits.length) ? "（" + S.traits.map(x => x.short || x.n).join("、") + "）" : "";
-  toast(`新病例：${S.cas.name}${tr}`);
+  saveGame();
 }
+
+function confirmRestart() {
+  const patient = S;
+  if (!isCurrentPatient(patient)) return;
+  openSheet('重新开始本病例', patient.patient.name + ' · 将重置该患者的处置和病程', [
+    { n: '确认重新开始', tag: '', amt: '重启',
+      run: () => startCase({ ...patient.cas, patient: patient.patient }, true) },
+    { n: '继续当前病例', tag: '', amt: '取消', run: closeSheet },
+  ], patient);
+}
+
 function pickCase() {
   const rows = [
     { n: '🎲 随机生成新病例', tag: `难度 ${diffFromLevel()}`, amt: '推荐',
@@ -2069,7 +2150,7 @@ function pickCase() {
     rows.push({ n: c.name, tag: `${c.age}岁 ${c.sex}`, amt: '',
                 run: () => startCase(c.id, true) });
   }
-  openSheet('选择病例', '随机生成 / 固定教学', rows);
+  openSheet('选择病例', '随机生成 / 固定教学', rows, isCurrentPatient(S) ? S : null);
 }
 
 function applyTheme() {
@@ -2186,19 +2267,15 @@ function renderPatient() {
     .filter(Boolean).join(' · ');
 }
 
-function renderPatient() {
-  const p = (S && S.patient) || {};
-  const nEl = document.getElementById('pname');
-  const mEl = document.getElementById('pmeta');
-  if (nEl) nEl.textContent = p.name || '—';
-  if (mEl) mEl.textContent = [p.age != null ? p.age + ' 岁' : '', p.sex || '', p.weight ? p.weight + ' kg' : '']
-    .filter(Boolean).join(' · ');
-}
-
 function renderAll() {
   renderPatient();
-  renderPatient();
-  mountBedBar(); renderVitals(); renderStates(); renderOrganPanel(); $('#clock').textContent = E.fmt(S.t); }
+  mountBedBar();
+  renderBedBar();
+  renderVitals();
+  renderStates();
+  renderOrganPanel();
+  $('#clock').textContent = E.fmt(S.t);
+}
 
 
 
@@ -2365,8 +2442,9 @@ function showLobby() {
     ' · 病例难度 ' + caseDiff + ' · 已有 ' + beds.length + ' 张床</div>' +
     '</div>';
 
-  el.querySelectorAll('[data-bed]').forEach(b => {
-    b.addEventListener('click', () => { switchBed(+b.dataset.bed); hideLobby(); });
+  el.querySelectorAll('[data-bed]').forEach(row => {
+    const patient = beds[+row.dataset.bed].S;
+    row.addEventListener('click', () => { if (switchBed(patient)) hideLobby(); });
   });
   el.querySelectorAll('[data-new]').forEach(b => {
     b.addEventListener('click', () => {
@@ -2414,8 +2492,13 @@ try {
 applyTheme();
 const _loaded = loadGame();
 document.addEventListener('click', () => { if (window.SOUND) SOUND.unlock(); }, { once: true });
-if (!_loaded && window.CASEGEN) { S = ensurePresentation(E.create(window.CASEGEN.generate(diffFromLevel()))); }
-  if (realism && S && !S.ins) initInsurance();
+if (!_loaded) {
+  const spec = window.CASEGEN ? CASEGEN.generate(diffFromLevel()) : 'hyperkalemia';
+  S = prepareCase(ensurePresentation(E.create(spec)));
+  activeIdx = 0;
+  beds = [{ S }];
+}
+if (realism && !S.ins) initInsurance();
 bind();
 drawBody();
 bindBedSwipe();
@@ -2426,6 +2509,9 @@ if (beds.length > 1) flashBedBar(3000);
 showLobby();
 /* 自动化测试（Playwright 会置 navigator.webdriver）直接进局，避免大厅遮挡点击 */
 if (navigator.webdriver || location.protocol === 'file:') hideLobby();
+settleBeds();
+saveGame();
+window.addEventListener('pagehide', saveGame);
 /* 设置了在线版地址：启动时提示（不强制跳转，避免断网就进不去） */
 try {
   const rb = localStorage.getItem('life.remoteBase');

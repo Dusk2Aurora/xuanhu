@@ -1,14 +1,12 @@
-﻿const { chromium } = require('playwright-core');
-const { pathToFileURL } = require('url');
-const path = require('path');
+﻿const { launchBrowser, gameUrl, enterWard } = require('./browser');
 (async()=>{
-  const b = await chromium.launch({ executablePath:'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe', headless:true });
+  const b = await launchBrowser();
   const ctx = await b.newContext({ viewport:{width:430,height:932}, hasTouch:true, isMobile:true });
   const p = await ctx.newPage();
   const errs=[]; p.on('pageerror', e=>errs.push(e.message));
-  await p.goto(pathToFileURL(path.resolve('prototype','ui-v4.html')).href);
+  await p.goto(gameUrl);
   await p.evaluate(()=>{try{localStorage.clear();}catch(e){}});
-  await p.reload(); await p.waitForTimeout(1500);
+  await p.reload(); await enterWard(p); await p.waitForTimeout(1500);
   const before = await p.evaluate(()=>document.querySelector('#opan .title')?.textContent);
   // 在人体图上左滑
   const box = await p.evaluate(()=>{ const el=document.querySelector('.bodywrap')||document.getElementById('anat'); const r=el.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2,w:r.width,h:r.height}; });

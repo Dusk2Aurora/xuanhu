@@ -96,6 +96,11 @@ python tools/build_site_zip.py         # 重新构建并压缩为 dist/悬壶-�
 
 ### 测试
 
+Node.js 20 或更新版本支持以下两个入口：
+
+- `npm test` 运行生理引擎、病例内容及生成器回归。
+- `npm ci` 后运行 `npm run test:browser`，在真实浏览器检查多床操作、刷新恢复和完整出院流程。Windows 可复用已安装的 Edge。其他环境可使用 `npx playwright-core install chromium`，也可通过 `BROWSER_EXECUTABLE` 指定本机浏览器路径。
+
 ```bash
 node tools/monotonic.js        # 单调性：剂量越大效应越强
 node tools/mechanism-test.js   # 机制：同一操作不同病理后果不同

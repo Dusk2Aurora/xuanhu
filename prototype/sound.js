@@ -1,8 +1,7 @@
 /* ==========================================================================
  * 声音：全部用 WebAudio 实时合成，不需要任何音频文件
- *  v2 音色重做（对外 API 与 v1 完全一致）
- *  - 心跳：三角波 + 低通（截止随血氧）+ 约 55ms 极短包络，模拟监护仪"嗒"
- *  - 报警：880/1174Hz 双音提示，正弦 + 柔和滤波，首尾包络归零，重复无爆音
+ *  - 心电：每次有效心搏对应一个短 QRS 音
+ *  - 监护报警：按优先级播报高音三短声或较低的双声
  *  - 点击/给药：短促轻巧；给药为带泛音的小铃铛
  *  - 成功：C 大三和弦上行分解 + 长尾混响；失败：A 小调下行，低通压暗
  *  - 总线：master → 低通 → 压缩器 → 软限幅 → 用户音量，并带一条轻混响发送
@@ -15,6 +14,7 @@ const TRIM = 0.9;         // 压缩后补偿；末端还有一个软限幅器兜
 
 let ctx = null, master = null, busLP = null, comp = null, trim = null, limiter = null, output = null;
 let space = null;         // 混响发送总线（ConvolverNode 输入）
+let monitorAlarm = null;
 let enabled = true;
 let lastVolume = 40;
 try {
@@ -28,6 +28,7 @@ function setVolume(percent) {
   const volume = Math.max(0, Math.min(100, Math.round(percent)));
   if (volume === (enabled ? lastVolume : 0)) return;
   enabled = volume > 0;
+  if (!enabled) stopMonitorAlarm();
   if (enabled) lastVolume = volume;
   try {
     localStorage.setItem('life.sound', enabled ? '1' : '0');
@@ -150,7 +151,7 @@ function env(g, t0, peak, atk, dur, shape) {
 function voice(o) {
   if (!enabled) return;
   const c = ensure();
-  if (!c) return;
+  if (!c || (c.state !== 'running' && !c.startRendering)) return;
 
   const t0 = c.currentTime + (o.delay || 0);
   const dur = Math.max(0.02, o.dur == null ? 0.12 : o.dur);
@@ -191,10 +192,44 @@ function voice(o) {
   osc.stop(t0 + dur + 0.06);
 }
 
-/* 频率 -> 低通截止：血氧高时清亮、低时沉闷 */
-function beatCutoff(spo2) {
-  const t = Math.max(0, Math.min(1, (spo2 - 55) / 45));
-  return 650 + Math.pow(t, 2.2) * 4200;   // 650–4850 Hz
+function stopMonitorAlarm() {
+  if (!monitorAlarm) return;
+  const { osc, gain } = monitorAlarm;
+  monitorAlarm = null;
+  const now = ctx.currentTime;
+  gain.cancelScheduledValues(now);
+  gain.setTargetAtTime(0, now, 0.003);
+  osc.stop(now + 0.015);
+}
+
+// 参考迈瑞 T1 的 Mode 2 节奏。音高与包络为游戏合成，组内间隔由音频时钟控制。
+function playMonitorAlarm(high) {
+  if (!enabled || (!high && monitorAlarm)) return;
+  const c = ensure();
+  if (!c || (c.state !== 'running' && !c.startRendering)) return;
+  stopMonitorAlarm();
+  const osc = c.createOscillator(), amp = c.createGain();
+  osc.type = 'triangle';
+  osc.frequency.value = high ? 980 : 600;
+  const start = c.currentTime;
+  const count = high ? 3 : 2, spacing = high ? 0.20 : 0.27, duration = high ? 0.10 : 0.14;
+  const end = start + (count - 1) * spacing + duration;
+  amp.gain.value = 0;
+  for (let i = 0; i < count; i++) {
+    const at = start + i * spacing;
+    env(amp.gain, at, high ? 0.24 : 0.17, 0.008, duration, 'beep');
+    amp.gain.setValueAtTime(0, at + duration + 0.001);
+  }
+  osc.connect(amp);
+  amp.connect(master);
+  monitorAlarm = { osc, gain: amp.gain };
+  osc.onended = () => {
+    if (monitorAlarm?.osc === osc) monitorAlarm = null;
+    osc.disconnect();
+    amp.disconnect();
+  };
+  osc.start(start);
+  osc.stop(end + 0.005);
 }
 
 /* ---------- 具体音效 ---------- */
@@ -205,37 +240,8 @@ const S = {
   set volume(v) { setVolume(v); },
   unlock() { ensure(); },
 
-  /* 心电滴声：短促滤波脉冲；音高与亮度都随血氧 */
-  beat(spo2, critical) {
-    const s = isFinite(spo2) ? Math.max(0, Math.min(100, spo2)) : 98;
-    const f = 470 + s * 3.1;                    // 470–780 Hz
-    const cut = beatCutoff(s);
-    const bright = Math.pow(Math.max(0, Math.min(1, (s - 55) / 45)), 2);
-
-    // 主体：三角波经低通，截止在 55ms 内快速下滑 => "嗒"
-    voice({
-      freq: f, dur: 0.055, atk: 0.0025, gain: 0.22, shape: 'pulse',
-      type: 'triangle', filter: cut, filterTo: Math.max(320, cut * 0.5), q: 1.2,
-    });
-    // 高频"空气"层：只在高血氧时出现，拉开清亮/沉闷的差别
-    voice({
-      freq: f * 2, dur: 0.034, atk: 0.0018, gain: 0.012 + 0.095 * bright, shape: 'pulse',
-      type: 'sine', filter: Math.min(9000, cut * 1.4), filterTo: Math.max(320, cut * 0.8), q: 0.7,
-    });
-    // 低八度正弦垫一点厚度，让低血氧时更"闷"
-    voice({
-      freq: f * 0.5, dur: 0.05, atk: 0.004, gain: 0.07, shape: 'pulse',
-      type: 'sine', filter: 1100, q: 0.7,
-    });
-
-    if (critical) {
-      // 二次确认音，略高
-      voice({
-        freq: f * 1.5, dur: 0.05, atk: 0.003, gain: 0.16, shape: 'pulse',
-        type: 'triangle', delay: 0.095,
-        filter: Math.min(6000, cut * 1.2), filterTo: Math.max(320, cut * 0.7), q: 1,
-      });
-    }
+  beat() {
+    voice({ freq: 740, dur: 0.065, atk: 0.005, gain: 0.135, type: 'sine', shape: 'beep' });
   },
 
   click() {
@@ -266,35 +272,9 @@ const S = {
     }
   },
 
-  /* 室颤/心静止：880 + 1174Hz 双音，柔和滤波，1.5s 重复无接缝 */
-  alarm() {
-    voice({
-      freq: 880, dur: 0.2, atk: 0.012, gain: 0.22, shape: 'beep',
-      type: 'sine', filter: 3400, q: 0.7, send: 0.12,
-    });
-    voice({
-      freq: 1174.66, dur: 0.2, atk: 0.012, gain: 0.145, shape: 'beep',
-      type: 'sine', delay: 0.055, filter: 4200, q: 0.7, send: 0.12,
-    });
-    voice({
-      freq: 440, dur: 0.22, atk: 0.015, gain: 0.06, shape: 'beep',
-      type: 'triangle', filter: 900, q: 0.6, send: 0.05,
-    });
-  },
-
-  /* 危急值：短促双响，高但不过分尖锐 */
-  critical() {
-    for (const d of [0, 0.135]) {
-      voice({
-        freq: 1318.51, dur: 0.085, atk: 0.004, gain: 0.19, shape: 'beep',
-        type: 'sine', delay: d, filter: 5600, q: 0.8, send: 0.08,
-      });
-    }
-    voice({
-      freq: 1760, dur: 0.07, atk: 0.005, gain: 0.075, shape: 'beep',
-      type: 'sine', filter: 6400, q: 0.8, send: 0.06,
-    });
-  },
+  alarm() { playMonitorAlarm(true); },
+  critical() { playMonitorAlarm(false); },
+  stopMonitorAlarm,
 
   /* 出院：C 大三和弦上行分解，每个音独立衰减 */
   success() {

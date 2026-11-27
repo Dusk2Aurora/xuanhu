@@ -17,7 +17,8 @@ const MAX_BEDS = 4;
 let beds = [];
 let activeIdx = 0;
 let selected = 'heart';
-let lastTs = 0, acc = 0, hudAcc = 0, saveAcc = 0, nextBeat = 0, nextAlarm = 0, signsAcc = 0;
+let lastTs = 0, acc = 0, hudAcc = 0, saveAcc = 0, signsAcc = 0;
+let lastBeatAt = null, nextArrestAlarmAt = 0;
 let speed = 1, ff = false;
 let observationUntil = null;
 let lastCaseReview = false;
@@ -899,7 +900,7 @@ function loop(ts) {
   if (!lastTs) lastTs = ts;
   const dt = Math.min(0.5, (ts - lastTs) / 1000);
   lastTs = ts;
-  if (paused) { requestAnimationFrame(loop); return; }
+  if (paused || !beds.length) { silenceMonitor(); requestAnimationFrame(loop); return; }
   if (beds.length) {
     const adv = observationUntil == null
       ? dt * (ff ? 20 : speed) * (nightMode ? 1.3 : 1)
@@ -924,8 +925,8 @@ function loop(ts) {
       toast('留观快进已结束，请复查病情');
     }
     settleBeds();
-    if (!beds.length) { requestAnimationFrame(loop); return; }
-    pumpSound(ts);
+    if (!beds.length) { silenceMonitor(); requestAnimationFrame(loop); return; }
+    let monitorWarning = false;
     hudAcc += dt;
     if (hudAcc >= 0.25) { hudAcc = 0; renderHUD(); }
     saveAcc += dt;
@@ -933,21 +934,19 @@ function loop(ts) {
 
     /* 首次体征提示：每 ~2 秒检查一次（非阻断；危急才用醒目 toast） */
     signsAcc += dt;
-    if (signsAcc >= 2) { signsAcc = 0; checkSigns(); }
+    if (signsAcc >= 2) { signsAcc = 0; monitorWarning = checkSigns(); }
     /* 后台床位危急警报 */
     for (const b of beds) {
       if (b.S === S) continue;
       const st = b.S;
-      let crit = false;
-      try {
-        crit = st.rhythm === 'vf' || st.rhythm === 'asystole' ||
-               st.spo2 < 80 || st.k > 7 || E.bp(st).sys < 70;
-      } catch (e) {}
-      if (crit && !b.crit) {
-        b.crit = true;
-        toast('⚠ 床位 ' + (beds.indexOf(b) + 1) + ' 危急：' + (st.cas && st.cas.name), true);
-        if (window.SOUND && SOUND.alarm) { try { SOUND.alarm(); } catch (e) {} }
-      } else if (!crit) b.crit = false;
+      const crit = st.rhythm !== 'sinus' ? st.rhythm :
+        (st.spo2 < 80 || st.k > 7 || E.bp(st).sys < 70 ? 'vitals' : null);
+      if (crit && crit !== b.crit) {
+        const reason = crit === 'vf' ? '室颤' : crit === 'asystole' ? '心静止' : st.cas.name;
+        toast('⚠ 床位 ' + (beds.indexOf(b) + 1) + ' 危急：' + reason, true);
+        monitorWarning = true;
+      }
+      b.crit = crit;
     }
 
     /* 进入重症：弹窗提醒（每例只弹一次，回到轻症后可再次触发） */
@@ -955,32 +954,43 @@ function loop(ts) {
       const nowSevere = isSevere(S);
       if (nowSevere && !S._wasSevere) {
         /* 只在"由轻转重"那一刻弹；开局即重症不弹（_ready 之前也不弹） */
-        if (S._ready) showSeverePopup();
+        if (S._ready && !severePopup) { showSeverePopup(); monitorWarning = true; }
         S._wasSevere = 1;
       } else if (!nowSevere) {
         S._wasSevere = 0;
       }
     } catch (e) {}
-
+    pumpSound(ts, monitorWarning);
   }
   requestAnimationFrame(loop);
 }
 
 /* ---------------- 音效调度 ---------------- */
-function pumpSound(ts) {
-  if (!window.SOUND || !SOUND.enabled) return;
-  const now = ts / 1000;
-  const sp = ff ? 20 : speed;
-  if (S.rhythm === 'sinus') {
-    const beatSec = 60 / Math.max(30, S.hr);
-    const interval = Math.max(0.22, beatSec / Math.min(sp, 4));
-    if (now >= nextBeat) {
-      SOUND.beat(S.spo2, S.spo2 < 92 || S.k > 6.5);
-      nextBeat = now + interval;
+function silenceMonitor() {
+  window.SOUND?.stopMonitorAlarm();
+  nextArrestAlarmAt = 0;
+  lastBeatAt = null;
+}
+
+function pumpSound(ts, warning) {
+  if (!window.SOUND?.enabled) { silenceMonitor(); return; }
+  // 一个病房共用一组报警。当前床和后台床的同级事件合并，危急心律优先。
+  const arrest = beds.some(b => b.S.rhythm === 'vf' || b.S.rhythm === 'asystole');
+  if (arrest) {
+    if (ts >= nextArrestAlarmAt) {
+      SOUND.alarm();
+      nextArrestAlarmAt = ts + 1500;
     }
-  } else if (now >= nextAlarm) {
-    SOUND.alarm();
-    nextAlarm = now + 1.5;
+  } else {
+    if (nextArrestAlarmAt) { SOUND.stopMonitorAlarm(); nextArrestAlarmAt = 0; }
+    if (warning) SOUND.critical();
+  }
+  if (S.rhythm !== 'sinus' || !(S.hr > 0)) { lastBeatAt = null; return; }
+  const interval = 60000 / S.hr;
+  const elapsed = lastBeatAt == null ? Infinity : ts - lastBeatAt;
+  if (elapsed >= interval) {
+    SOUND.beat();
+    lastBeatAt = elapsed < 2 * interval ? lastBeatAt + interval : ts;
   }
 }
 
@@ -1084,6 +1094,7 @@ function focusBed(i) {
   stopObservation();
   activeIdx = i;
   S = beds[i].S;
+  lastBeatAt = null;
   lastCrit = '';
   organBuiltFor = null;
   lastCaseReview = false;
@@ -1509,7 +1520,6 @@ function showSeverePopup() {
   const close = () => { el.remove(); severePopup = null; };
   el.querySelector('#sevOk').addEventListener('click', close);
   el.addEventListener('click', (ev) => { if (ev.target === el) close(); });
-  if (window.SOUND && SOUND.alarm) { try { SOUND.alarm(); } catch (e) {} }
 }
 
 /* ---------------- 关于 / 隐私 ---------------- */
@@ -2052,9 +2062,9 @@ function checkSigns() {
     ? `<br><span style="font-size:11px;opacity:.85">${fresh[0].brief}</span>` : '';
   toast((critical ? '⚠ 危急体征：' : '新体征：') + names + brief, critical);
   if (critical) {
-    if (window.SOUND && SOUND.alarm) { try { SOUND.alarm(); } catch (e) {} }
     try { if (navigator.vibrate) navigator.vibrate([120, 80, 120]); } catch (e) {}
   }
+  return critical;
 }
 /* ---------------- 按钮 ---------------- */
 function openSoundSettings() {

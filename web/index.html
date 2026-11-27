@@ -157,7 +157,15 @@ button { color: inherit; }
   font-size: 16px;
   font-weight: 700;
 }
-#budgetChip { margin-right: 0 !important; }
+#budgetChip {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 34vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: clamp(10px, 1.4vmin, 12px);
+}
 .seg {
   display: flex;
   align-items: center;
@@ -460,8 +468,7 @@ button.drow { width: 100%; border: 0; background: transparent; color: inherit; f
   .stage { grid-template-columns: minmax(175px, 1fr) minmax(150px, 1.3fr) minmax(168px, 1fr); }
 }
 
-@media (max-width: 700px) and (orientation: portrait), (max-width: 540px) {
-  :root { --dock-h: 64px; }
+@media (max-width: 760px) and (orientation: portrait), (max-width: 540px) {
   .top {
     display: grid;
     grid-template-columns: minmax(0, auto) minmax(0, 1fr) auto;
@@ -479,9 +486,13 @@ button.drow { width: 100%; border: 0; background: transparent; color: inherit; f
   #levelPill { grid-area: level; justify-self: start; }
   #btnAsk { grid-area: ask; justify-self: start; }
   #levelPill, #btnAsk { min-height: 30px; padding: 2px 5px; }
-  #budgetChip { grid-column: 1 / -1; justify-self: start; }
+  #budgetChip { grid-column: 1 / -1; grid-row: 3; justify-self: end; max-width: 100%; }
   #speed { grid-area: speed; justify-self: end; }
   .seg .pill { padding-inline: 5px; }
+}
+
+@media (max-width: 700px) and (orientation: portrait), (max-width: 540px) {
+  :root { --dock-h: 64px; }
   .stage {
     grid-template-columns: minmax(0, 1.25fr) minmax(114px, 1fr);
     grid-template-rows: auto auto auto minmax(302px, 1fr);

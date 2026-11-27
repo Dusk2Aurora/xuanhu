@@ -276,7 +276,11 @@
     <path class="wa-detail" stroke="#905a52" stroke-width="1.3" opacity=".56" d="M154 477 Q169 474 180 475 Q198 469 213 469 Q227 467 239 462"/>
   `);
 
-  const bowel = organ('gut', '肠道', `
+  const colonCurve = `M121 571 C114 555 119 540 116 524 C114 507 121 497 134 497
+    C155 497 168 504 184 504 C204 504 220 492 235 498 C246 501 247 512 243 529
+    C239 550 245 571 233 587 C222 601 207 593 200 604 C195 611 197 617 197 624`;
+
+  const bowel = organ('gut', '肠道与直肠', `
     <path class="wa-tissue" fill="url(#wa-bowel)" d="
       M134 515 C140 509 158 512 170 514 C192 511 219 507 226 521
       C235 535 227 548 228 560 C230 576 214 590 202 598
@@ -291,76 +295,78 @@
     <path class="wa-detail" stroke="#edc0a7" stroke-width="2" opacity=".75" d="
       M142 531 Q165 525 185 530 M193 536 Q178 544 155 543
       M142 556 Q160 558 182 554 M155 572 Q179 576 197 568 M171 585 Q182 585 192 591"/>
-    <path class="wa-bowel-edge" fill="none" d="
-      M121 571 C114 555 119 540 116 524 C114 507 121 497 134 497
-      C155 497 168 504 184 504 C204 504 220 492 235 498 C246 501 247 512 243 529
-      C239 550 245 571 233 587 C222 601 197 593 190 609 Q186 616 189 625"/>
-    <path class="wa-detail" fill="none" stroke="#c69378" stroke-width="15.5" d="
-      M121 571 C114 555 119 540 116 524 C114 507 121 497 134 497
-      C155 497 168 504 184 504 C204 504 220 492 235 498 C246 501 247 512 243 529
-      C239 550 245 571 233 587 C222 601 197 593 190 609 Q186 616 189 625"/>
+    <path class="wa-bowel-edge" fill="none" d="${colonCurve}"/>
+    <path class="wa-detail" stroke="#c69378" stroke-width="15.5" d="${colonCurve}"/>
+    <path class="wa-tissue" fill="#c69378" d="
+      M188.2 624 C188.2 633 190 635 189 642 C188 649 189 653 190 656
+      Q191 659 190 664 C189 668 194 670 195 665 Q196 658 200 654
+      C209 645 205.8 633 205.8 624"><title>直肠</title></path>
     <path class="wa-detail" stroke="#f0c4a1" stroke-width="2.1" opacity=".68" d="
       M118 567 Q113 546 116 520 Q118 497 135 499 C154 500 170 505 185 506 Q203 505 221 499
       Q245 494 244 514 M240 534 Q237 553 239 561 Q239 583 225 590
-      M217 593 Q193 593 189 608"/>
+      M217 593 Q198 595 195 607 C191 619 197 630 194 641"/>
     <path class="wa-detail" stroke="#9d675e" stroke-width="1.3" opacity=".71" d="
       M113 551q5-5 10-1m-11-16q6-5 11-1m-12-16q5-4 10-2m0-21q0 5 4 9
       M142 490q-4 6-2 12m20-7q-4 4-4 10m20-6q-2 6-2 11m21-12q3 4 3 10
       M211 493q4 3 5 10m16-10q3 7-4 9m12 14q5-1 8 1m-11 19q5-2 11 1
-      M236 556q5-3 11-1m-16 17q6-1 10 2m-21 9q4 3 5 8m-19-5q0 5 3 9
-      M192 596q3 4 8 5"/>
+      M236 556q5-3 11-1m-16 17q6-1 10 2m-21 9q4 3 5 8m-19-5q0 5 3 9"/>
   `);
 
   const uterus = organ('uterus', '子宫与卵巢', `
+    <path class="wa-tissue" fill="none" d="M154 615 Q142 605 132 618 M180 615 Q197 603 212 616"/>
     <path class="wa-tissue" fill="url(#wa-pelvic)" d="
-      M160 631 C161 622 168 619 179 620 C192 618 199 622 200 630
-      C201 638 195 646 188 651 Q184 656 184 663 L176 663
-      Q176 656 172 651 C164 646 159 639 160 631Z
-      M163 631 Q151 621 141 628 L135 635 L131 633 Q135 622 145 621 Q156 621 166 626Z
-      M196 631 Q208 621 218 628 L224 635 L228 633 Q224 622 214 621 Q203 621 193 626Z
-      M133 633 C124 632 120 637 123 642 C127 647 137 646 141 641 C142 637 139 633 133 633Z
-      M226 633 C235 632 239 637 236 642 C232 647 222 646 218 641 C217 637 220 633 226 633Z"/>
-    <path class="wa-detail" stroke="#8b596d" stroke-width="1.5" opacity=".65" d="
-      M166 629 Q179 637 193 629 M175 637 Q178 643 180 650 M129 639h4m94 0h4"/>
+      M151 615 C151 607 160 607 167 608 C176 607 184 608 184 615
+      C183 622 174 625 171 631 L170 635 Q167 637 164 635 L163 631
+      C161 625 152 623 151 615Z"/>
+    <ellipse class="wa-tissue" fill="url(#wa-pelvic)" cx="130" cy="620" rx="7" ry="4"/>
+    <ellipse class="wa-tissue" fill="url(#wa-pelvic)" cx="215" cy="618" rx="7" ry="4"/>
+  `);
+
+  const bladder = organ('bladder', '膀胱', `
+    <path class="wa-tissue" fill="#b2b6c1" d="
+      M149 638 C150 631 158 629 168 629 C178 629 186 631 187 638
+      C188 645 182 649 177 651 Q172 653 171 656 H165
+      Q164 653 159 651 C154 649 148 645 149 638Z"/>
   `);
 
   const prostate = organ('prostate', '前列腺', `
-    <g class="wa-context">
-      <path fill="#c4a19b" opacity=".61" stroke="#8d6875" stroke-width="1.1" d="
-        M162 617 C168 610 190 610 198 617 C205 625 196 638 191 641 H169 C164 638 155 625 162 617Z"/>
-      <path fill="none" stroke="#9c797d" opacity=".64" stroke-width="2.7" d="M180 635v33"/>
-    </g>
     <path class="wa-tissue" fill="url(#wa-pelvic)" d="
-      M161 641 Q164 636 174 638 Q180 639 186 638 Q195 636 199 642 Q203 649 194 655
-      Q188 658 180 659 Q173 658 166 655 Q158 650 161 641Z"/>
-    <path class="wa-detail" stroke="#89596d" stroke-width="1.4" opacity=".7" d="M180 640v14 M164 645 Q169 641 176 645 M184 645 Q191 641 196 645"/>
+      M155 659 C157 655 163 655 168 656 C173 655 179 655 181 659
+      C182 664 175 669 168 670 C161 669 154 664 155 659Z"/>
   `);
 
-  const callouts = `
-    <g class="wa-callouts" aria-hidden="true">
+  function callouts(female) {
+    return `<g class="wa-callouts" aria-hidden="true">
       <path d="M30 78 H105 L128 70 M30 270 H73 L115 279 M29 395 H81 L108 405 M29 484 H80 L111 479 M29 564 H77 L113 557"/>
       <path d="M331 377 H269 L226 378 M332 418 H286 L266 413 M332 470 H282 L246 449"/>
+      <path d="M30 640 H113 L149 639 M331 647 H242 L202 644"/>
+      <path d="${female ? 'M30 605 H113 L152 616' : 'M42 666 H117 L155 661'}"/>
       <text x="6" y="82">脑</text>
       <text x="6" y="274">肺</text>
       <text x="5" y="399">肝脏</text>
       <text x="5" y="488">肾脏</text>
       <text x="5" y="568">肠道</text>
+      <text x="5" y="644">膀胱</text>
+      <text x="5" y="${female ? 609 : 670}">${female ? '子宫' : '前列腺'}</text>
       <g text-anchor="end">
         <text x="355" y="381">心脏</text>
         <text x="354" y="422">脾</text>
         <text x="354" y="474">胃</text>
+        <text x="355" y="651">直肠</text>
       </g>
     </g>`;
+  }
 
   function render(sex) {
+    const female = sex === '女';
     return `${definitions}
       <g class="wa-plate">
         ${frame}
         <g clip-path="url(#wa-body-clip)">
           ${brain}${lungs}${heart}${kidneys}${pancreas}${liver}${spleen}${stomach}${bowel}
-          ${sex === '女' ? uterus : prostate}
+          ${female ? uterus : prostate}${bladder}
         </g>
-        ${callouts}
+        ${callouts(female)}
       </g>`;
   }
 

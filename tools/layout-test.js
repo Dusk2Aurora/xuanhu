@@ -41,7 +41,8 @@ async function checkAtlas(page, touch, pelvicOrgan) {
   const picker = page.locator('#opTitle');
   const options = await picker.locator('option').evaluateAll(items => items.map(el => el.value));
   assert.deepEqual(ids.slice().sort(), options.sort());
-  assert.equal(ids.length, 10);
+  assert.equal(ids.length, 11);
+  assert.ok(ids.includes('bladder'));
   assert.ok(ids.includes(pelvicOrgan));
   for (const id of ids) {
     const organ = page.locator(`#anat [data-o="${id}"]`);
@@ -60,6 +61,17 @@ async function checkAtlas(page, touch, pelvicOrgan) {
     if (touch) await page.touchscreen.tap(point.x, point.y);
     else await page.mouse.click(point.x, point.y);
     assert.equal(await picker.inputValue(), id);
+  }
+  const rectum = page.locator('#anat [data-o="gut"] path').filter({ has: page.locator('title', { hasText: '直肠' }) });
+  if (touch) await rectum.tap();
+  else await rectum.click();
+  assert.equal(await picker.inputValue(), 'gut');
+  if (pelvicOrgan === 'prostate') {
+    await picker.selectOption('bladder');
+    assert.equal(await page.locator('#opan').getByText('未留置', { exact: true }).count(), 1);
+    await page.locator('#btnOps').click();
+    await page.locator('#sheetList').getByText('留置导尿', { exact: true }).click();
+    await page.locator('#opan').getByText('已留置', { exact: true }).waitFor();
   }
   await picker.selectOption('lung');
   assert.equal(await page.locator('#anat .org.sel').getAttribute('data-o'), 'lung');

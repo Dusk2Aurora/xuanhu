@@ -50,7 +50,7 @@ function drawBody() {
   svg.innerHTML = WARD_ANATOMY.render(sex);
   const groups = Array.from(svg.querySelectorAll('.org'));
   const picker = $('#opTitle');
-  const ids = ['brain', 'lung', 'heart', 'liver', 'stomach', 'spleen', 'pancreas', 'kidney', 'gut',
+  const ids = ['brain', 'lung', 'heart', 'liver', 'stomach', 'spleen', 'pancreas', 'kidney', 'gut', 'bladder',
     sex === '女' ? 'uterus' : 'prostate'];
   picker.replaceChildren(...ids.map(id => new Option(ORGAN_META[id].n, id)));
   for (const group of groups) {
@@ -107,14 +107,16 @@ function selectOrgan(id) {
 }
 
 const ORGAN_META = {
-  uterus: {n:'子宫 / 卵巢', f: s => [
-    ['雌激素', (s.estrogen != null ? (s.estrogen * 100).toFixed(0) : '—'), '%'],
-    ['绝经', (s.patient && s.patient.age >= 52) ? '是' : '否', ''],
+  uterus: {n:'子宫 / 卵巢', f: (s, state) => [
+    ['雌激素', (state.estrogen != null ? (state.estrogen * 100).toFixed(0) : '—'), '%'],
+    ['绝经', (state.patient && state.patient.age >= 52) ? '是' : '否', ''],
     ['盆腔出血', s.uo < 0.4 ? '需警惕' : '未见', '']]},
-  prostate: {n:'前列腺', f: s => [
-    ['睾酮', (s.testosterone != null ? (s.testosterone * 100).toFixed(0) : '—'), '%'],
+  prostate: {n:'前列腺', f: (s, state) => [
+    ['睾酮', (state.testosterone != null ? (state.testosterone * 100).toFixed(0) : '—'), '%'],
     ['尿潴留', s.uo < 0.35 ? '可疑' : '无', ''],
-    ['年龄风险', (s.patient && s.patient.age >= 55) ? '偏高' : '低', '']]},
+    ['年龄风险', (state.patient && state.patient.age >= 55) ? '偏高' : '低', '']]},
+  bladder: {n:'膀胱', f: (s, state) => [
+    ['尿量', s.uo, 'mL/min'], ['导尿管', state.urineDrained ? '已留置' : '未留置', '']]},
   brain:   {n:'脑',   f: s => [['意识', s.gcs, 'GCS'], ['脑灌注', s.map < 60 ? '不足' : '正常', ''], ['瞳孔', s.gcs < 6 ? '散大' : '等大', '']]},
   lung:    {n:'肺',   f: s => [['SpO₂', s.spo2, '%'], ['PaO₂', s.pao2, 'mmHg'], ['PaCO₂', s.paco2, 'mmHg'], ['RR', s.rr, 'rpm']]},
   heart:   {n:'心脏', f: s => [['HR', s.hr, 'bpm'], ['EF', s.ef, '%'], ['MAP', s.map, 'mmHg'], ['心律', s.rhythm === 'sinus' ? '窦性' : (s.rhythm === 'vf' ? '室颤' : '心静止'), '']]},
@@ -123,7 +125,7 @@ const ORGAN_META = {
   spleen:  {n:'脾',   f: s => [['体积', '正常', ''], ['滤血', '正常', '']]},
   pancreas:{n:'胰腺', f: s => [['血糖', s.glu, 'mmol/L'], ['胰岛素', s.glu > 11 ? '相对不足' : '正常', '']]},
   kidney:  {n:'肾脏', f: s => [['血钾', s.k, 'mmol/L'], ['肌酐', s.cr, 'µmol/L'], ['尿量', s.uo, 'mL/min'], ['GFR', s.gfr, 'mL/min']]},
-  gut:     {n:'肠道', f: s => [['蠕动', '正常', ''], ['吸收', '92%', ''], ['血氨', '33', 'µmol/L']]},
+  gut:     {n:'肠道与直肠', f: s => [['蠕动', '正常', ''], ['吸收', '92%', ''], ['血氨', '33', 'µmol/L']]},
 };
 
 function organState(id, s) {
@@ -142,7 +144,7 @@ function renderOrganPanel() {
     organBuiltFor = selected;
     const panel = $('#opan');
     panel.classList.remove('hide');
-    panel.innerHTML = meta.f(E.snapshot(S)).map(([k], i) =>
+    panel.innerHTML = meta.f(E.snapshot(S), S).map(([k], i) =>
           `<div class="row"><span class="lab">${k}</span><span class="val" data-oi="${i}"></span></div>`).join('')
       + (selected === 'heart' ? '<canvas id="miniEcg" height="92"></canvas>' : '');
     updateOrganValues();
@@ -156,7 +158,7 @@ function updateOrganValues() {
   const st = organState(selected, s);
   const t = $('#opTitle');
   if (t) { t.value = selected; t.dataset.state = st; }
-  meta.f(s).forEach(([k, v, u], i) => {
+  meta.f(s, S).forEach(([k, v, u], i) => {
     const el = document.querySelector('[data-oi="' + i + '"]');
     if (el) el.innerHTML = `${v}${u ? `<span style="font-size:9px;color:#9a9a9a"> ${u}</span>` : ''}`;
   });

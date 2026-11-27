@@ -68,7 +68,7 @@ const RULES = {
       c:'贫血已经影响携氧',
       d:'该输血了',
       s:'浓缩红细胞 2 U' },
-    { id:'scope', when: S => !S.bleedStopped && S.map >= 65,
+    { id:'scope', when: S => S.bleedingSites.bleed > 0 && S.map >= 65,
       c:'血压勉强够做内镜了',
       d:'止血才是根治',
       s:'急诊内镜止血（需要血压支撑）' },
@@ -100,9 +100,13 @@ const RULES = {
       c:'存在低氧',
       d:'先给氧',
       s:'高流量吸氧 15 L/min' },
+    { id:'observe', when: S => S.naloxoneGiven && S.rr >= 10,
+      c:'纳洛酮药效消退后，呼吸抑制可能复发',
+      d:'继续观察自主呼吸和意识',
+      s:'通常至少观察至末次纳洛酮后 4 小时、暴露后 6 小时' },
   ],
   edema: [
-    { id: 'inotrope', when: S => S.sys < 95 && (S.sv || 0) < 45 && (S.contractility || 1) < 0.6,
+    { id: 'inotrope', when: S => root.LIFE.bp(S).sys < 95 && (S.sv || 0) < 45 && (S.contractility || 1) < 0.6,
       c: '每搏量太低，光扩血管会把血压打下去',
       d: '需要正性肌力药',
       s: '多巴酚丁胺 5 μg/kg/min 泵入（血压更低时加去甲肾上腺素）' },
@@ -114,7 +118,7 @@ const RULES = {
       c:'容量负荷过重',
       d:'利尿减容',
       s:'呋塞米 20–40 mg 静推' },
-    { id:'ntg', when: S => S.sys > 100 && S.spo2 < 94,
+    { id:'ntg', when: S => root.LIFE.bp(S).sys > 100 && S.spo2 < 94,
       c:'心脏后负荷高',
       d:'扩血管降低前负荷',
       s:'硝酸甘油 0.5 mg 舌下 / 泵入' },
@@ -144,7 +148,7 @@ const RULES = {
   ectopic: [
     { id:'fluidLoss', when: S => (S.vol || 4) < 3.9 || (S.hb || 120) < 100,
       c:'腹腔内出血导致失血性休克', d:'补液争取时间', s:'乳酸林格液 1000 mL 快速静滴；备血后输浓缩红细胞（给药 → 浓缩红细胞）' },
-    { id:'surgery', when: S => (S.vol || 4) < 3.8,
+    { id:'surgery', when: S => S.bleedingSites.ectopic > 0,
       c:'输卵管破裂不会自己止血', d:'必须手术', s:'急诊腹腔镜/开腹止血（操作 → 急诊手术止血）' },
   ],
   preeclampsia: [
@@ -165,7 +169,7 @@ const RULES = {
   spleen: [
     { id:'shock', when: S => S.hb < 100 || S.uo < 0.5,
       c:'失血性休克，腹腔内出血未止', d:'补液升压只是争取时间', s:'乳酸林格液 1000 mL 快速静滴，必要时输血' },
-    { id:'surgery', when: S => S.hb < 105,
+    { id:'surgery', when: S => S.bleedingSites.spleen > 0,
       c:'实质脏器破裂不会自己停', d:'手术止血才是确定性治疗', s:'急诊剖腹探查 / 脾切除（操作 → 急诊手术止血）' },
     { id:'avoid', when: S => (S.map || 90) > 100 && S.hb < 105,
       c:'血压越高，腹腔内出血越快', d:'不要追求"正常血压"', s:'允许性低血压：收缩压 80–90 即可，直到止血' },
@@ -203,7 +207,7 @@ const RULES = {
       c:'颅内压升高，脑疝风险', d:'先脱水降颅压', s:'20% 甘露醇 250 mL 快速静滴（或 3% 高渗盐水 150 mL）' },
     { id:'craniotomy', when: S => (S.hematoma || 0) > 0.1,
       c:'血肿占位不会自己消失', d:'必须开颅清除', s:'开颅血肿清除（操作）' },
-    { id:'cushing', when: S => S.hr < 60 && E.bp(S).sys > 150,
+    { id:'cushing', when: S => S.hr < 60 && root.LIFE.bp(S).sys > 150,
       c:'Cushing 反应：血压高、心率慢', d:'是颅内压极高的信号，不是高血压病', s:'立即降颅压并准备手术，不要单纯降压' },
   ],
 
@@ -216,7 +220,7 @@ const RULES = {
 
   myxedema: [
     { id:'thyroxine', when: S => S.hr < 60 || S.temp < 35.5,
-      c:'甲状腺素严重不足', d:'补甲状腺素才是治本', s:'左甲状腺素 100 μg 静推，之后每日维持' },
+      c:'甲状腺素严重不足', d:'评估激素替代与呼吸支持', s:'在给药面板选择左甲状腺素的静脉途径，随访意识、体温和通气' },
     { id:'steroid', when: S => S.svr < 20,
       c:'可能合并肾上腺皮质功能不全', d:'激素要同时给', s:'氢化可的松 100 mg 静推' },
     { id:'warm', when: S => S.temp < 35.5,
@@ -265,7 +269,10 @@ const RULES = {
     { id:'insulin', when: S => S.glu > 25,
       c:'血糖极高', d:'小剂量胰岛素泵入，别快降', s:'胰岛素 0.05–0.1 U/kg/h，每小时血糖降幅 ≤ 4' },
     { id:'na', when: S => S.na > 148,
-      c:'血钠仍高', d:'纠正速度要慢', s:'血钠每小时下降不超过 1 mmol/L' },
+      c:'血钠仍高', d:'逐步纠正并复查渗透压', s:'血钠 24 小时内下降不超过 10 mmol/L' },
+    { id:'osm', when: S => S.vol >= 4.2 && 2 * S.na + S.glu + S.bun >= 300,
+      c:'高渗仍未纠正', d:'继续复查血钠和血清渗透压',
+      s:'容量复苏和胰岛素治疗充分后，若渗透压下降不足，可考虑 0.45% 氯化钠' },
   ],
   co: [
     { id:'obs', when: S => S.gcs < 14,
@@ -283,13 +290,13 @@ const RULES = {
       c:'严重低氧', d:'减压的同时给氧', s:'高流量吸氧 15 L/min' },
   ],
   trauma: [
-    { id:'tour', when: S => !S.bleedStopped && S.externalBleed,
+    { id:'tour', when: S => S.bleedingSites.trauma > 0 && S.externalBleed && !S.tourniquetApplied,
       c:'外出血还在继续', d:'先压迫止血', s:'止血带 / 加压包扎，记录时间' },
     { id:'fluid', when: S => S.vol < 4.0,
       c:'失血性休克，容量不足', d:'限制性液体复苏', s:'生理盐水 1000 mL 快速静滴，维持收缩压 80–90' },
     { id:'blood', when: S => S.hb < 90,
       c:'血红蛋白低，携氧不足', d:'输血', s:'浓缩红细胞 2 U' },
-    { id:'surgery', when: S => !S.bleedStopped && S.t > 900,
+    { id:'surgery', when: S => S.bleedingSites.trauma > 0 && S.t > 900,
       c:'出血没止住，靠补液撑不住', d:'确定性止血', s:'急诊手术止血' },
   ],
 
@@ -312,8 +319,8 @@ const RULES = {
       s:'氢化可的松 100 mg 静推' },
   ],
   op: [
-    { id:'atropine', when: S => S.hr < 55 || (S.opTox||0) > 0.5,
-      c:'毒蕈碱样症状突出：心动过缓、分泌物多、瞳孔小',
+    { id:'atropine', when: S => S.hr < 55 || S.cholinergic > 0.5,
+      c:'当前心率或胆碱能负荷提示仍需评估毒蕈碱样症状',
       d:'阿托品对抗毒蕈碱样症状，可重复',
       s:'阿托品 1 mg 静推，每 5–10 分钟重复至分泌物干燥' },
     { id:'pra', when: S => !active(S,'pralidoxime'),
@@ -354,11 +361,11 @@ const RULES = {
       s:'控制血压、头高位、必要时请神经科' },
   ],
   hypona: [
-    { id:'odsrate', when: S => (S.odsRisk || 0) > 0.4,
-      c:'血钠升得太快了',
-      d:'24 小时内升幅控制在 8–10，过快会脱髓鞘',
+    { id:'odsrate', when: S => (S.odsRisk || 0) >= 0.8,
+      c:'血钠升幅接近或超过限额',
+      d:'首个 24 小时升幅不超过 10 mmol/L，随后每 24 小时不超过 8 mmol/L',
       s:'停止追加高渗盐水，复查血钠后再决定' },
-    { id:'hss', when: S => S.na < 120,
+    { id:'hss', when: S => S.na < 120 && S.na - (S.na0 ?? S.na) < 4,
       c:'重度低钠，脑水肿随时可能抽搐',
       d:'先用高渗盐水把血钠抬 4–6 mmol/L',
       s:'3% 高渗盐水 150 mL 静滴，10–20 分钟后评估' },
@@ -366,14 +373,18 @@ const RULES = {
       c:'意识改变已经是低钠性脑病的表现',
       d:'先稳血钠，再查病因',
       s:'高渗盐水 + 头高位，抽搐时止痉' },
-    { id:'follow', when: S => S.na >= 120 && S.na < 124,
-      c:'血钠仍低于安全线',
-      d:'继续小幅纠正，别一口气拉到正常',
-      s:'再给 3% 高渗盐水 150 mL，目标 124 以上' },
+    { id:'cause', when: S => !S.hyponatremiaCauseControlled,
+      c:'噻嗪和过量饮水会继续加重低钠',
+      d:'处理诱因并监测血钠',
+      s:'操作 → 停用噻嗪并限制饮水' },
+    { id:'follow', when: S => S.na < 130 && S.na - (S.na0 ?? S.na) >= 4,
+      c:'初始升钠目标已达到，血钠尚待恢复',
+      d:'按每日限额分阶段纠正',
+      s:'复查血钠及神经状态，避免短时间重复追加高渗盐水' },
     { id:'fast', when: S => S.na > 145,
-      c:'血钠升得太快',
-      d:'有渗透性脱髓鞘风险',
-      s:'停止高渗盐水，改用自由水/监测神经症状' },
+      c:'血钠已超出恢复区间',
+      d:'停止追加高渗盐水并复查',
+      s:'评估游离水与近期血钠升幅，监测神经症状' },
   ],
   pe: [
     { id:'o2', when: S => S.spo2 < 92,
@@ -384,7 +395,7 @@ const RULES = {
       c:'血栓还在，右心负荷持续加重',
       d:'抗凝是基础，血流动力学不稳要溶栓',
       s:'肝素 5000 U 静推；血压不稳时阿替普酶溶栓' },
-    { id:'flow', when: S => (S._sys||0) < 90 || (S.map||100) < 65,
+    { id:'flow', when: S => root.LIFE.bp(S).sys < 90 || S.map < 65,
       c:'梗阻性休克，血压靠代偿撑着',
       d:'谨慎补液，必要时去甲肾上腺素',
       s:'生理盐水 500 mL 小量试补，血压仍低则泵入去甲肾上腺素' },
@@ -395,6 +406,10 @@ const RULES = {
 function hints(S) {
   const keys = (S.tags && S.tags.length) ? S.tags : [S.caseId];
   const list = [];
+  if (S.rhythm === 'asystole') {
+    list.push({ id:'asystole_cpr', c:'心静止，立即复苏',
+      d:'继续胸外按压并支持通气', s:'静推肾上腺素，同时处理可逆病因' });
+  }
   for (const k of keys) {
     for (const r of (RULES[k] || [])) {
       let on = false;
@@ -428,8 +443,8 @@ function evaluate(S, kind, id, payload) {
   if (kind === 'drug') {
     switch (id) {
       case 'kcl':
-        if (hasTag(s, 'highK') && s.k > 5.0) return say(false, '血钾已经很高，补钾会加重病情');
-        return say(true, '补钾剂量合适，注意复查血钾');
+        if (s.k > 5.0) return say(false, '当前血钾偏高，继续补钾会加重风险');
+        return say(true, '已给予补钾，请复查血钾');
       case 'calcium':
         if (!hasTag(s, 'highK') && s.k < 5.5) return say(false, '没有高钾时钙剂没有适应证');
         if (s.t < s.caProtectUntil - 45 * 60 + 60) return say(true, '钙剂已给，保护窗口内不必重复');
@@ -459,7 +474,7 @@ function evaluate(S, kind, id, payload) {
   if (kind === 'action') {
     if (id === 'defib') {
       if (s.rhythm === 'vf') return say(true, '室颤，除颤时机正确');
-      if (s.rhythm === 'asystole') return say(false, '心静止不能除颤，继续按压和肾上腺素');
+      if (s.rhythm === 'asystole') return say(false, '心静止无需除颤，请继续按压、静推肾上腺素并处理可逆病因');
       return say(false, '现在不是室颤，除颤没有适应证');
     }
     if (id === 'dialysis') {
@@ -468,15 +483,16 @@ function evaluate(S, kind, id, payload) {
       return say(true, '透析指征明确');
     }
     if (id === 'endoscopy') {
+      if (!(s.bleedingSites.bleed > 0)) return say(false, '当前没有活动性消化道出血');
       if (s.map < 65) return say(false, '血压太低，内镜风险过高');
       return say(true, '时机合适');
     }
-    return say(true, '已执行');
+    return say(true, '');
   }
   return say(true, '');
 }
 
-root.MENTOR = { LEVELS, hints, advise, evaluate };
+root.MENTOR = { LEVELS, RULES, hints, advise, evaluate };
 })(typeof globalThis !== 'undefined' ? globalThis : this);
 
 

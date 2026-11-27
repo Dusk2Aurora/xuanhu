@@ -13,6 +13,7 @@
 (function (root) {
 'use strict';
 const clamp = (x,a,b)=>Math.min(b,Math.max(a,x));
+const VERSION = 2;
 
 /* 随机数（可复现） */
 function mulberry32(a){ return function(){ a|=0; a=a+0x6D2B79F5|0; let t=Math.imul(a^a>>>15,1|a);
@@ -86,7 +87,7 @@ const MODULES = [
     drivers:{ kProd:0.068, bleedRate:0.012 },
     complaint:'呕血 2 次、黑便 1 天，起身时晕厥。长期服用阿司匹林。',
     goal:['收缩压 ≥90 且心率 <120','血红蛋白 ≥80 g/L','止血'],
-    check:S=>[ !S.bleedStopped ? '出血未止' : null, S.hb<80 ? `血红蛋白 ${Math.round(S.hb)}` : null ].filter(Boolean),
+    check:S=>[ S.bleedingSites.bleed > 0 ? '消化道出血未止' : null, S.hb<80 ? `血红蛋白 ${Math.round(S.hb)}` : null ].filter(Boolean),
     hint:'先补容量再谈输血。升压药不能替代容量。',
     /* 失血只丢全血（容量+红细胞同比例），Hb 由 rbcMass/vol 导出，
        补液后自然稀释——替代原来 S.hb 每拍直接下降 */
@@ -110,7 +111,7 @@ const MODULES = [
     drivers:{ kProd:0.068, lactProd:0.02 },
     preload:[['morphine',12]], opioidTox:true,
     complaint:'被发现倒在房间内，呼之不应，呼吸浅慢，针尖样瞳孔。',
-    goal:['呼吸频率 ≥12','意识恢复','血氧 ≥94%'],
+    goal:['自主呼吸频率 ≥12','意识恢复','室内空气血氧 ≥94%','完成阿片暴露后的观察'],
     /* rr<12 是下限，与全局 rr≤22 不重复 */
     check:S=>[ S.rr<12 ? `呼吸 ${Math.round(S.rr)} 次/分` : null ].filter(Boolean),
     hint:'呼吸抑制是致命的。纳洛酮起效快但半衰期短。',
@@ -316,20 +317,22 @@ const MODULES = [
      "绝对低渗 + dNa/dt" 推进（dICP/dt ∝ dNa/dt） */
   {
     id:'hyponatremia', name:'严重低钠血症', tag:'hypona', weight:1,
-    init:{ vol:4.7, k:4.3, na:112, hco3:23, lac:1.3, glu:5.4, cr:74, bun:3.8,
+    init:{ vol:4.7, k:4.3, na:122, hco3:23, lac:1.3, glu:5.4, cr:74, bun:3.8,
            hb:128, wbc:6.8, plt:240, temp:36.4, gcs:10,
            hr:86, svr:15.8, rr:18, pao2:92, paco2:40, spo2:96, uo:0.9,
            contractility:0.90, freeWater:0, waterClear:0.02, freeWaterRate:0.0008,
            icp:0.30 },
     drivers:{ kProd:0.068, lactProd:0.02 },
     complaint:'乏力、嗜睡 2 天，今晨呕吐后呼之不应。长期服用氢氯噻嗪并大量饮水。',
-    goal:['血钠升至 124 以上','意识恢复','避免抽搐'],
-    /* na<124 与全局 na≥130 重复 → 删；只留"纠正过快"这一特异风险 */
-    check:S=>[ S.na>145 ? `血钠 ${Math.round(S.na)}（纠正过快）` : null ].filter(Boolean),
+    goal:['血钠逐步恢复至 130–145 mmol/L','意识恢复','避免血钠纠正过快'],
+    check:S=>[ !S.hyponatremiaCauseControlled ? '需停止噻嗪并限制饮水' : null,
+               S.na < 130 || S.na > 145 ? `血钠 ${S.na.toFixed(1)} mmol/L` : null,
+               S.gcs < 15 && S.gcs >= 13 ? `意识尚未完全恢复（${S.gcs} 分）` : null,
+               (S.seizure || 0) > 0.1 ? '仍有抽搐' : null ].filter(Boolean),
     hint:'低钠性脑病先用 3% 高渗盐水把血钠抬 4–6 mmol/L，再慢慢纠。抬得太快会脱髓鞘。',
     advance(S, dtMin, E) {
       /* SIADH 样持续游离水潴留（水多了 → 钠被稀释），钠由引擎 na = naMass/(ecfVd+freeWater) 导出 */
-      S.freeWaterRate = 0.0008;
+      S.freeWaterRate = S.hyponatremiaCauseControlled ? S.uo * 0.00035 : 0.0008;
       S.waterClear = 0.02;                 // 抗利尿 → 几乎不排自由水
     },
   },
@@ -369,11 +372,12 @@ const MODULES = [
     drivers:{ kProd:0.011, lactProd:0.035 },
     complaint:'车祸后突发左胸剧痛、极度呼吸困难。气管向右偏，左胸叩诊鼓音、呼吸音消失，颈静脉怒张。',
     goal:['血氧 ≥ 94%','收缩压 ≥ 90','呼吸频率 ≤ 22'],
-    check:S=>[ (S.tensionPTX||0) > 0.20 ? `胸腔内压仍高（${Math.round((S.tensionPTX||0)*100)}%）` : null ].filter(Boolean),
+    check:S=>[ (S.tensionPTX||0) > 0.20 ? `胸腔内压仍高（${Math.round((S.tensionPTX||0)*100)}%）` : null,
+               (S.tensionPTX||0) > 0 && !S.chestTubePlaced ? '仍需胸腔闭式引流' : null ].filter(Boolean),
     hint:'张力性气胸是梗阻性休克：回心血量被压住，给升压药没用，必须先针刺减压。',
     advance(S, dtMin){
       const prev = S.tensionPTX == null ? 0 : S.tensionPTX;
-      S.tensionPTX = Math.min(1, prev + 0.0018*dtMin);
+      S.tensionPTX = S.chestTubePlaced ? 0 : Math.min(1, prev + 0.0018 * dtMin);
       /* 胸腔内压 → 肺血管阻力：减压后必须回落，否则右心后负荷永远高，血压升不上来 */
       S.pvr = 1.8 + 6.0 * S.tensionPTX;
 
@@ -402,7 +406,7 @@ const MODULES = [
     drivers:{ kProd:0.011, lactProd:0.05 },
     complaint:'摩托车事故，右大腿开放性畸形、活动性出血，面色苍白、四肢湿冷、意识模糊。',
     goal:['收缩压 ≥ 90','血红蛋白 ≥ 80','出血控制'],
-    check:S=>[ !S.bleedStopped ? '出血未控制' : null,
+    check:S=>[ S.bleedingSites.trauma > 0 ? '创伤出血未控制' : null,
                S.hb < 80 ? `血红蛋白 ${Math.round(S.hb)}` : null ].filter(Boolean),
     hint:'先压迫止血，同时补容量；升压药不能替代容量，也不能替代止血。',
   },
@@ -440,11 +444,21 @@ const MODULES = [
            contractility:0.90, insulinBase:0.55 },
     drivers:{ kProd:0.011, lactProd:0.02 },
     complaint:'老年糖尿病患者，多日饮水少、乏力嗜睡，家属发现叫不醒。血糖仪显示 HI。',
-    goal:['血糖降至 15 以下','血钠降至 145 以下','意识恢复'],
-    check:S=>[ S.glu>15 ? `血糖 ${S.glu.toFixed(0)}` : null,
-               S.gcs<13 ? `意识 ${S.gcs}` : null ].filter(Boolean),
+    goal:['血糖 4–12 mmol/L','血钠 ≤145 mmol/L','血清渗透压 <300 mOsm/kg','尿量 >0.5 mL/kg/h','意识恢复'],
+    check(S) {
+      const osmolality = 2 * S.na + S.glu + S.bun;
+      const urinePerKg = S.uo * 60 / (S.weight || 70);
+      return [S.na > 145 ? `血钠 ${S.na.toFixed(1)} mmol/L` : null,
+              osmolality >= 300 ? `血清渗透压 ${osmolality.toFixed(1)} mOsm/kg` : null,
+              urinePerKg <= 0.5 ? `尿量 ${urinePerKg.toFixed(2)} mL/kg/h` : null,
+              S.gcs < 15 && S.gcs >= 13 ? `意识尚未完全恢复（${S.gcs} 分）` : null].filter(Boolean);
+    },
     hint:'高渗状态先补液：血糖降太快会导致脑水肿，血钠也要慢慢降。',
-    advance(S){ S.glucoseIn = 0.05; },
+    advance(S) {
+      S.glucoseIn = 0.05;
+      /* 意识与容量恢复后可恢复饮水，补足后续尿液自由水丢失。 */
+      S.freeWaterRate = S.gcs >= 13 && S.vol >= 4.2 ? S.uo * 0.00035 : 0;
+    },
   },
   {
     id:'co', name:'一氧化碳中毒', tag:'co', weight:1,
@@ -519,18 +533,18 @@ const MODULES = [
     init:{ vol:4.20, k:3.9, na:128, hco3:22, lac:2.4, glu:3.6, cr:125, bun:8.5,
            hb:112, wbc:7.0, plt:180, temp:34.2, gcs:9,
            hr:46, sv:58, svr:21, rr:10, pao2:76, paco2:54, spo2:88, uo:0.6,
-           contractility:0.76, tempDrive:-0.55 },
+           contractility:0.76, myxedemaSeverity:1 },
     drivers:{ kProd:0.010, lactProd:0.03 },
     complaint:'老年女性，冬季被发现倒在没开暖气的房间里，反应迟钝、面部浮肿、皮肤干冷。既往甲减，已自行停药 2 个月。',
     goal:['体温 ≥ 35.5','心率 ≥ 60','意识恢复'],
     check:S=>[ S.temp < 35.5 ? `体温 ${S.temp.toFixed(1)}℃` : null,
                S.hr < 55 ? `心率 ${Math.round(S.hr)}` : null,
-               S.gcs < 13 ? `意识 ${S.gcs}` : null ].filter(Boolean),
+               S.gcs < 13 ? `意识 ${S.gcs}` : null,
+               (S.myxedemaSeverity ?? 1) > 0.35 ? '甲状腺激素替代治疗尚未充分生效' : null ].filter(Boolean),
     hint:'甲减危象靠甲状腺素救命：左甲状腺素 + 氢化可的松，同时被动复温、别用大剂量升压药。',
     advance(S, dtMin){
-      /* 产热衰竭（tempDrive 为负）+ 通气不足（CO₂ 蓄积） */
-      S.tempDrive = Math.min(-0.2, (S.tempDrive == null ? -0.55 : S.tempDrive) + ((S.env && S.env.heat) ? 0.004 : 0.0004) * dtMin);
-      if (!(S.env && S.env.heat) && S.temp < 35.0) S.insult.hypox += 0.15 * dtMin;
+      const replacement = clamp(S.thyroidReplacement || 0, 0, 1);
+      S.myxedemaSeverity = clamp((S.myxedemaSeverity ?? 1) + (0.001 - 0.018 * replacement) * dtMin, 0, 1);
     },
   },
   {
@@ -585,7 +599,7 @@ const MODULES = [
     drivers:{ kProd:0.010, lactProd:0.03 },
     complaint:'骑车摔倒，左颞部着地，当时清醒，1 小时后逐渐嗜睡、呕吐。查体：左颞头皮血肿，左侧瞳孔较右侧大。',
     goal:['意识恢复','颅内压下降','血压心率回稳'],
-    check:S=>[ S.t < 900 ? '术后观察未满 15 分钟' : null,
+    check:S=>[ S.cranied && S.t - (S.craniotomyAt ?? 0) < 900 ? '开颅术后观察未满 15 分钟' : null,
                S.gcs < 13 ? `意识 ${S.gcs}` : null,
                (S.hematoma || 0) > 0.12 ? '颅内血肿未清除' : null ].filter(Boolean),
     hint:'硬膜外血肿有"中间清醒期"——意识变差就是再出血。甘露醇只是争取时间，必须开颅。',
@@ -615,9 +629,10 @@ const MODULES = [
       const rate = S.t < 8 * 3600 ? 0.0050 : 0.0014;
       S.vol = Math.max(2.4, S.vol - rate * dtMin);
       S.interstitium = Math.min(26, (S.interstitium || 11) + rate * dtMin * 0.8);
-      /* 吸入性损伤：气道水肿持续加重，直到插管或水肿自行消退 */
-      if (!S.vent) S.airwayResistance = Math.min(2.4, (S.airwayResistance || 0.45) + 0.0090 * dtMin);
-      else S.airwayResistance = Math.max(0.10, (S.airwayResistance || 0.45) - 0.0120 * dtMin);   // 插管后气道水肿消退（约 1 小时）
+      /* 气道水肿充分消退后才进入恢复期，撤机不重启肿胀病程。 */
+      if ((S.airwayResistance || 0) <= 0.12) S.burnAirwayResolved = true;
+      if (S.vent || S.burnAirwayResolved) S.airwayResistance = Math.max(0.10, (S.airwayResistance || 0.45) - 0.0120 * dtMin);
+      else S.airwayResistance = Math.min(2.4, (S.airwayResistance || 0.45) + 0.0090 * dtMin);
       /* 气道接近完全阻塞 → 低氧累积（这是吸入性损伤真正的死因） */
       if ((S.airwayResistance || 0) > 1.4) S.insult.hypox += 0.12 * dtMin;
       /* 肌红蛋白/溶血 → 血钾升高 */
@@ -634,7 +649,7 @@ const MODULES = [
     drivers:{ kProd:0.011, lactProd:0.040 },
     complaint:'持续胸骨后压榨样疼痛 1 小时，向左肩放射，含服硝酸甘油不缓解。查体：面色苍白、出冷汗，心电图 II/III/aVF 导联 ST 段抬高。',
     goal:['胸痛缓解','血压心率稳定','ST 段回落'],
-    check:S=>[ S.t < 900 ? '术后观察未满 15 分钟' : null,
+    check:S=>[ S.reperfused && S.t - (S.reperfusionAt ?? 0) < 900 ? 'PCI 后观察未满 15 分钟' : null,
                (S.stemi || 0) > 0.15 ? '冠脉未再通（ST 仍抬高）' : null,
                (S.map || 100) < 68 ? '平均动脉压不足' : null ].filter(Boolean),
     hint:'ST 段抬高型心梗：抗血小板 + 抗凝 + 尽快再通。硝酸甘油只能缓解症状，救不了濒死心肌。',
@@ -681,15 +696,16 @@ const MODULES = [
     drivers:{ kProd:0.012, lactProd:0.055 },
     complaint:'车祸后左上腹撞击方向盘，左肩牵涉痛，左上腹压痛、轻度肌紧张，面色苍白、出冷汗。',
     goal:['血压稳定','乳酸下降','尿量 ≥ 0.5 mL/min'],
-    check:S=>[ S.t < 900 ? '术后观察未满 15 分钟' : null,
+    check:S=>[ S.bleedingSites.spleen > 0 ? '脾脏仍在出血' : null,
+               S.bleedingSites.spleen === 0 && S.t - (S.surgicalHemostasisAt ?? 0) < 900 ? '止血术后观察未满 15 分钟' : null,
                (S.vol || 4) < 3.6 ? `有效循环血量 ${S.vol.toFixed(1)} L` : null,
                S.uo < 0.5 ? `尿量 ${S.uo.toFixed(1)} mL/min` : null,
                (S.map || 100) < 68 ? '平均动脉压不足' : null ].filter(Boolean),
     hint:'钝性腹部外伤 + 失血性休克，要考虑脾破裂：液体复苏是争取时间，腹腔内出血不会自己停——该手术。',
-    advance(S, dtMin){
+    advance(S, dtMin, E){
       /* 包膜下出血：不手术就持续渗血；血压越高出得越快（压力依赖性） */
-      if (!S.bleedStopped) {
-        S.bleedRate = 0.026 + 0.012 * Math.max(0, Math.min(1, ((S.map || 90) - 70) / 40));
+      if (S.bleedingSites.spleen > 0) {
+        E.setBleedingRate(S, 'spleen', 0.026 + 0.012 * Math.max(0, Math.min(1, ((S.map || 90) - 70) / 40)));
       }
     },
   },
@@ -704,13 +720,16 @@ const MODULES = [
     drivers:{ kProd:0.011, lactProd:0.06 },
     complaint:'停经 7 周，突发下腹撕裂样疼痛伴肛门坠胀，晕厥一次。查体：面色苍白、下腹压痛反跳痛，宫颈举痛。',
     goal:['血压稳定','尿量 ≥ 0.5 mL/min','腹腔出血已控制'],
-    check:S=>[ S.t < 900 ? '术后观察未满 15 分钟' : null,
+    check:S=>[ S.bleedingSites.ectopic > 0 ? '盆腔仍在出血' : null,
+               S.bleedingSites.ectopic === 0 && S.t - (S.surgicalHemostasisAt ?? 0) < 900 ? '止血术后观察未满 15 分钟' : null,
                (S.vol || 4) < 3.6 ? `有效循环血量 ${S.vol.toFixed(1)} L` : null,
                S.uo < 0.5 ? `尿量 ${S.uo.toFixed(1)} mL/min` : null,
                (S.map || 100) < 68 ? '平均动脉压不足' : null ].filter(Boolean),
     hint:'育龄女性 + 停经 + 突发下腹痛 + 休克 = 宫外孕破裂。补液是争取时间，必须立刻手术。',
-    advance(S, dtMin){
-      if (!S.bleedStopped) S.bleedRate = 0.030 + 0.010 * Math.max(0, Math.min(1, ((S.map || 90) - 70) / 40));
+    advance(S, dtMin, E){
+      if (S.bleedingSites.ectopic > 0) {
+        E.setBleedingRate(S, 'ectopic', 0.030 + 0.010 * Math.max(0, Math.min(1, ((S.map || 90) - 70) / 40)));
+      }
     },
   },
   {
@@ -723,7 +742,8 @@ const MODULES = [
     drivers:{ kProd:0.011, lactProd:0.035 },
     complaint:'妊娠 34 周，头痛、视物模糊 2 天。血压 168/108，双下肢水肿，尿蛋白 +++，腱反射亢进。',
     goal:['血压下降','头痛缓解','尿量 ≥ 0.5 mL/min'],
-    check:S=>[ S.t < 900 ? '观察未满 15 分钟' : null,
+    check:S=>[ !S.delivered ? '重度子痫前期的产科病因尚未解除' : null,
+               S.delivered && S.t - (S.deliveryAt ?? 0) < 900 ? '产后观察未满 15 分钟' : null,
                (S.map || 100) > 118 ? `平均动脉压 ${Math.round(S.map)}` : null,
                (S.plt || 200) < 100 ? `血小板 ${Math.round(S.plt)}` : null,
                (S.coag || 1) < 0.65 ? '凝血功能恶化' : null ].filter(Boolean),
@@ -732,8 +752,7 @@ const MODULES = [
       /* 病因在胎盘：不终止妊娠，血管痉挛与血小板消耗都只会加重。
          注意：不能直接写 S.svr —— 引擎每拍会用 toneTarget 覆盖它，
          必须用引擎提供的 svrDrive（血管收缩驱动）才能真正抬高外周阻力。 */
-      if (S.bleedStopped || S.delivered) {
-        S.delivered = true;
+      if (S.delivered) {
         S.svrDrive = Math.max(0, (S.svrDrive || 8) - 0.02 * dtMin);
         S.plt = Math.min(150, (S.plt || 78) + 0.45 * dtMin);
         S.coag = Math.min(1, (S.coag || 0.82) + 0.0006 * dtMin);
@@ -760,7 +779,6 @@ const MODULES = [
                (S.vol || 5) > 5.7 ? '容量负荷过重' : null ].filter(Boolean),
     hint:'急性尿潴留先导尿——膀胱减压后肾后性肾损伤才有机会恢复；高钾要同时处理。',
     advance(S, dtMin){
-      if (S.urineDrained) S.uo = Math.max(S.uo || 0, 0.55);   // 导尿后尿量恢复
       if (!S.urineDrained) {
         S.vol = Math.min(6.6, (S.vol || 5.35) + 0.0040 * dtMin);   // 排尿不出 → 容量负荷
         S.k = Math.min(8.6, (S.k || 5.9) + 0.0090 * dtMin);        // 排钾减少（不导尿会走到高钾）
@@ -779,20 +797,58 @@ function pick(rnd, arr, n) {
   return out;
 }
 
+/* 性别及年龄要求在同一患者身上必须有交集。 */
+function demographicsFor(modules) {
+  return {
+    sexReq: modules.map(m => m.sexReq).find(Boolean),
+    ageLo: modules.reduce((age, m) => m.ageRange ? Math.max(age, m.ageRange[0]) : age, 18),
+    ageHi: modules.reduce((age, m) => m.ageRange ? Math.min(age, m.ageRange[1]) : age, 88),
+  };
+}
+
+function fitsDemographics(module, { sexReq, ageLo, ageHi }) {
+  if (sexReq && module.sexReq && sexReq !== module.sexReq) return false;
+  return !module.ageRange || Math.max(ageLo, module.ageRange[0]) <= Math.min(ageHi, module.ageRange[1]);
+}
+
 /* 按权重抽病理：weight 越大越常见 */
-function pickWeighted(rnd, arr, n) {
+function weightedIndex(rnd, pool) {
+  const total = pool.reduce((s, m) => s + (m.weight || 1), 0);
+  let r = rnd() * total, k = 0;
+  for (; k < pool.length; k++) { r -= (pool[k].weight || 1); if (r <= 0) break; }
+  return Math.min(k, pool.length - 1);
+}
+
+function pickWeighted(rnd, arr, n, legacy) {
   const pool = arr.slice();
   const out = [];
   for (let i = 0; i < n && pool.length; i++) {
-    const total = pool.reduce((s, m) => s + (m.weight || 1), 0);
-    let r = rnd() * total, k = 0;
-    for (; k < pool.length; k++) { r -= (pool[k].weight || 1); if (r <= 0) break; }
-    out.push(pool.splice(Math.min(k, pool.length - 1), 1)[0]);
+    let index = weightedIndex(rnd, pool);
+    if (!legacy) {
+      const demographics = demographicsFor(out);
+      /* 优先保留原抽样结果，保证有效旧种子的随机序列不变。 */
+      if (!fitsDemographics(pool[index], demographics)) {
+        const eligible = pool.filter(m => fitsDemographics(m, demographics));
+        if (!eligible.length) throw new RangeError('缺少符合患者性别和年龄的病理模块');
+        index = pool.indexOf(eligible[weightedIndex(rnd, eligible)]);
+      }
+    }
+    out.push(pool.splice(index, 1)[0]);
   }
   return out;
 }
 
 function generate(difficulty, seed, only) {
+  return generateCase(difficulty, seed, only, VERSION);
+}
+
+/* 旧存档与会诊码依赖原抽样序列。 */
+function generateLegacy(difficulty, seed) {
+  return generateCase(difficulty, seed, undefined, 1);
+}
+
+function generateCase(difficulty, seed, only, genVersion) {
+  const legacy = genVersion === 1;
   const diff = clamp(difficulty || 2, 1, 5);
   const actualSeed = seed == null ? (Date.now() & 0x7fffffff) : seed;
   const rnd = mulberry32(actualSeed);
@@ -804,19 +860,24 @@ function generate(difficulty, seed, only) {
   const severity = 0.75 + diff * 0.06;        // 保留（模块已自带严重度）
   const primary = (only && only.length)
     ? only.map(id => MODULES.find(m => m.id === id)).filter(Boolean).slice(0, nMods)
-    : pickWeighted(rnd, MODULES, nMods);
+    : pickWeighted(rnd, MODULES, nMods, legacy);
 
-  /* 性别/年龄约束：某些病只发生在特定性别与年龄段（宫外孕、前列腺增生…） */
-  const sexReq = primary.map(x => x.sexReq).find(Boolean);
-  const ageLo = primary.reduce((a, x) => (x.ageRange ? Math.max(a, x.ageRange[0]) : a), 18);
-  const ageHi = primary.reduce((a, x) => (x.ageRange ? Math.min(a, x.ageRange[1]) : a), 88);
+  if (!primary.length) throw new RangeError('缺少有效的病理模块');
+  const demographics = demographicsFor(primary);
+  if (!legacy && !primary.every(m => fitsDemographics(m, demographics))) {
+    throw new RangeError('指定病理模块的性别或年龄要求冲突');
+  }
+  const { sexReq, ageLo, ageHi } = demographics;
 
   const init = Object.assign({}, BASE);
+  const bleedingSites = {};
   const drivers = {};
   const preload = [];
   let opioidTox = false;
 
   for (const m of primary) {
+    const rate = m.drivers?.bleedRate ?? m.init?.bleedRate;
+    if (rate > 0) bleedingSites[m.id] = rate;
     for (const [k, v] of Object.entries(m.init || {})) init[k] = v;
     Object.assign(drivers, m.drivers || {});
     if (m.preload) preload.push(...m.preload);
@@ -824,6 +885,9 @@ function generate(difficulty, seed, only) {
   }
   init.mod = Object.assign({ hr:0, svr:0, sv:0, rr:0, spo2:0, temp:0, gcs:0 }, init.mod || {});
   Object.assign(init, drivers);
+  const aki = primary.find(m => m.id === 'aki');
+  if (aki) init.renalFactor = Math.min(init.renalFactor, aki.init.renalFactor);
+  if (Object.keys(bleedingSites).length) init.bleedingSites = bleedingSites;
   if (preload.length) init.preload = preload;
   if (opioidTox) init.opioidTox = true;
 
@@ -852,7 +916,11 @@ function generate(difficulty, seed, only) {
   /* 难度=5 时加基础病 */
   if (!only && diff >= 2 && (diff >= 3 || rnd() < 0.5)) {
     const comorb = pick(rnd, ['ckd','copd','anemia'], 1)[0];
-    if (comorb === 'ckd') { init.cr = clamp(init.cr * 1.5, 120, 700); init.k = +(init.k + 0.4).toFixed(1); init.renalFactor = 0.55; }
+    if (comorb === 'ckd') {
+      init.cr = clamp(init.cr * 1.5, 120, 700);
+      init.k = +(init.k + 0.4).toFixed(1);
+      init.renalFactor = aki ? Math.min(init.renalFactor, 0.55) : 0.55;
+    }
     if (comorb === 'copd') { init.pao2 = clamp(init.pao2 - 8, 40, 90); init.paco2 = init.paco2 + 6; init.vdvt = 0.42; }
     if (comorb === 'anemia') init.hb = clamp(init.hb - 25, 55, 150);
   }
@@ -878,11 +946,12 @@ function generate(difficulty, seed, only) {
 
   init.seed = actualSeed;
   init.diff = diff;
+  init.genVersion = genVersion;
   /* 整体上调：病例推进速度随难度提高（原来所有难度都是 1.0） */
   init.hardScale = diff <= 2 ? (1.05 + diff * 0.10) : (1.30 + (diff - 2) * 0.22);   /* 1.15 / 1.25 / 1.52 / 1.74 / 1.96 */
 
   return {
-    id: 'gen', name: names, tags, diff,
+    id: 'gen', name: names, tags, diff, genVersion,
     age, sex, weight, patient, bloodType: ['A','B','O','AB'][Math.floor(rnd()*4)],
     complaint, traits,
     comorbidities,
@@ -906,7 +975,7 @@ function step(S, dtSec, E) {
   }
 }
 
-const API = { generate, step, MODULES, BASE };
+const API = { generate, generateLegacy, step, MODULES, BASE, VERSION };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 root.CASEGEN = API;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

@@ -20,7 +20,8 @@ let selected = 'heart';
 let lastTs = 0, acc = 0, hudAcc = 0, saveAcc = 0, signsAcc = 0;
 const ecg = new EcgMonitor();
 let speed = 1, ff = false;
-let observationUntil = null;
+let observation = null;
+const GLUCOSE_REVIEW_MINUTES = 30;
 let lastCaseReview = false;
 let paused = false;
 let bigFont = false;
@@ -174,10 +175,22 @@ function renderOrganPanel() {
     if (selected === 'lung') {
       const button = document.createElement('button');
       button.type = 'button';
-      button.className = 'pill examine-lungs';
+      button.className = 'pill organ-action';
       button.textContent = '双肺听诊';
       button.addEventListener('click', examineLungs);
       panel.appendChild(button);
+    }
+    if (selected === 'pancreas') {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.id = 'glucoseWait';
+      button.className = 'pill organ-action';
+      button.addEventListener('click', startGlucoseReview);
+      panel.appendChild(button);
+      const result = document.createElement('div');
+      result.id = 'glucoseReviewResult';
+      result.setAttribute('role', 'status');
+      panel.appendChild(result);
     }
     updateOrganValues();
     const canvas = $('#miniEcg');
@@ -194,6 +207,15 @@ function updateOrganValues() {
   const st = organState(selected, s);
   const t = $('#opTitle');
   if (t) { t.value = selected; t.dataset.state = st; }
+  const waitButton = selected === 'pancreas' && $('#glucoseWait');
+  if (waitButton) {
+    const label = observation?.glucose != null ? '结束等待' : `等待血糖变化 · 最多 ${GLUCOSE_REVIEW_MINUTES} 分钟`;
+    if (waitButton.textContent !== label) waitButton.textContent = label;
+    const result = $('#glucoseReviewResult');
+    const message = S.lastGlucoseReview || '';
+    result.hidden = !message;
+    if (result.textContent !== message) result.textContent = message;
+  }
   const tonePanel = selected === 'heart' && $('#vascularTone');
   if (tonePanel) {
     tonePanel.hidden = !S.tags.includes('htn');
@@ -1278,10 +1300,10 @@ function loop(ts) {
   lastTs = ts;
   if (paused || !beds.length) { ecg.pause(); silenceMonitor(); requestAnimationFrame(loop); return; }
   if (beds.length) {
-    const observationStartedAt = observationUntil == null ? null : S.t;
+    const observationStartedAt = observation ? S.t : null;
     const hourlyBedCost = realism && S.ins ? (isSevere(S) ? 80 : 25) : 0;
     let observationEnd = observationStopReason();
-    const adv = observationEnd ? 0 : observationUntil == null
+    const adv = observationEnd ? 0 : !observation
       ? dt * (ff ? 20 : speed) * (nightMode ? 1.3 : 1)
       : Math.min(dt * 1200, 20);
     acc += adv;
@@ -1292,7 +1314,7 @@ function loop(ts) {
         if (window.CASEGEN) CASEGEN.step(b.S, 0.2, E);   // 病理模块的病程推进
       }
       acc -= 0.2;
-      if (observationUntil != null) observationEnd = observationStopReason();
+      if (observation) observationEnd = observationStopReason();
     }
     if (hourlyBedCost) {
       const elapsed = observationStartedAt == null ? adv : S.t - observationStartedAt;
@@ -1302,13 +1324,21 @@ function loop(ts) {
     for (const b of beds) { try { E.pollTests(b.S); } catch (e) {} }
     if (pendingFilm && S.tests.cxr.done && $('#sheet').classList.contains('on') &&
         $('#sheetTitle').dataset.view === 'checks' && isCurrentPatient(S)) openChecks(S);
-    if (observationUntil != null && (observationEnd || E.dischargeCheck(S).ok)) {
-      stopObservation();
-      saveGame();
-      toast(observationEnd?.message ?? '已达到出院标准，留观快进已结束', observationEnd?.urgent);
+    let glucoseMessage = '';
+    if (observation && (observationEnd || (observation.glucose == null && E.dischargeCheck(S).ok))) {
+      if (observation.glucose != null) {
+        glucoseMessage = finishGlucoseReview(observationEnd);
+      } else {
+        stopObservation();
+        saveGame();
+        toast(observationEnd?.message ?? '已达到出院标准，留观快进已结束', observationEnd?.urgent);
+      }
     }
     settleBeds();
-    if (!beds.length) { ecg.pause(); silenceMonitor(); requestAnimationFrame(loop); return; }
+    if (!beds.length) {
+      if (glucoseMessage) toast(glucoseMessage, observationEnd?.urgent);
+      ecg.pause(); silenceMonitor(); requestAnimationFrame(loop); return;
+    }
     const warnings = new Set();
     hudAcc += dt;
     if (hudAcc >= 0.25) { hudAcc = 0; renderHUD(); }
@@ -1352,6 +1382,10 @@ function loop(ts) {
       if (canvas) ecg.draw(canvas);
     }
     pumpSound(ts, warnings, rPeak, inLobby);
+    if (glucoseMessage) {
+      renderHUD();
+      toast(glucoseMessage, observationEnd?.urgent);
+    }
   }
   requestAnimationFrame(loop);
 }
@@ -1436,23 +1470,29 @@ function checkCrucial() {
   }
 }
 function syncSpeedUI() {
-  if (!ff && observationUntil != null) {
-    observationUntil = null;
+  if (!ff && observation) {
+    observation = null;
     acc = 0;
   }
   $('#speed').querySelectorAll('.pill[data-s]').forEach(x => {
-    const active = !ff && +x.dataset.s === speed;
+    const active = !paused && !ff && +x.dataset.s === speed;
     x.classList.toggle('on', active);
     x.setAttribute('aria-pressed', active);
   });
   const f = $('#ff');
   f.classList.toggle('on', ff);
   f.setAttribute('aria-pressed', ff);
-  f.textContent = observationUntil != null ? '结束留观' : ff ? '20× 快进中' : '快进 20×';
+  f.textContent = paused ? '继续模拟' : observation?.glucose != null ? '结束等待' :
+    observation ? '结束留观' : ff ? '20× 快进中' : '快进 20×';
+  if (S && selected === 'pancreas' && $('#glucoseWait')) updateOrganValues();
 }
 
 function stopObservation() {
-  if (observationUntil == null) return;
+  if (!observation) return;
+  if (observation.glucose != null) {
+    toast(finishGlucoseReview({ message: '已手动结束等待' }));
+    return;
+  }
   ff = false;
   speed = 1;
   syncSpeedUI();
@@ -1469,15 +1509,58 @@ function canStartObservation(patient, assessment) {
 }
 
 function observationStopReason() {
-  if (observationUntil == null) return null;
-  if (beds.some(b => needsAttention(b.S))) {
-    return { message: '有床位需要连续处置，留观快进已结束', urgent: true };
+  if (!observation) return null;
+  const danger = beds.findIndex(b => needsAttention(b.S));
+  if (danger >= 0) {
+    return { message: attentionMessage(danger), urgent: true };
   }
-  if (beds.some(({ S: patient }) => Object.values(patient.tests).some(test => !test.done && patient.t >= test.readyAt))) {
-    return { message: '有检查报告已回报，留观快进已结束' };
+  for (const [index, bed] of beds.entries()) {
+    for (const [id, test] of Object.entries(bed.S.tests)) {
+      if (!test.done && bed.S.t >= test.readyAt) return { message: `床位 ${index + 1} 的${E.TESTS[id]?.name ?? '检查'}已回报` };
+    }
   }
-  if (S.t >= observationUntil) return { message: '留观快进已结束，请复查病情' };
+  if (observation.glucose != null) {
+    const { reason } = E.glucoseReviewStatus(S, observation.glucose);
+    if (reason === 'target') return { message: '血糖已进入本病例目标范围' };
+    if (reason === 'worse') return { message: '血糖进一步偏离本病例目标，请复评', urgent: true };
+    if (reason === 'missing') return { message: '血糖读数缺失，请复测', urgent: true };
+    if (S.t + 1e-7 >= observation.until) return { message: '已到复评时间，血糖仍未达标' };
+  } else if (S.t + 1e-7 >= observation.until) return { message: '留观快进已结束，请复查病情' };
   return null;
+}
+
+function attentionMessage(index) {
+  const st = beds[index].S;
+  const condition = !st.running ? '病例已结束' : st.rhythm === 'vf' ? '室颤' :
+    st.rhythm === 'asystole' ? '心静止' : st.glu < 3.9 ? '低血糖' : '病情需要连续处置';
+  return `床位 ${index + 1}：${condition}`;
+}
+
+function finishGlucoseReview(event) {
+  const minutes = Math.round((S.t - observation.startedAt) / 6) / 10;
+  const glucose = E.glucoseReviewStatus(S, observation.glucose).glucose;
+  const change = `${observation.glucose.toFixed(1)} → ${glucose == null ? '缺测' : glucose.toFixed(1)} mmol/L`;
+  const message = `床位 ${activeIdx + 1} 血糖复评 · 已过 ${minutes} 分钟，${change}。${event.message}`;
+  S.log.push([E.fmt(S.t), message, event.urgent ? 'warn' : 'info', S.t]);
+  S.lastGlucoseReview = message;
+  paused = true;
+  ff = false;
+  speed = 1;
+  syncSpeedUI();
+  saveGame();
+  return message;
+}
+
+function startGlucoseReview() {
+  if (!isCurrentPatient(S)) return;
+  if (observation?.glucose != null) { stopObservation(); return; }
+  const danger = beds.findIndex(b => needsAttention(b.S));
+  if (danger >= 0) { toast(attentionMessage(danger) + '，请先处理', true); return; }
+  const status = E.glucoseReviewStatus(S);
+  if (status.glucose == null) { toast('血糖读数缺失，请先复测', true); return; }
+  if (status.inTarget) { toast(`当前血糖已在本病例目标范围（${status.target}）`); return; }
+  beginObservation({ glucose: status.glucose, startedAt: S.t, until: S.t + GLUCOSE_REVIEW_MINUTES * 60 });
+  toast(`等待血糖变化，目标 ${status.target}，最多 ${GLUCOSE_REVIEW_MINUTES} 个模拟分钟`);
 }
 
 function startObservation() {
@@ -1485,13 +1568,17 @@ function startObservation() {
   const assessment = E.dischargeCheck(S);
   if (!canStartObservation(S, assessment)) return;
   if (beds.some(b => needsAttention(b.S))) { toast('有床位需要连续处置，请先稳定病情', true); return; }
-  observationUntil = Math.min(S.t + 6 * 3600, assessment.observationEndsAt ?? Infinity);
+  beginObservation({ until: Math.min(S.t + 6 * 3600, assessment.observationEndsAt ?? Infinity) });
+  toast('全病房留观快进中，可随时点「结束留观」');
+}
+
+function beginObservation(config) {
+  observation = config;
   acc = 0;
   ff = true;
   paused = false;
   closeSheet();
   syncSpeedUI();
-  toast('全病房留观快进中，可随时点「结束留观」');
 }
 
 let toastTimer = null;
@@ -2191,7 +2278,7 @@ function openFeedback() {
 }
 
 /* ---------------- 版本 / 更新检查 ---------------- */
-const APP_VERSION = '1.54.5';
+const APP_VERSION = '1.54.6';
 const releaseRoot = document.querySelector('meta[name="xuanhu-release-root"]')?.content;
 const releaseBase = releaseRoot ? new URL(releaseRoot, location.href).href.replace(/\/$/, '') : '';
 const platformName = location.protocol === 'file:' ? '离线 HTML' :
@@ -2655,7 +2742,9 @@ function bind() {
   });
   $('#btnBody').addEventListener('click', () => openChecks(S));
   $('#btnBlood').addEventListener('click', openReports);
-  $('#btnMenu').addEventListener('click', () => openSheet('菜单', '', [
+  $('#btnMenu').addEventListener('click', () => {
+    stopObservation();
+    openSheet('菜单', '', [
     {n:'音效设置', tag:SOUND.enabled ? SOUND.volume + '%' : '静音', amt:'调节', run:openSoundSettings},
     {sec:'存档与测试'},
     {n:'重置游戏存档', tag:'清空游戏进度及设置', amt:'', run:confirmSaveReset},
@@ -2688,14 +2777,15 @@ function bind() {
       showAdvice(false);
       toast(autoHint ? '已开启主动提示' : '已改为求助制：点「问上级」才给提示');
     }},
-    {n: paused ? '继续（已暂停）' : '暂停', tag:'', amt:'', run: () => { paused = !paused; closeSheet(); toast(paused ? '已暂停' : '继续'); }},
+    {n: paused ? '继续（已暂停）' : '暂停', tag:'', amt:'', run: () => { paused = !paused; closeSheet(); syncSpeedUI(); toast(paused ? '已暂停' : '继续'); }},
     {n:'返回大厅', tag:'床位 / 成就 / 手册', amt:'进入', run: () => { closeSheet(); showLobby(); }},
     {n:'病房床位', tag: beds.length + ' / ' + MAX_BEDS, amt:'切换', run: () => openBeds()},
     {n:'重新开始本病例', tag:'', amt:'', run: () => confirmRestart()},
     {n:'切换病例', tag:'', amt:'', run: () => pickCase()},
     {n:'教程 · 怎么玩', tag:(window.TUTORIAL?window.TUTORIAL.PAGES.length:6)+' 页', amt:'', run: () => { if (window.TUTORIAL) TUTORIAL.open(0); }},
     {n:'病例说明', tag:'入院记录', amt:'查看', run: openAdmission},
-  ]));
+    ]);
+  });
   $('#mask').addEventListener('click', dismissSheet);
   $('#detailX').addEventListener('click', closeDetail);
   $('#detail').addEventListener('click', e => { if (e.target.id === 'detail') closeDetail(); });
@@ -2703,9 +2793,12 @@ function bind() {
   $('#speed').addEventListener('click', e => {
     const p = e.target.closest('.pill'); if (!p) return;
     if (p.id === 'ff') {
-      if (observationUntil != null) { stopObservation(); return; }
+      if (observation) { stopObservation(); return; }
+      if (paused) { paused = false; syncSpeedUI(); return; }
       ff = !ff; syncSpeedUI(); return;
     }
+    if (observation) stopObservation();
+    paused = false;
     ff = false;
     speed = +p.dataset.s; syncSpeedUI();
   });
@@ -2984,6 +3077,9 @@ function renderAll() {
 
 /* 更新公告：每次发版在这里加一条（新的放最前面） */
 const RELEASES = [
+  { v: '1.54.6', notes: [
+    '胰腺面板可等待血糖复评：达标、进一步恶化、任一床出现危情或报告回报时自动暂停，最长 30 个模拟分钟',
+  ] },
   { v: '1.54.5', notes: [
     '出院评估合并同一指标的重复提示；合并病种对同一化验值有不同要求时，可在同一行查看',
     '在脑面板可观察当前抽搐征象，随病情和抗惊厥治疗更新',

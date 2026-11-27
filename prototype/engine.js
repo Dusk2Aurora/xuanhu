@@ -47,6 +47,33 @@ function glucoseDischargeTarget(hasDka, includeDkaMinimum = false) {
   return `${minimum}<${DKA_DISCHARGE_GLUCOSE_MAX_EXCLUSIVE} mmol/L`;
 }
 
+function glucoseTargetSide(glucose, hasDka) {
+  if (glucose == null) return null;
+  if (glucose < DISCHARGE_GLUCOSE_MIN) return -1;
+  const aboveTarget = hasDka ? glucose >= DKA_DISCHARGE_GLUCOSE_MAX_EXCLUSIVE : glucose > DISCHARGE_GLUCOSE_MAX;
+  return aboveTarget ? 1 : 0;
+}
+
+function assessDischargeGlucose(S) {
+  const hasDka = S.caseId === 'dka' || S.tags?.includes('dka');
+  const glucose = Number.isFinite(S.glu) ? r1(S.glu) : null;  /* 与监护快照的血糖精度一致。 */
+  return { glucose, target: glucoseDischargeTarget(hasDka, true), side: glucoseTargetSide(glucose, hasDka), hasDka };
+}
+
+function glucoseReviewStatus(S, startGlucose) {
+  const { glucose, target, side, hasDka } = assessDischargeGlucose(S);
+  const inTarget = side === 0;
+  let reason = null;
+  if (glucose == null) reason = 'missing';
+  else if (inTarget) reason = 'target';
+  else if (Number.isFinite(startGlucose)) {
+    const start = r1(startGlucose);
+    const startSide = glucoseTargetSide(start, hasDka);
+    if (startSide && (side !== startSide || r1((glucose - start) * side) >= 2)) reason = 'worse';
+  }
+  return { glucose, target, inTarget, reason };
+}
+
 function temperatureStatus(temp) {
   if (!Number.isFinite(temp)) return '';
   if (temp < 35 || temp >= 39.5) return 'crit';
@@ -2166,12 +2193,9 @@ function dischargeCheck(S) {
   else if (potassium < DISCHARGE_K_MIN || potassium > DISCHARGE_K_MAX) {
     bad.push(`血钾 ${potassium.toFixed(1)} mmol/L，出院目标 ${potassiumTarget}`);
   }
-  const hasDka = S.caseId === 'dka' || S.tags?.includes('dka');
-  const glucoseTarget = glucoseDischargeTarget(hasDka, true);
-  const glucose = Number.isFinite(S.glu) ? r1(S.glu) : null;  /* 与监护快照的血糖精度一致。 */
+  const { glucose, target: glucoseTarget, side: glucoseSide } = assessDischargeGlucose(S);
   if (glucose == null) bad.push(`血糖需复测，出院目标 ${glucoseTarget}`);
-  else if (glucose < DISCHARGE_GLUCOSE_MIN ||
-           (hasDka ? glucose >= DKA_DISCHARGE_GLUCOSE_MAX_EXCLUSIVE : glucose > DISCHARGE_GLUCOSE_MAX)) {
+  else if (glucoseSide !== 0) {
     bad.push(`血糖 ${glucose.toFixed(1)} mmol/L，出院目标 ${glucoseTarget}`);
   }
   const needsFullConsciousness = opioid || lowSodium || hyperosmolar;
@@ -2427,7 +2451,7 @@ function finalScore(S) {
 
 const API = {
   setIdentity(p) { IDENTITY = p || null; }, CASES, DRUGS, ACTIONS, TESTS, DELIVERY_DURATION, create, restorePatient, tick, give, acetaminophenExposure, setEnv, finalScore, scoreBreakdown, bp, snapshot,
-              dischargeCheck, glucoseDischargeTarget, potassiumTarget, convulsionSigns, auscultate, orderTest, pollTests, testValue, chestXrayReports, restoreChestXrayReports,
+              dischargeCheck, glucoseDischargeTarget, glucoseReviewStatus, potassiumTarget, convulsionSigns, auscultate, orderTest, pollTests, testValue, chestXrayReports, restoreChestXrayReports,
               computeMap, fmt, endCase, setBleedingRate, restoreBleeding,
               benzodiazepineExposure, restoreBenzodiazepines, temperatureStatus, restoreTemperature, infusionDetails, insulinActivity,
               pumpRate, pumpOrder, pumpEffect, stopPump,

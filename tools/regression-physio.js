@@ -395,6 +395,27 @@ for (const id of ['hyperkalemia', 'dka', 'bleed', 'sepsis', 'opioid']) {
   check('出院遇到缺失血糖时提示复测', [dkaCases[0], others[0]].every(S =>
     [NaN, undefined, null].every(glu => glucoseReasons(S, glu).some(reason => reason.includes('需复测')))),
     'DKA 与通用判据均要求已知血糖');
+  const review = (S, glu, start) => E.glucoseReviewStatus({ ...S, glu }, start);
+  const general = others[0];
+  check('复查复用通用出院血糖边界', [3.96, 12.04].every(glu => {
+    const status = review(general, glu, 13);
+    return status.inTarget && status.reason === 'target' && status.target === '4–12 mmol/L';
+  }) && [3.94, 12.06].every(glu => !review(general, glu).inTarget), '监护读数 4.0 与 12.0 含边界');
+  check('DKA 复查复用出院血糖上限', dkaCases.every(S => {
+    const below = review(S, 10.94, 14);
+    const limit = review(S, 10.96, 14);
+    return below.glucose === 10.9 && below.reason === 'target' && below.target === '≥4 且 <11 mmol/L' &&
+      limit.glucose === 11 && !limit.inTarget && limit.reason === null;
+  }), '监护读数 10.9 达标，11.0 继续复查');
+  check('血糖复查识别反向恶化', [
+    [14.2, 12.3, null], [14.3, 12.3, 'worse'], [1.8, 3.7, null], [1.7, 3.7, 'worse'],
+    [3.9, 12.3, 'worse'], [12.1, 3.9, 'worse']
+  ].every(([glu, start, reason]) => review(general, glu, start).reason === reason),
+    '覆盖升降 1.9 与 2.0 mmol/L 以及跨过目标区间');
+  check('血糖复查保留缺测状态', [NaN, undefined, null].every(glu => {
+    const status = review(general, glu, 13);
+    return status.glucose === null && !status.inTarget && status.reason === 'missing';
+  }) && review(general, 13).reason === null, '缺少当前值时需复测，可单独评估当前读数');
 }
 {
   const cases = [E.create('hyperkalemia'), ...[['highK'], ['aki'], ['bph'], ['highK', 'aki']].map(ids =>

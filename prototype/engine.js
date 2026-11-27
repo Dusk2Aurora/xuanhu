@@ -15,7 +15,7 @@
  * ========================================================================= */
 (function (root) {
 'use strict';
-let IDENTITY = null;      /* 测试用：固定病人身份；生产环境为 null（每次随机） */
+let IDENTITY = null;      /* 测试用：固定病人身份；生产环境使用病例所带资料 */
 const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
 const lerp  = (a, b, k) => a + (b - a) * k;
 const r1 = x => Math.round(x * 10) / 10;
@@ -34,6 +34,15 @@ const MOD_KEYS = ['hr', 'svr', 'sv', 'rr', 'spo2', 'temp', 'gcs'];
 const THYROID_THERAPY = new Set(['propylthiouracil', 'methimazole', 'hydrocortisone', 'dexamethasone', 'propranolol']);
 const COOLING_TARGET = 38.5;
 const WARMING_TARGET = 36.1;
+const DISCHARGE_GLUCOSE_MIN = 4;
+const DISCHARGE_GLUCOSE_MAX = 12;
+const DKA_DISCHARGE_GLUCOSE_MAX_EXCLUSIVE = 11;
+
+function glucoseDischargeTarget(hasDka, includeDkaMinimum = false) {
+  if (!hasDka) return `${DISCHARGE_GLUCOSE_MIN}–${DISCHARGE_GLUCOSE_MAX} mmol/L`;
+  const minimum = includeDkaMinimum ? `≥${DISCHARGE_GLUCOSE_MIN} 且 ` : '';
+  return `${minimum}<${DKA_DISCHARGE_GLUCOSE_MAX_EXCLUSIVE} mmol/L`;
+}
 
 function temperatureStatus(temp) {
   if (!Number.isFinite(temp)) return '';
@@ -76,7 +85,7 @@ const CASES = {
       uo: 1.6, kProd: 0.012, lactProd: 0.03, insulinBase: 0.12,
       contractility: 0.8, ketoneProd: 0.16, ecfVd: 11,
     },
-    goals: ['血糖降至 11 以下', 'pH 升至 7.30 以上', '血钾维持 3.5–5.5'],
+    goals: [`血糖 ${glucoseDischargeTarget(true)}`, 'pH 升至 7.30 以上', '血钾维持 3.5–5.5'],
     hint: '补液是第一位的。胰岛素要小剂量持续，补钾要跟得上——治着治着血钾会掉。',
   },
   bleed: {
@@ -595,7 +604,17 @@ function makeMod() { return { hr: 0, svr: 0, sv: 0, rr: 0, spo2: 0, temp: 0, gcs
 function makeShunt() { return { airway: 0, clot: 0, edema: 0, op: 0, ptx: 0, other: 0 }; }
 
 /* ---------------- 引擎主体 ---------------- */
-function create(caseId) {
+function syncPatientFields(S) {
+  const { sex, age, weight, height } = S.patient;
+  Object.assign(S, { sex, age, weight, height });
+}
+
+function restorePatient(S) {
+  syncPatientFields(S);
+  if (S.traits && root.TRAITS) root.TRAITS.restore(S);
+}
+
+function create(caseId, identity = IDENTITY) {
   const C = (caseId && typeof caseId === 'object') ? caseId : (CASES[caseId] || CASES.hyperkalemia);
   /* 病人身份：病例可提供，缺省则随机生成 */
   const randName = (sx) => {
@@ -605,16 +624,13 @@ function create(caseId) {
     const p = sx === '女' ? FG : MG;
     return SUR[Math.floor(frand()*SUR.length)] + p[Math.floor(frand()*p.length)];
   };
-  /* 病人身份：每次开局都重新随机（同一疾病也会是不同的人），
-     自动化测试可用 E.setIdentity({...}) 固定，避免结果随性别/年龄漂移。 */
-  const forced = IDENTITY;
   const frand = () => Math.random();
-  const pt0 = (forced || (C && C.patient) || {});
-  const sex0 = (C && C.sexReq) || pt0.sex || (frand() < 0.5 ? '男' : '女');   /* 病例本身的性别约束优先 */
-  const age0 = pt0.age != null ? pt0.age : 20 + Math.floor(frand()*60);
-  const wt0 = pt0.weight != null ? pt0.weight : (sex0 === '男' ? 62 : 55) + Math.round(frand()*28);
-  const ht0 = pt0.height != null ? pt0.height : Math.round((sex0 === '男' ? 172 : 160) + (frand()-0.5)*12);
-  const patient = { name: pt0.name || (C && C.patientName) || randName(sex0), sex: sex0, age: age0, weight: wt0, height: ht0 };
+  const pt0 = { sex: C.sex, age: C.age, weight: C.weight, height: C.height, ...C.patient, ...identity };
+  const sex0 = C.sexReq || pt0.sex || (frand() < 0.5 ? '男' : '女');
+  const age0 = pt0.age ?? 20 + Math.floor(frand()*60);
+  const wt0 = pt0.weight ?? (sex0 === '男' ? 62 : 55) + Math.round(frand()*28);
+  const ht0 = pt0.height ?? Math.round((sex0 === '男' ? 172 : 160) + (frand()-0.5)*12);
+  const patient = { name: pt0.name || C.patientName || randName(sex0), sex: sex0, age: age0, weight: wt0, height: ht0 };
 
   const S = {
     t: 0, speed: 1, running: true, patient,
@@ -670,10 +686,10 @@ function create(caseId) {
   S.env = Object.assign(makeEnv(), C.init && C.init.env || {});
   S.tox = Object.assign({ benzo: 0, op: 0, apap: 0 }, C.init && C.init.tox || {});
 
-  S.weight = C.weight || 70;
+  syncPatientFields(S);
   S.caseId = C.id;
   S.cas = C;
-  if (root.TRAITS && C.traits) root.TRAITS.applyInit(S, C.traits);
+  if (root.TRAITS && C.traits) root.TRAITS.applyInit(S, C.traits, C.genVersion > 0 && C.genVersion < 4);
   S.tags = C.tags || ({ hyperkalemia: ['highK'], dka: ['dka'], bleed: ['bleed'],
                         sepsis: ['sepsis'], opioid: ['opioid'] }[C.id] || []);
   /* 红细胞质量由初始 Hb 反推：之后 hb = rbcMass / vol（失血先丢全血、补液才稀释） */
@@ -1011,16 +1027,43 @@ function restoreBenzodiazepines(S, saved) {
   S.benzoPkVersion = 1;
 }
 
+function infusionDetails(dose, unit, minutes) {
+  return `总量 ${dose} ${unit}，输注 ${minutes} 分钟`;
+}
+
+// 恒速输入和一阶清除后剩余的比例，以本次医嘱的总量为 1。
+function infusionActivity(elapsed, duration, ke) {
+  const supplied = clamp(elapsed, 0, duration);
+  const timeAfter = Math.max(0, elapsed - duration);
+  return -Math.expm1(-ke * supplied) * Math.exp(-ke * timeAfter) / (ke * duration);
+}
+
+const EFFECT_DECAY_MINUTES = 90;
+
+function insulinActivity(S) {
+  let activity = S.eff.insulin;
+  for (const p of S.pk || []) {
+    if (p.id === 'insulin' && p.infusionMinutes) {
+      activity += p.scale * infusionActivity((S.t - p.t) / 60, p.infusionMinutes, 1 / EFFECT_DECAY_MINUTES);
+    }
+  }
+  return Math.min(3.5, activity);
+}
+
 function give(S, drugId, dose, route) {
   const SUB = root.SUBSTANCES;
   if (SUB) {
     const s = SUB.byId(drugId);
     if (s) {
-      const d = (dose == null ? s.dose : dose);
-      if (s.cost) S.cost += s.cost;
-      let on = s.onset, du = s.dur, refDose = s.dose;
       const selectedRoute = s.routes?.find(x => x.r === route);
-      if (selectedRoute) { on = selectedRoute.on; du = selectedRoute.du; refDose = selectedRoute.d; }
+      const infusionMinutes = selectedRoute?.infusionMinutes;
+      const d = dose ?? (infusionMinutes ? selectedRoute.d : s.dose);
+      if (infusionMinutes && !(Number.isFinite(d) && d > 0)) return null;
+      if (s.cost) S.cost += s.cost;
+      const on = selectedRoute?.on ?? s.onset;
+      const du = selectedRoute?.du ?? s.dur;
+      // 以同等总量的静推剂量作效应标尺，泵速只决定送入体内的时间。
+      const refDose = infusionMinutes ? s.dose : (selectedRoute?.d ?? s.dose);
       const perKg = /\/kg/.test(s.unit || '');
       const wScale = perKg ? (S.weight || 70) / 70 : 1;
       const scale = (d / (refDose || 1)) * wScale;
@@ -1030,9 +1073,11 @@ function give(S, drugId, dose, route) {
         S.benzoBaseline = { gcs: S.gcs, rr: S.rr };
       }
       S.pk.push({ id: s.id, n: s.n, t: S.t, route: selectedRoute?.r || s.route,
-                  onset: on, dur: du * pkMul, eff: s.eff, scale });
+                  onset: on, dur: du * pkMul, eff: s.eff, scale,
+                  ...(infusionMinutes ? { infusionMinutes, dose: d, unit: s.unit } : {}) });
       S.given = S.given || [];
-      S.given.push({ id: s.id, n: s.n, d, unit: s.unit, route: route || s.route, t: S.t });
+      S.given.push({ id: s.id, n: s.n, d, unit: s.unit, route: route || s.route, t: S.t,
+                     ...(infusionMinutes ? { infusionMinutes } : {}) });
       if (root.TRAITS) root.TRAITS.onDrug(S, s, d);
       /* 性激素类药物：给药后进入体内激素库（12 h 半衰期），由 tick 里的激素段合并到 S.estrogen/testosterone */
       if (s.eff && s.eff.estrogen) S.estrogenExo = clamp((S.estrogenExo || 0) + s.eff.estrogen * scale, -1, 1.6);
@@ -1047,7 +1092,8 @@ function give(S, drugId, dose, route) {
           if (!(it.a === s.n && prev.includes(it.b)) && !(it.b === s.n && prev.includes(it.a))) continue;
           /* 只有另一种药此刻仍在体内（未过 1.8 个疗程）才算真正的相互作用 */
           const other = it.a === s.n ? it.b : it.a;
-          const alive = (S.pk || []).some(pp => pp.n === other && (S.t - pp.t) < pp.dur * 1.8);
+          const alive = (S.pk || []).some(pp => pp.n === other &&
+            (S.t - pp.t) / 60 < (pp.infusionMinutes || 0) + pp.dur * 1.8);
           if (!alive) continue;
           S._ix = S._ix || {};
           const key = [it.a, it.b].sort().join('|');
@@ -1063,9 +1109,12 @@ function give(S, drugId, dose, route) {
       if (s.id === 'organophosphate') S.tox.op += d;
       if (s.id === 'pralidoxime') S.tox.op = Math.max(0, S.tox.op - d * 2);
       if (s.id === 'atropine' && S.tox.op > 0) S.tox.op = Math.max(0, S.tox.op - d);
-      S.log.push([fmt(S.t), `给予 ${s.n} ${d}${s.unit}（${route || s.route || '静推'}）`, 'good']);
+      const label = infusionMinutes
+        ? `开始泵入 ${s.n}（${infusionDetails(d, s.unit, infusionMinutes)}）`
+        : `给予 ${s.n} ${d}${s.unit}（${route || s.route || '静推'}）`;
+      S.log.push([fmt(S.t), label, 'good']);
       if (s.id === 'calcium' || s.id === 'calcium_cl') S.caProtectUntil = S.t + (s.dur || 45) * 60;
-      if (s.id === 'insulin') S.eff.insulin = Math.min(3.5, S.eff.insulin + d / 10);
+      if (s.id === 'insulin' && !infusionMinutes) S.eff.insulin = Math.min(3.5, S.eff.insulin + d / 10);
       if (s.id === 'mannitol') S.icp = Math.max(0, (S.icp || 0) - 0.30 * d / 250);
       /* 苯二氮卓：终止癫痫发作（但也会压低意识——这是本病例的教学点） */
       if ((s.id === 'diazepam' || s.id === 'lorazepam' || s.id === 'midazolam') && (S.seizure || 0) > 0)
@@ -1115,7 +1164,12 @@ function finishDelivery(S) {
   S.delivered = true;
   S.deliveryAt = dueAt;
   S.svr = Math.max(18, (S.svr || 26) - 3);
-  S.log.push([fmt(dueAt), '胎盘已娩出，母体血管痉挛开始缓解，进入产后观察', 'good']);
+  const pressure = bp(S);
+  const saturation = pulseOximetry(S);
+  const maternal = `胎盘已娩出，母体进入产后观察。血压 ${pressure.sys}/${pressure.dia} mmHg，SpO₂ ${saturation == null ? '无信号' : saturation + '%'}`;
+  const newborn = '已交接新生儿科观察，后续结局待随访';
+  S.deliveryRecord = { maternal, newborn };
+  S.log.push([fmt(dueAt), maternal + '。新生儿' + newborn, 'good']);
 }
 
 function tick(S, dtSec) {
@@ -1128,6 +1182,7 @@ function tick(S, dtSec) {
   if (inArrest) applyArrestPhysiology(S);
   const pleuralLoad = clamp(S.tensionPTX || 0, 0, 1);
   const thyroidDepression = clamp(S.myxedemaSeverity || 0, 0, 1);
+  const previousTime = S.t;
   S.t += dtSec;
 
   const env = S.env || {};
@@ -1171,6 +1226,23 @@ function tick(S, dtSec) {
     const hl = Math.max(1, p.dur / 4.5);            // 疗程 ≈ 4.5 个半衰期
     const ke = Math.LN2 / hl;
     const lag = Math.max(0, p.onset || 0) * 0.35;   // 起效延迟
+    const infusion = p.infusionMinutes;
+    if (infusion) {
+      const previousElapsed = (previousTime - p.t) / 60;
+      const finishedAt = p.t + infusion * 60;
+      if (previousTime < finishedAt && S.t >= finishedAt) {
+        S.log.push([fmt(finishedAt), `${p.n} 泵入完成（${infusionDetails(p.dose, p.unit, infusion)}）`, 'good', finishedAt]);
+      }
+      const age = el - lag;
+      const previousAge = previousElapsed - lag;
+      const active = infusionActivity(age, infusion, ke);
+      const supplied = (clamp(age, 0, infusion) - clamp(previousAge, 0, infusion)) / infusion;
+      const released = Math.max(0, supplied - active + infusionActivity(previousAge, infusion, ke));
+      for (const key in p.eff) applyDelta(S, key, p.eff[key] * p.scale * released);
+      concOf[p.n] = Math.max(concOf[p.n] || 0, p.scale * active);
+      if (el > infusion + p.dur * 1.8) S.pk.splice(i, 1);
+      continue;
+    }
     if (el > p.dur * 1.8) { S.pk.splice(i, 1); continue; }
     if (el < lag) continue;
     const c = Math.exp(-ke * (el - lag));           // 归一化浓度
@@ -1259,10 +1331,12 @@ function tick(S, dtSec) {
   S._opioidTone = opioidTone;
 
   /* 效应室（旧版内部通道）指数衰减 */
+  const effectDecay = Math.exp(-dtMin / EFFECT_DECAY_MINUTES);
   for (const k of Object.keys(S.eff)) {
-    S.eff[k] *= Math.exp(-dtMin / 90);
+    S.eff[k] *= effectDecay;
     if (S.eff[k] < 0.001) S.eff[k] = 0;
   }
+  const insulinEffect = insulinActivity(S);
   S.insulinLoad = (S.insulinLoad || 0) * Math.exp(-dtMin / 25);
   S.diuresis = Math.max(0, (S.diuresis || 0) - 0.02 * dtMin);
 
@@ -1348,7 +1422,7 @@ function tick(S, dtSec) {
   /* ---------- 6. 钾 ---------- */
   const kClear = 0.062 * (gfrNow / 110);
   const dialClear = (S.dialysisUntil > S.t) ? 0.20 * Math.max(0, S.k - 3.2) : 0;
-  const insShift = (S.eff.insulin + S.insulinLoad * 0.4) * 0.080 * Math.max(0, S.k - 3.6);
+  const insShift = (insulinEffect + S.insulinLoad * 0.4) * 0.080 * Math.max(0, S.k - 3.6);
   const acidShift = (S.ph < 7.30 ? (7.30 - S.ph) * 0.06 : -(S.ph - 7.30) * 0.04);
   const kExcrete = kClear * clamp((S.k - 3.7) / 1.3, 0, 2.2);   // 低钾时肾小管重吸收↑，排钾趋近 0
   const dk = (S.kProd - kExcrete - dialClear - insShift) / S.ecfVd
@@ -1356,7 +1430,7 @@ function tick(S, dtSec) {
   S.k = clamp(S.k + dk * dtMin, 1.2, 9.8);
 
   /* ---------- 7. 血糖 ---------- */
-  const insEff = S.eff.insulin + (S.insulinLoad || 0) + (S.insulinBase || 0) * 0.30;
+  const insEff = insulinEffect + (S.insulinLoad || 0) + (S.insulinBase || 0) * 0.30;
   /* 基础（胰岛素非依赖）摄取：脑组织每天约耗糖 120 g，折合约 0.10 mmol/min */
   const basalUptake = 0.10;
   const uptake = basalUptake + 0.0248 * S.glu * insEff * (1 + Math.max(0, S.glu - 10) * 0.085);
@@ -1609,7 +1683,7 @@ function tick(S, dtSec) {
   const lacProd = (S.lactProd || 0.015) + 0.30 * o2debt + 0.10 * (S.infection || 0)
                 + 0.06 * (S.hepatotox || 0);
   S.lac = clamp(S.lac + (lacProd - 0.02 * S.lac) * dtMin, 0.3, 25);
-  const ketone = (S.ketoneProd || 0) * (1 - clamp((S.eff.insulin + S.insulinLoad * 0.5), 0, 1) * 0.90);
+  const ketone = (S.ketoneProd || 0) * (1 - clamp((insulinEffect + S.insulinLoad * 0.5), 0, 1) * 0.90);
   /* 胰岛素充足时酮体被外周组织氧化，等量 HCO₃ 再生
      （β-羟丁酸是"潜在碳酸氢盐"）——替代原来"补碱之外没有任何回收途径"的写法 */
   const ketoRecover = 0.060 * clamp(insEff - 0.6, 0, 1.6);
@@ -1896,7 +1970,14 @@ function dischargeCheck(S) {
   if (S.hco3 < 14) bad.push(`HCO₃ ${S.hco3.toFixed(1)}`);
   if (S.ph < 7.28) bad.push(`pH ${S.ph.toFixed(2)}`);
   if (S.k < 3.5 || S.k > 5.5) bad.push(`血钾 ${S.k.toFixed(1)}`);
-  if (S.glu < 4 || S.glu > 12) bad.push(`血糖 ${S.glu.toFixed(1)}`);
+  const hasDka = S.caseId === 'dka' || S.tags?.includes('dka');
+  const glucoseTarget = glucoseDischargeTarget(hasDka, true);
+  const glucose = Number.isFinite(S.glu) ? r1(S.glu) : null;  /* 与监护快照的血糖精度一致。 */
+  if (glucose == null) bad.push(`血糖需复测，出院目标 ${glucoseTarget}`);
+  else if (glucose < DISCHARGE_GLUCOSE_MIN ||
+           (hasDka ? glucose >= DKA_DISCHARGE_GLUCOSE_MAX_EXCLUSIVE : glucose > DISCHARGE_GLUCOSE_MAX)) {
+    bad.push(`血糖 ${glucose.toFixed(1)} mmol/L，出院目标 ${glucoseTarget}`);
+  }
   if (S.gcs < 13) bad.push(`意识 ${S.gcs}`);
   if (S.opioidTox || S.tags?.includes('opioid')) {
     const lastNaloxone = S.lastNaloxoneAt ?? (S.naloxoneUntil > 0 ? S.naloxoneUntil - 45 * 60 : -Infinity);
@@ -2063,9 +2144,9 @@ function finalScore(S) {
 }
 
 const API = {
-  setIdentity(p) { IDENTITY = p || null; }, CASES, DRUGS, ACTIONS, TESTS, DELIVERY_DURATION, create, tick, give, acetaminophenExposure, setEnv, finalScore, scoreBreakdown, bp, snapshot,
-              dischargeCheck, auscultate, orderTest, pollTests, testValue, computeMap, fmt, endCase, setBleedingRate, restoreBleeding,
-              benzodiazepineExposure, restoreBenzodiazepines, temperatureStatus, restoreTemperature,
+  setIdentity(p) { IDENTITY = p || null; }, CASES, DRUGS, ACTIONS, TESTS, DELIVERY_DURATION, create, restorePatient, tick, give, acetaminophenExposure, setEnv, finalScore, scoreBreakdown, bp, snapshot,
+              dischargeCheck, glucoseDischargeTarget, auscultate, orderTest, pollTests, testValue, computeMap, fmt, endCase, setBleedingRate, restoreBleeding,
+              benzodiazepineExposure, restoreBenzodiazepines, temperatureStatus, restoreTemperature, infusionDetails, insulinActivity,
               hill, computePh, computePcwp, roomAirSaturation, restoreCardiorespiratory, restoreDischargeObservation };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 root.LIFE = API;

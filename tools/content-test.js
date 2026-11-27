@@ -8,6 +8,7 @@
  * 用法：
  *   node tools/content-test.js [--verbose] [--module=asthma] [--trace=asthma] [--seeds=5]
  * ========================================================================== */
+const assert = require('node:assert/strict');
 require('../prototype/substances.js');
 require('../prototype/mentor.js');
 const E = require('../prototype/engine.js');
@@ -349,6 +350,17 @@ function traceOne(mod, mode, seed) {
 }
 
 if (require.main === module) {
+  // 这两个种子在生成器 v3 分别会抽到不相符的老年与 2 型糖尿病体质。
+  const young = G.generate(5, 331);
+  assert.deepEqual([young.patient.age, young.traits.length, young.traits.some(t => t.id === 'elderly_renal')], [34, 2, false]);
+  const dka = G.generate(5, 13);
+  const type2 = G.generate(5, 0);
+  assert.ok(dka.comorbidities.includes('1 型糖尿病') && dka.complaint.includes('停用胰岛素')
+    && dka.traits.length === 2 && dka.traits.every(t => t.id !== 't2dm')
+    && type2.traits.some(t => t.id === 't2dm') && type2.comorbidities.includes('2 型糖尿病')
+    && type2.admission.background.filter(item => item.includes('糖尿病')).join() === '2 型糖尿病',
+  '糖尿病分型应与停药史、体质和入院背景一致');
+
   if (TRACE) {
     traceOne(TRACE, 'treat', SEEDS[0]);
     traceOne(TRACE, 'none', SEEDS[0]);

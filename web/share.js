@@ -45,7 +45,9 @@
     const p = S.patient || {};
     const actions = [];
     for (const g of (S.given || [])) {
-      actions.push(['d', Math.round(g.t), g.id, +g.d]);
+      const action = ['d', Math.round(g.t), g.id, +g.d];
+      if (g.infusionMinutes) action.push({ minutes: g.infusionMinutes, unit: g.unit });
+      actions.push(action);
     }
     /* 操作记录：日志里的时间戳是 mm:ss 文本，转回秒 */
     const toSec = (t) => {
@@ -95,19 +97,18 @@
   /* 重建同一例（不重放处置，玩家自己接手） */
   function rebuild(data, E) {
     if (!data) return null;
-    let base;
+    let spec = data.c;
     if (data.c === 'gen') {
       if (!root.CASEGEN) return null;
       const gen = root.CASEGEN;
       if (data.g > gen.VERSION) return null;
-      base = E.create(gen.generateVersion(data.d || 3, data.s || 0, data.g || 1));
-    } else {
-      base = E.create(data.c);
+      spec = gen.generateVersion(data.d || 3, data.s || 0, data.g || 1);
     }
-    if (base && data.p) {
-      base.patient = { name: data.p.n || '患者', sex: data.p.x || '男', age: data.p.a || 45, weight: data.p.w || 70, height: data.p.h || 170 };
-    }
-    return base;
+    const p = data.p;
+    const identity = p ? {
+      name: p.n || '患者', sex: p.x || '男', age: p.a || 45, weight: p.w || 70, height: p.h || 170,
+    } : undefined;
+    return E.create(spec, identity);
   }
 
   root.SHARE = { make, parse, rebuild, V };

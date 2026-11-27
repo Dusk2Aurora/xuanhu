@@ -257,6 +257,27 @@ for (const id of ['hyperkalemia', 'dka', 'bleed', 'sepsis', 'opioid']) {
     blocked(both, 59) && !blocked(both, 60), '甲减危象 55，有机磷中毒 60');
 }
 {
+  const glucoseReasons = (S, glu) => E.dischargeCheck({ ...S, glu }).reasons.filter(reason => reason.startsWith('血糖'));
+  const dkaCases = [E.create('dka'), E.create(G.generate(1, 13, ['dka'])),
+    E.create(G.generate(3, 13, ['dka', 'bleed'])), E.create(G.generateVersion(3, 13, 1, ['dka', 'bleed']))];
+  check('DKA 病例的血糖目标与出院拦截一致', dkaCases.every(S =>
+    S.cas.goals.includes('血糖 <11 mmol/L') && glucoseReasons(S, 10.9).length === 0 &&
+    [11.0, 11.6, 12.1].every(glu => {
+      const reasons = glucoseReasons(S, glu);
+      return reasons.length === 1 && reasons[0].includes(`${glu.toFixed(1)} mmol/L`) && reasons[0].includes('<11 mmol/L');
+    })), '固定、生成、合并与旧版生成病例各报告一次');
+  const nearLimit = { ...dkaCases[0], glu: 10.96 };
+  check('DKA 出院血糖使用监护快照精度', E.snapshot(nearLimit).glu === 11 && glucoseReasons(nearLimit, 10.96).length === 1 &&
+    glucoseReasons(nearLimit, 10.94).length === 0, '10.96 显示为 11.0，10.94 显示为 10.9');
+  const others = [E.create({ id: 'stable', init: { ...G.BASE } }), E.create(G.generate(1, 13, ['hhs']))];
+  check('其他病例采用通用出院血糖范围', others.every(S =>
+    [4.0, 10.9, 11.0, 11.6, 12.0].every(glu => glucoseReasons(S, glu).length === 0) &&
+    [3.9, 12.1].every(glu => glucoseReasons(S, glu).length === 1)), '含高渗高血糖状态，范围 4–12 mmol/L');
+  check('出院遇到缺失血糖时提示复测', [dkaCases[0], others[0]].every(S =>
+    [NaN, undefined, null].every(glu => glucoseReasons(S, glu).some(reason => reason.includes('需复测')))),
+    'DKA 与通用判据均要求已知血糖');
+}
+{
   const edema = E.create(G.generate(2, 101, ['edema']));
   E.ACTIONS.oxygen.apply(edema);
   const samplingAt = E.TESTS.abg.min * 60;
@@ -410,6 +431,7 @@ for (const id of ['hyperkalemia', 'dka', 'bleed', 'sepsis', 'opioid']) {
   const completion = /胎盘已娩出/;
   const atBoundary = restored.deliveryAt === E.DELIVERY_DURATION && restored.delivered &&
     restored.svr === Math.max(18, control.svr - 3) && restored.plt > bed.plt &&
+    restored.deliveryRecord?.maternal.includes('SpO₂') && restored.deliveryRecord.newborn.includes('新生儿科') &&
     restored.cas.extra(restored).some(reason => reason.includes('产后观察'));
   attempt(restored);
   advance(restored, 0.2);
@@ -423,7 +445,7 @@ for (const id of ['hyperkalemia', 'dka', 'bleed', 'sepsis', 'opioid']) {
   advance(legacy, 1);
   check('旧档已娩出保留完成时刻和产后病程', alreadyDelivered && legacy.deliveryAt === 90 &&
     legacy.deliveryStartedAt === null && legacy.plt > legacyPlt && legacy.cost === action.cost &&
-    !legacy.log.some(([, msg]) => completion.test(msg)), '兼容即时完成的旧版本');
+    !legacy.deliveryRecord && !legacy.log.some(([, msg]) => completion.test(msg)), '兼容即时完成的旧版本');
 }
 
 const fails = out.filter(x => !x.ok);

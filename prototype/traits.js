@@ -54,6 +54,7 @@ const TRAITS = [
   {
     id: 't2dm', n: '2 型糖尿病', short: '糖尿病',
     desc: '糖代谢异常，血糖基线偏高、对胰岛素反应迟钝',
+    appliesTo: (_patient, comorbidities) => !comorbidities.includes('1 型糖尿病'),
     init: { glu: 3.2, insulinBase: -0.25 },
     onDrug() { return null; },
   },
@@ -88,6 +89,7 @@ const TRAITS = [
   {
     id: 'elderly_renal', n: '老年（肾功能生理性下降）', short: '老年',
     desc: '年龄相关清除率下降，药物半衰期延长',
+    appliesTo: patient => patient?.age >= 65,
     init: { cr: 25 },
     pkScale: 1.35,
     onDrug() { return null; },
@@ -100,10 +102,21 @@ function E_fmt(s) {
 }
 const fmt = E_fmt;
 
-/* 把体质作用到初始状态 */
-function applyInit(S, traits) {
-  S.traits = traits || [];
-  for (const t of S.traits) {
+function forPatient(traits, patient, comorbidities = []) {
+  return traits.filter(t => !t.appliesTo || t.appliesTo(patient, comorbidities));
+}
+
+function setTraits(S, traits) {
+  S.traits = traits;
+  /* PK 延长系数：CKD/老年 → 药效更持久 */
+  S.pkScale = traits.reduce((scale, t) => scale * (t.pkScale || 1), 1);
+}
+
+/* 旧版种子的入院数值包含当时抽到的所有体质加值。 */
+function applyInit(S, traits, legacy = false) {
+  const sampled = traits || [];
+  const eligible = forPatient(sampled, S.patient, S.cas?.comorbidities);
+  for (const t of legacy ? sampled : eligible) {
     const d = t.init || {};
     for (const k in d) {
       const v = d[k];
@@ -113,11 +126,16 @@ function applyInit(S, traits) {
       }
     }
   }
-  /* PK 延长系数：CKD/老年 → 药效更持久 */
-  let scale = 1;
-  for (const t of S.traits) if (t.pkScale) scale *= t.pkScale;
-  S.pkScale = scale;
+  setTraits(S, eligible);
   return S;
+}
+
+function byId(id) { return TRAITS.find(t => t.id === id); }
+
+/* JSON 存档只保留数据，恢复体质的给药钩子并核对当前患者资料。 */
+function restore(S) {
+  const traits = (S.traits || []).map(t => byId(t.id) || t);
+  setTraits(S, forPatient(traits, S.patient, S.cas?.comorbidities));
 }
 
 /* 给药时的体质检查 */
@@ -155,7 +173,7 @@ function modifiers(S) {
   return m;
 }
 
-const API = { TRAITS, applyInit, onDrug, tick, modifiers, byId: id => TRAITS.find(t => t.id === id) };
+const API = { TRAITS, applyInit, forPatient, restore, onDrug, tick, modifiers, byId };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 root.TRAITS = API;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

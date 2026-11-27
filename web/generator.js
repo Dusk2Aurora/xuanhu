@@ -13,7 +13,8 @@
 (function (root) {
 'use strict';
 const clamp = (x,a,b)=>Math.min(b,Math.max(a,x));
-const VERSION = 3;
+const VERSION = 4;
+const traitsApi = root.TRAITS || (typeof module !== 'undefined' && module.exports ? require('./traits.js') : null);
 
 /* 随机数（可复现） */
 function mulberry32(a){ return function(){ a|=0; a=a+0x6D2B79F5|0; let t=Math.imul(a^a>>>15,1|a);
@@ -65,6 +66,11 @@ const BASE = {
 };
 const PREECLAMPSIA_SVR_DRIVE = 8;
 
+function glucoseGoal(hasDka) {
+  const engine = root.LIFE || require('./engine.js');
+  return `血糖 ${engine.glucoseDischargeTarget(hasDka)}`;
+}
+
 /* ---------- 病理模块 ---------- */
 const MODULES = [
   {
@@ -92,8 +98,7 @@ const MODULES = [
       [4320, '病史回顾', '近期停用胰岛素，三天前开始多饮、多尿。'],
       [1440, '病史回顾', '开始恶心、呕吐。'],
     ],
-    goal:['血糖降至 11 以下','pH 升至 7.30 以上','血钾维持 3.5–5.5'],
-    check:S=>[ S.glu>12 ? `血糖 ${S.glu.toFixed(1)}` : null ].filter(Boolean),
+    get goal() { return [glucoseGoal(true), 'pH 升至 7.30 以上', '血钾维持 3.5–5.5']; },
     hint:'补液是第一位的。胰岛素要小剂量持续，补钾要跟得上。',
     /* 无 advance：酮体生成 → HCO₃ 消耗、渗透性利尿、胰岛素清除酮体，
        全部由引擎的机制方程表达（替代原来只覆盖 hco3Base 的做法） */
@@ -493,7 +498,9 @@ const MODULES = [
            contractility:0.90, insulinBase:0.55 },
     drivers:{ kProd:0.011, lactProd:0.02 },
     history:[[null, '家属转述', '近几天饮水少，逐渐出现乏力、嗜睡，送医前反应明显变差。']],
-    goal:['血糖 4–12 mmol/L','血钠 ≤145 mmol/L','血清渗透压 <300 mOsm/kg','尿量 >0.5 mL/kg/h','意识恢复'],
+    get goal() {
+      return [glucoseGoal(false), '血钠 ≤145 mmol/L', '血清渗透压 <300 mOsm/kg', '尿量 >0.5 mL/kg/h', '意识恢复'];
+    },
     check(S) {
       const osmolality = 2 * S.na + S.glu + S.bun;
       const urinePerKg = S.uo * 60 / (S.weight || 70);
@@ -944,6 +951,7 @@ function mergeAdmission(target, values) {
 
 const traumaIds = new Set(['ptx', 'trauma', 'tamponade', 'spleen', 'tbi']);
 const injuryNames = new Set(['胸部外伤', '头部外伤', '腹部钝性外伤', '骨盆骨折', '密闭空间火灾']);
+const diabetesTypes = new Set(['1 型糖尿病', '2 型糖尿病']);
 const traumaScene = {
   ptx: '发生道路交通事故，胸部受伤。',
   trauma: '发生摩托车事故，右大腿受伤。',
@@ -952,7 +960,7 @@ const traumaScene = {
   tbi: '骑车摔倒，左颞部撞伤。',
 };
 
-function makeAdmission(modules, patient, additionalHistory) {
+function makeAdmission(modules, patient, additionalHistory, diabetesType) {
   const demographics = { sexReq: patient.sex, ageLo: patient.age, ageHi: patient.age };
   const ids = new Set(modules.map(m => m.id));
   const trauma = modules.filter(m => traumaIds.has(m.id));
@@ -988,9 +996,11 @@ function makeAdmission(modules, patient, additionalHistory) {
   const background = Array.from(new Set([
     ...modules.flatMap(m => [...(m.comorbidities || []), ...(m.medicalHistory || []), ...(m.medicationHistory || [])]),
     ...additionalHistory,
+    ...(diabetesType ? [diabetesType] : []),
   ].filter(item => !injuryNames.has(item)).map(item => {
     if (unclearPregnancy && (item === '早孕' || item === '妊娠 34 周')) return '旧版产科记录与患者资料或孕周记录存在冲突';
-    if (unclearDiabetes && (item === '1 型糖尿病' || item === '2 型糖尿病')) return '糖尿病（旧版记录分型不一致）';
+    if (unclearDiabetes && diabetesTypes.has(item)) return '糖尿病（旧版记录分型不一致）';
+    if (diabetesType && item === '糖尿病') return diabetesType;
     if (unclearThyroid && item.startsWith('甲状腺功能')) return '甲状腺疾病（旧版记录分型不一致）';
     if (item === '一周前停用降压药' && ids.has('hyponatremia')) return '一周前停用其他降压药';
     return item;
@@ -1024,7 +1034,7 @@ function generateLegacy(difficulty, seed) {
 }
 
 function generateVersion(difficulty, seed, version, only) {
-  if (![1, 2, VERSION].includes(version)) throw new RangeError('未知的病例生成版本');
+  if (!Number.isInteger(version) || version < 1 || version > VERSION) throw new RangeError('未知的病例生成版本');
   return generateCase(difficulty, seed, only, version);
 }
 
@@ -1132,16 +1142,21 @@ function generateCase(difficulty, seed, only, genVersion) {
     }
   }
 
-  let traits = [];
-  if (root.TRAITS) {
-    const pool = root.TRAITS.TRAITS.slice();
+  const comorbidities = Array.from(new Set(primary.flatMap(m => m.comorbidities || [])));
+  const traits = [];
+  if (traitsApi) {
+    const pool = genVersion < 4 ? traitsApi.TRAITS.slice()
+      : traitsApi.forPatient(traitsApi.TRAITS, patient, comorbidities);
     const nT = only ? 0 : diff <= 1 ? 0 : (diff === 2 ? (rnd() < 0.7 ? 1 : 0) : (diff === 3 ? (rnd() < 0.5 ? 1 : 2) : 2));
     for (let i = 0; i < nT && pool.length; i++) {
       traits.push(pool.splice(Math.floor(rnd() * pool.length), 1)[0]);
     }
   }
+  const diabetesType = genVersion >= 4
+    ? (comorbidities.find(name => diabetesTypes.has(name)) || traits.find(t => t.id === 't2dm')?.n)
+    : undefined;
+  if (diabetesType && !comorbidities.includes(diabetesType)) comorbidities.push(diabetesType);
 
-  const comorbidities = Array.from(new Set(primary.flatMap(m => m.comorbidities || [])));
   const tags = primary.map(m => m.tag);
   const cases = primary.map(m => m.id);
   const combined = unified && cases.length > 1;
@@ -1153,7 +1168,7 @@ function generateCase(difficulty, seed, only, genVersion) {
   }
   if (combinedPvr) init.pvr = 1.8 + 9.5 * init.clot + 6.0 * init.tensionPTX;
   const names = primary.map(m => m.name).join(' + ');
-  const admission = makeAdmission(primary, patient, additionalHistory);
+  const admission = makeAdmission(primary, patient, additionalHistory, diabetesType);
   const complaint = admissionNarrative({ admission });
 
   /* 并发病程共享同一体征，分别推进后合并共同的病理负荷。 */

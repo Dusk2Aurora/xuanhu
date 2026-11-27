@@ -501,7 +501,9 @@ function openDrugSheet() {
 
 const EFF_NAME = { k:'血钾', na:'血钠', cl:'血氯', ca:'血钙', hco3:'HCO₃⁻', glu:'血糖', lac:'乳酸',
                    vol:'血容量', freeWater:'自由水', hb:'血红蛋白', hr:'心率', svr:'血管张力', sv:'心肌收缩力',
-                   rr:'呼吸频率', spo2:'血氧', temp:'体温', gcs:'意识', uo:'尿量' };
+                   rr:'呼吸频率', spo2:'血氧', temp:'体温', gcs:'意识', uo:'尿量', infection:'感染负荷',
+                   coag:'凝血能力', halfSaline:'低渗补液量', icp:'颅内压', estrogen:'雌激素',
+                   testosterone:'睾酮', pao2:'动脉氧分压' };
 function describeEff(eff) {
   const parts = [];
   for (const k in (eff || {})) {
@@ -523,6 +525,10 @@ function openGiveConfig(it, patient) {
   const render = () => {
     if (!isCurrentPatient(patient)) return;
     const rt = routes[ri];
+    const infusion = rt.infusionMinutes;
+    const order = infusion
+      ? `开始泵入 ${it.n}（${E.infusionDetails(dose, it.unit, infusion)}）`
+      : `给予 ${it.n} ${fmt(dose)}${it.unit}`;
     const lo = it.doseRange ? it.doseRange[0] : rt.d * 0.2;
     const hi = it.doseRange ? it.doseRange[1] : rt.d * 10;
     const over = dose > rt.d * 2.5, under = dose < rt.d * 0.4;
@@ -535,7 +541,7 @@ function openGiveConfig(it, patient) {
           <div style="display:flex;gap:8px;flex-wrap:wrap;padding:0 0 14px">
             ${routes.map((x, i) => `<span class="pill" data-ri="${i}" style="cursor:pointer;${i === ri ? 'background:#f7e6e6;color:#a33;font-weight:700' : ''}">${x.r}</span>`).join('')}
           </div>` : ''}
-        <div class="sec">剂量</div>
+        <div class="sec">${infusion ? '输注总量' : '剂量'}</div>
         <div style="display:flex;align-items:center;gap:10px;padding:6px 0 10px">
           <button id="dMinus" class="pill" style="width:46px;height:46px;font-size:22px;cursor:pointer">−</button>
           <div style="flex:1;text-align:center">
@@ -549,11 +555,12 @@ function openGiveConfig(it, patient) {
         </div>
         ${warn ? `<div class="note" style="margin-bottom:10px;color:#a33;background:#fdf3f2">${warn}</div>` : ''}
         <div class="note" style="margin-bottom:12px;font-size:11.5px">
-          起效 ${rt.on} min · 维持 ${rt.du} min · 效应 ${describeEff(it.eff) || '—'}
+          ${infusion ? `输注时长 ${infusion} 分钟<br>` : ''}
+          起效 ${rt.on} min · ${infusion ? '药效' : ''}维持 ${rt.du} min · 效应 ${describeEff(it.eff) || '—'}
           ${it.note ? '<br>' + it.note : ''}
         </div>
         <button id="dGo" class="pill" style="width:100%;padding:14px;font-size:16px;font-weight:700;cursor:pointer;background:${over ? '#f7e6e6' : '#fff'}">
-          给予 ${it.n} ${fmt(dose)}${it.unit}
+          ${order}
         </button>
       </div>`;
 
@@ -570,14 +577,14 @@ function openGiveConfig(it, patient) {
     const go = $('#sheetList').querySelector('#dGo');
     if (go) go.addEventListener('click', () => {
       if (!$('#sheetList').contains(go) || !$('#sheet').classList.contains('on') || !isCurrentPatient(patient)) return;
-      E.give(patient, it.id, dose, routes[ri].r);
+      if (E.give(patient, it.id, dose, rt.r) == null) return;
       const entry = patient.log[patient.log.length - 1];
       checkBudget();
       if (window.SOUND) SOUND.drug();
       judge('drug', it.id, null, entry);
       saveGame();
       closeSheet();
-      toast(`已给予 ${it.n} ${fmt(dose)}${it.unit}（${routes[ri].r}）`);
+      toast(infusion ? order : `已${order}（${rt.r}）`);
       renderAll();
     });
   };
@@ -662,10 +669,15 @@ function reviewDelivery(patient) {
   const s = E.snapshot(patient);
   const ongoing = patient.delivered || patient.deliveryStartedAt != null;
   const rows = [
-    { sec: '病例情况 · 孕 34 周，重度子痫前期' },
-    { sec: `母体 · 血压 ${s.sys}/${s.dia} mmHg，SpO₂ ${s.spo2 == null ? '无信号' : s.spo2 + '%'}，FiO₂ ${Math.round(s.fio2 * 100)}%` },
-    { sec: '胎儿 · 本病例未提供胎心监护或新生儿结局。' },
-    { sec: '产科团队接手后，分娩方式和产程合并模拟。经过 ' + E.DELIVERY_DURATION / 60 + ' 分钟模拟时间完成分娩，胎盘娩出后开始产后观察。' },
+    { sec: patient.delivered ? '产后观察 · 重度子痫前期' : '病例情况 · 孕 34 周，重度子痫前期' },
+    { sec: `母体当前 · 血压 ${s.sys}/${s.dia} mmHg，SpO₂ ${s.spo2 == null ? '无信号' : s.spo2 + '%'}，FiO₂ ${Math.round(s.fio2 * 100)}%` },
+    ...(patient.delivered ? [
+      { sec: '分娩记录 · ' + (patient.deliveryRecord ? escapeHtml(patient.deliveryRecord.maternal) : '旧病历仅记录了分娩完成') },
+      { sec: '新生儿 · ' + (patient.deliveryRecord ? escapeHtml(patient.deliveryRecord.newborn) : '旧病历未记录去向') },
+    ] : [
+      { sec: '胎儿 · 当前病例未提供胎心监护。分娩后由新生儿科接手观察。' },
+      { sec: '产科团队接手后，分娩方式和产程合并模拟。经过 ' + E.DELIVERY_DURATION / 60 + ' 分钟模拟时间完成分娩，胎盘娩出后开始产后观察。' },
+    ]),
     { n: ongoing ? '返回操作' : '暂缓分娩', tag: deliveryStatus(patient), amt: '返回', run: () => openSheet('操作', patient.patient.name, actionRows(), patient) },
   ];
   if (!ongoing) rows.push({ n: '确认启动分娩', tag: '启动后持续至分娩完成', amt: '¥' + E.ACTIONS.delivery.cost,
@@ -977,6 +989,7 @@ function loadGame() {
       }
       const cas = base.cas;
       const st = Object.assign(base, item.s, { cas });
+      E.restorePatient(st);
       E.restoreBenzodiazepines(st, item.s);
       E.restoreBleeding(st, item.s);
       E.restoreCardiorespiratory(st, item.s);
@@ -1917,7 +1930,9 @@ function buildFeedbackText() {
       ' K ' + S.k.toFixed(1) + ' GCS ' + S.gcs);
     const tail = (S.log || []).slice(-12).map(l => '  ' + l[0] + ' ' + l[1]).join('\n');
     if (tail) lines.push('最近记录：\n' + tail);
-    const given = (S.given || []).slice(-10).map(g => '  ' + g.n + ' ' + g.d + (g.unit || ''));
+    const given = (S.given || []).slice(-10).map(g => g.infusionMinutes
+      ? `  ${g.n}（${g.route} · ${E.infusionDetails(g.d, g.unit, g.infusionMinutes)}）`
+      : '  ' + g.n + ' ' + g.d + (g.unit || ''));
     if (given.length) lines.push('最近用药：\n' + given.join('\n'));
     /* 会诊码：作者拿到可以原样复现这一例 */
     try {
@@ -1989,7 +2004,7 @@ function openFeedback() {
 }
 
 /* ---------------- 版本 / 更新检查 ---------------- */
-const APP_VERSION = '1.54.0';
+const APP_VERSION = '1.54.1';
 const releaseRoot = document.querySelector('meta[name="xuanhu-release-root"]')?.content;
 const releaseBase = releaseRoot ? new URL(releaseRoot, location.href).href.replace(/\/$/, '') : '';
 const platformName = location.protocol === 'file:' ? '离线 HTML' :
@@ -2312,7 +2327,13 @@ function openConsult() {
       try { const S2 = window.SHARE.rebuild(d, E); return S2 ? S2.cas.name : '随机病例'; } catch (e) { return '随机病例'; }
     })() : '随机病例') : ((E.CASES && E.CASES[d.c] && E.CASES[d.c].name) || d.c);
     const p = d.p || {};
-    const acts = (d.a || []).map(x => (x[0] === 'd' ? '给药 ' : '操作 ') + x[2] + (x[3] ? ' ' + x[3] : ''));
+    const acts = (d.a || []).map(([kind, , id, dose, infusion]) => {
+      if (kind === 'd' && Number.isFinite(infusion?.minutes) && infusion.minutes > 0) {
+        const name = window.SUBSTANCES?.byId(id)?.n || id;
+        return `开始泵入 ${name}（${E.infusionDetails(dose, infusion.unit, infusion.minutes)}）`;
+      }
+      return (kind === 'd' ? '给药 ' : '操作 ') + id + (dose ? ' ' + dose : '');
+    });
     const outcome = d.o === 'death' ? ('死亡' + (d.r ? '（' + d.r + '）' : ''))
       : d.o === 'discharge' ? '出院' : '未结束';
     pv.innerHTML =
@@ -2818,6 +2839,11 @@ function renderAll() {
 
 /* 更新公告：每次发版在这里加一条（新的放最前面） */
 const RELEASES = [
+  { v: '1.54.1', notes: [
+    '病例体质与患者年龄、糖尿病分型相互核对，血糖出院评估与病例目标一致',
+    '胰岛素泵入显示输注医嘱，抗感染药详情使用中文指标名称',
+    '分娩完成后记录母体当时的血压、血氧及新生儿交接去向',
+  ] },
   { v: '1.54.0', notes: [
     '新接诊病例按院前时间线整理病史，单独保留接诊首测体征',
     '床旁可做双肺听诊，血常规与动脉血气可对照上次采样结果',

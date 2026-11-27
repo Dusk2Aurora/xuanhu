@@ -378,7 +378,7 @@ const ROUTE_MAP = {
   octreotide: [{ r:'静推', d:50, on:5,  du:120 }, { r:'泵入', d:25, on:5,  du:240 }],
   furosemide2: null,
   salbutamol: [{ r:'吸入', d:2.5,on:3,  du:60  }, { r:'静滴', d:5,  on:5,  du:60 }],
-  insulin:    [{ r:'静推', d:10, on:15, du:240 }, { r:'泵入', d:2,  on:30, du:720 }],
+  insulin:    [{ r:'静推', d:10, on:15, du:240 }, { r:'泵入', d:2,  on:30, du:720, infusionMinutes:60 }],
   heparin:    [{ r:'静推', d:5000,on:5, du:180 }, { r:'皮下', d:5000,on:30,du:360 }],
   naloxone:   [{ r:'静推', d:0.4,on:1,  du:45  }, { r:'肌注', d:0.8,on:5,  du:90 }],
 };
@@ -476,6 +476,7 @@ function build() {
         d: x.d != null ? x.d : item.dose,
         on: x.on != null ? x.on : item.onset,
         du: x.du != null ? x.du : item.dur,
+        ...(x.infusionMinutes ? { infusionMinutes: x.infusionMinutes } : {}),
       }));
       item.route = item.routes[0].r;
       item.dose = item.routes[0].d;

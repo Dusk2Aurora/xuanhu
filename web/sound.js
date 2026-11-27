@@ -16,7 +16,7 @@ const TRIM = 0.9;         // 压缩后补偿；末端还有一个软限幅器兜
 let ctx = null, master = null, busLP = null, comp = null, trim = null, limiter = null, output = null;
 let space = null;         // 混响发送总线（ConvolverNode 输入）
 let enabled = true;
-let lastVolume = 100;
+let lastVolume = 40;
 try {
   enabled = localStorage.getItem('life.sound') !== '0';
   const saved = Number(localStorage.getItem('life.soundVolume'));

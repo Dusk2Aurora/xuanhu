@@ -193,7 +193,8 @@ async function checkWaveform(browser) {
     for (let i = 0; i < samples.length; i += 480) {
       let energy = 0;
       for (const value of samples.subarray(i, i + 480)) energy += value * value;
-      const on = Math.sqrt(energy / 480) > 0.002;
+      // Detect the quiet fade-in as well as the louder alarm pulses.
+      const on = Math.sqrt(energy / 480) > 0.001;
       if (on && !sounding) sounds.push({ start: i / buffer.sampleRate });
       if (!on && sounding) sounds.at(-1).end = i / buffer.sampleRate;
       sounding = on;

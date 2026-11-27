@@ -245,7 +245,7 @@ function playMonitorAlarm(kind, patient, bedIndex) {
   if (continuous) {
     osc.type = 'sine';
     osc.frequency.value = 830;
-    amp.gain.linearRampToValueAtTime(0.11, start + 0.035);
+    amp.gain.linearRampToValueAtTime(0.05, start + 0.035);
     osc.start(start);
   } else {
     const high = kind === 'vf';

@@ -16,7 +16,7 @@ let ctx = null, master = null, busLP = null, comp = null, trim = null, limiter =
 let space = null;         // 混响发送总线（ConvolverNode 输入）
 let monitorAlarm = null;
 let enabled = true;
-let lastVolume = 40;
+let lastVolume = 20;
 try {
   enabled = localStorage.getItem('life.sound') !== '0';
   const saved = Number(localStorage.getItem('life.soundVolume'));

@@ -33,8 +33,13 @@ def build():
     privacy = build_privacy()
     (DEPLOY / "web").mkdir(parents=True, exist_ok=True)
     for source, name in web_files():
-        shutil.copyfile(source, DEPLOY / name)
-        shutil.copyfile(source, DEPLOY / "web" / name)
+        for directory, release_root in ((DEPLOY, "./"), (DEPLOY / "web", "../")):
+            if name == "index.html":
+                html = source.read_text(encoding="utf-8")
+                meta = f'<meta name="xuanhu-release-root" content="{release_root}">'
+                (directory / name).write_text(html.replace("</head>", meta + "\n</head>", 1), encoding="utf-8")
+            else:
+                shutil.copyfile(source, directory / name)
     for source in (single, download, privacy):
         shutil.copyfile(source, DEPLOY / source.name)
     apk_target = DEPLOY / "xuanhu.apk"

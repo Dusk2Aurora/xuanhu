@@ -3,7 +3,7 @@
   "private": true,
   "scripts": {
     "test": "node tools/monotonic.js && node tools/mechanism-test.js && node tools/regression-physio.js && node tools/content-test.js && node tools/generator-constraints.js",
-    "test:browser": "node tools/ward-regression.js && node tools/e2e-full-case.js"
+    "test:browser": "node tools/ward-regression.js && node tools/e2e-full-case.js && node tools/layout-test.js"
   },
   "devDependencies": {
     "playwright-core": "1.65.1"

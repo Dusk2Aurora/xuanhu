@@ -63,12 +63,12 @@ const PLACE = {
   heart:   {x:192, y:244, s:66, ic:'heart-organ-outline',c:'#cf7b86'},
   liver:   {x:160, y:320, s:80, ic:'liver-outline',      c:'#d79a94'},
   stomach: {x:262, y:316, s:62, ic:'stomach-outline',    c:'#dda79a'},
-  spleen:  {x:308, y:286, s:38, ic:'spleen-outline',     c:'#d9a1ae'},
+  spleen:  {x:287, y:277, s:38, ic:'spleen-outline',     c:'#d9a1ae'},
   pancreas:{x:214, y:374, s:54, ic:'pancreas-outline',   c:'#d9a48f'},
-  kidney:  {x:210, y:428, s:78, ic:'kidneys-outline',    c:'#cf93a2'},
-  gut:     {x:210, y:530, s:104,ic:'intestine-outline',  c:'#d98f92'},
-  uterus:  {x:300, y:466, s:42, ic:'uterus-outline',     c:'#d98fa0', sex:'女'},
-  prostate:{x:300, y:466, s:40, ic:'prostate-outline',   c:'#cf93a2', sex:'男'},
+  kidney:  {x:210, y:404, s:78, ic:'kidneys-outline',    c:'#cf93a2'},
+  gut:     {x:210, y:487, s:94, ic:'intestine-outline',  c:'#d98f92'},
+  uterus:  {x:210, y:554, s:42, ic:'uterus-outline',     c:'#d98fa0', sex:'女'},
+  prostate:{x:210, y:554, s:40, ic:'prostate-outline',   c:'#cf93a2', sex:'男'},
 };
 
 function drawBody() {
@@ -81,7 +81,7 @@ function drawBody() {
     if (p.sex && p.sex !== mySex) return '';        // 生殖器官按性别显示
     const o = ORGAN_SVG[p.ic]; if (!o) return '';
     const s = p.s / 48, x = p.x - p.s / 2, y = p.y - p.s / 2;
-    return `<g class="org" data-o="${id}">
+    return `<g class="org" data-o="${id}" role="button" tabindex="0" aria-label="${ORGAN_META[id].n}">
       <circle cx="${p.x}" cy="${p.y}" r="${p.s*0.56}" fill="${p.c}" opacity="0" filter="url(#glow)" class="halo"/>
       <g class="shape" transform="translate(${x},${y}) scale(${s})" fill="${p.c}" opacity=".95">${String(o.inner).replace(/currentColor/g, p.c)}</g>
       <circle class="hit" cx="${p.x}" cy="${p.y}" r="${p.s*0.55}"/>
@@ -90,6 +90,12 @@ function drawBody() {
   svg.innerHTML = g;
   svg.querySelectorAll('.org').forEach(el => {
     el.addEventListener('click', () => selectOrgan(el.dataset.o));
+    el.addEventListener('keydown', event => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        selectOrgan(el.dataset.o);
+      }
+    });
   });
   selectOrgan('heart');
 }
@@ -127,7 +133,11 @@ function bindBedSwipe() {
 
 function selectOrgan(id) {
   selected = id;
-  document.querySelectorAll('#anat .org').forEach(x => x.classList.toggle('sel', x.dataset.o === id));
+  document.querySelectorAll('#anat .org').forEach(x => {
+    const active = x.dataset.o === id;
+    x.classList.toggle('sel', active);
+    x.setAttribute('aria-pressed', active);
+  });
   renderOrganPanel();
 }
 
@@ -147,7 +157,7 @@ const ORGAN_META = {
   stomach: {n:'胃',   f: s => [['pH', '1.8', ''], ['排空', '正常', ''], ['黏膜', '完好', '']]},
   spleen:  {n:'脾',   f: s => [['体积', '正常', ''], ['滤血', '正常', '']]},
   pancreas:{n:'胰腺', f: s => [['血糖', s.glu, 'mmol/L'], ['胰岛素', s.glu > 11 ? '相对不足' : '正常', '']]},
-  kidney:  {n:'肾脏', f: s => [['血钾', s.k, 'mmol/L'], ['肌酐', s.cr, 'µmol/L'], ['尿量', s.uo, 'mL/min'], ['GFR', '28', 'mL/min']]},
+  kidney:  {n:'肾脏', f: s => [['血钾', s.k, 'mmol/L'], ['肌酐', s.cr, 'µmol/L'], ['尿量', s.uo, 'mL/min'], ['GFR', s.gfr, 'mL/min']]},
   gut:     {n:'肠道', f: s => [['蠕动', '正常', ''], ['吸收', '92%', ''], ['血氨', '33', 'µmol/L']]},
 };
 
@@ -239,19 +249,23 @@ function vitalList(s) {
   ];
 }
 function renderVitals() {
-  const s = E.snapshot(S);
-  $('#vitals').innerHTML = vitalList(s).map(v => {
-    const cls = v.st === 'crit' ? 'bad' : (v.st === 'warn' ? 'warn' : '');
-    return `<div class="vpill ${cls}" data-v="${v.k}">
-      <span class="dot"></span><span class="k">${v.n}</span>
-      <span class="v">${v.v}</span><span class="u">${v.u}</span></div>`;
-  }).join('');
-  $('#vitals').querySelectorAll('.vpill').forEach(el => {
-    el.addEventListener('click', () => {
-      const v = vitalList(E.snapshot(S)).find(x => x.k === el.dataset.v);
+  const host = $('#vitals'), readings = vitalList(E.snapshot(S));
+  if (!host.childElementCount) {
+    host.innerHTML = readings.map(v => `<button type="button" class="vpill" data-v="${v.k}">
+      <span class="dot"></span><span class="k">${v.n}</span><span class="v"></span><span class="u">${v.u}</span></button>`).join('');
+    host.addEventListener('click', event => {
+      const key = event.target.closest('[data-v]')?.dataset.v;
+      const v = vitalList(E.snapshot(S)).find(x => x.k === key);
+      if (!v) return;
       openDetail(v.n + ' · 参考范围', v.u,
         [['参考', REF[v.k] || '—'], ['当前', v.v + ' ' + v.u], ['趋势', trend(v.k)]], '');
     });
+  }
+  readings.forEach((v, index) => {
+    const el = host.children[index];
+    el.classList.toggle('bad', v.st === 'crit');
+    el.classList.toggle('warn', v.st === 'warn');
+    el.querySelector('.v').textContent = v.v;
   });
 }
 const REF = {hr:'60–100 bpm', bp:'90–140 / 60–90 mmHg', rr:'12–20 rpm',
@@ -305,8 +319,11 @@ function renderStates() {
   if (env.exercise) out.push('运动中');
   if (env.sleep) out.push('睡眠');
   if (!out.length) out.push('生命体征平稳');
-  $('#states').innerHTML = out.map((t, i) =>
-    `<span class="spill ${i === 0 && t === '生命体征平稳' ? 'ok' : ''}" data-state="${t}">${t}</span>`).join('');
+  const states = $('#states'), labels = out.join('|');
+  if (states.dataset.labels === labels) return;
+  states.dataset.labels = labels;
+  states.innerHTML = out.map((t, i) =>
+    `<button type="button" class="spill ${i === 0 && t === '生命体征平稳' ? 'ok' : ''}" data-state="${t}">${t}</button>`).join('');
   /* 点状态标签 → 术语卡 */
   document.querySelectorAll('#states .spill').forEach(el => {
     el.style.cursor = 'pointer';
@@ -331,8 +348,8 @@ function openSheet(title, sub, rows, patient) {
   delete $('#sheetTitle').dataset.view;
   list.innerHTML = rows.map((r, i) => r.sec
     ? `<div class="sec">${r.sec}</div>`
-    : `<div class="drow" data-i="${i}"><span class="nm">${r.n}</span>
-        <span class="tag">${r.tag}</span><span class="amt">${r.amt}</span></div>`).join('');
+    : `<button type="button" class="drow" data-i="${i}"><span class="nm">${r.n}</span>
+        <span class="tag">${r.tag}</span><span class="amt">${r.amt}</span></button>`).join('');
   list.querySelectorAll('.drow').forEach(el => {
     el.addEventListener('click', () => {
       if (!list.contains(el) || !$('#sheet').classList.contains('on')) return;
@@ -343,7 +360,17 @@ function openSheet(title, sub, rows, patient) {
   $('#sheet').classList.add('on');
   $('#mask').classList.add('on');
 }
-function closeSheet() { $('#sheet').classList.remove('on'); $('#mask').classList.remove('on'); }
+let returnToLobby = false;
+function closeSheet() {
+  $('#sheet').classList.remove('on');
+  $('#mask').classList.remove('on');
+  returnToLobby = false;
+}
+function dismissSheet() {
+  const showWard = returnToLobby;
+  closeSheet();
+  if (showWard) showLobby();
+}
 
 function closeDetail() {
   $('#detail').classList.remove('on');
@@ -406,11 +433,11 @@ function openDrugSheet() {
 
   let curTab = 'all';
   const rowOf = (it) => `
-        <div class="drow" data-id="${it.id}">
+        <button type="button" class="drow" data-id="${it.id}">
           <span class="nm">${it.n}${(window.SUBSTANCES.ALIASES && Object.keys(window.SUBSTANCES.ALIASES).some(a => window.SUBSTANCES.ALIASES[a] === it.n)) ? `<span style="font-size:10px;color:#c8a0a0">（${Object.keys(window.SUBSTANCES.ALIASES).filter(a => window.SUBSTANCES.ALIASES[a] === it.n).slice(0,2).join('/')}）</span>` : ''}${it.note ? `<span style="font-size:10px;color:#b3a6a6"> · ${it.note}</span>` : ''}</span>
           <span class="tag">${it.route}${(it.routes && it.routes.length > 1) ? ' 等' + it.routes.length + ' 途径' : ''}</span>
           <span class="amt">${it.dose}${it.unit}</span>
-        </div>`;
+        </button>`;
 
   const drawTabs = () => {
     const host = list.querySelector('#drugTabs');
@@ -989,9 +1016,14 @@ function checkCrucial() {
 }
 function syncSpeedUI() {
   $('#speed').querySelectorAll('.pill[data-s]').forEach(x => {
-    x.classList.toggle('on', +x.dataset.s === speed);
+    const active = !ff && +x.dataset.s === speed;
+    x.classList.toggle('on', active);
+    x.setAttribute('aria-pressed', active);
   });
-  const f = $('#ff'); f.classList.toggle('on', ff); f.textContent = ff ? '快进中' : '快进';
+  const f = $('#ff');
+  f.classList.toggle('on', ff);
+  f.setAttribute('aria-pressed', ff);
+  f.textContent = ff ? '快进中' : '快进';
 }
 
 let toastTimer = null;
@@ -1140,7 +1172,7 @@ function openStats() {
   html += '</div>';
 
   /* 近 10 局走势 */
-  const last = recs.slice(-10);
+  const last = recs.slice(0, 10).reverse();
   if (last.length) {
     html += '<div class="sec">最近 ' + last.length + ' 局评分</div><div style="padding:0 12px 14px">';
     html += last.map(r => {
@@ -1452,7 +1484,7 @@ function openAbout() {
   list.innerHTML =
     '<div style="padding:12px 14px 6px;font-size:12.5px;line-height:1.9;color:var(--ink-2)">' +
       '<b style="color:var(--ink)">悬壶</b> · 一间病房，四位患者，时间不会等你。<br>' +
-      '版本 v' + APP_VERSION + '（' + (IS_WEB ? '网页版' : '安卓版') + '）' +
+      '版本 v' + APP_VERSION + '（' + platformName + '）' +
     '</div>' +
     '<div class="sec">我们怎么处理你的数据</div>' +
     '<div style="padding:0 14px 10px;font-size:12.5px;line-height:1.9">' +
@@ -1469,14 +1501,14 @@ function openAbout() {
       '本作是教学模拟。所有病例、数值、处置均为教学演示，<b>不构成医疗建议</b>，不能用于真实诊疗。' +
     '</div>' +
     '<div style="display:flex;gap:8px;padding:6px 14px 10px">' +
-      '<a href="/privacy.html" target="_blank" class="pill" style="flex:1;padding:11px;text-align:center;text-decoration:none;border-radius:12px">完整隐私政策</a>' +
+      (releaseBase ? '<a href="' + escapeHtml(releaseBase) + '/privacy.html" target="_blank" class="pill" style="flex:1;padding:11px;text-align:center">完整隐私政策</a>' : '') +
       '<button id="abCopy" class="pill" style="flex:1;padding:11px;cursor:pointer;border-radius:12px">复制版本信息</button>' +
     '</div>' +
     '<div style="padding:0 14px 16px;font-size:11.5px;color:var(--ink-3);line-height:1.8">' +
       '建议 16 岁以上玩家使用。' +
     '</div>';
   list.querySelector('#abCopy').addEventListener('click', async () => {
-    const t = '悬壶 v' + APP_VERSION + ' · ' + (IS_WEB ? '网页版' : '安卓版');
+    const t = '悬壶 v' + APP_VERSION + ' · ' + platformName;
     try { await navigator.clipboard.writeText(t); toast('已复制'); } catch (e) { toast(t, true); }
   });
 }
@@ -1485,7 +1517,7 @@ function openAbout() {
 function buildFeedbackText() {
   const lines = [];
   lines.push('【悬壶 问题反馈】');
-  lines.push('版本：v' + APP_VERSION + '（' + (IS_WEB ? '网页版' : 'APK') + '）');
+  lines.push('版本：v' + APP_VERSION + '（' + platformName + '）');
   try { lines.push('设备：' + navigator.userAgent.slice(0, 90)); } catch (e) {}
   if (S) {
     lines.push('病例：' + (S.cas && S.cas.name || '—') + ' / 难度 ' + (S.diff || caseDiff));
@@ -1570,9 +1602,10 @@ function openFeedback() {
 
 /* ---------------- 版本 / 更新检查 ---------------- */
 const APP_VERSION = '1.50.0';
-const UPDATE_BASE = (function () {
-  try { return localStorage.getItem('life.updateBase') || 'https://xuanhu.netlify.app'; } catch (e) { return 'https://xuanhu.netlify.app'; }
-})();
+const releaseRoot = document.querySelector('meta[name="xuanhu-release-root"]')?.content;
+const releaseBase = releaseRoot ? new URL(releaseRoot, location.href).href.replace(/\/$/, '') : '';
+const platformName = location.protocol === 'file:' ? '离线 HTML' :
+  (window.Capacitor?.isNativePlatform?.() ? '安卓版' : '网页版');
 
 function cmpVer(a, b) {
   const pa = String(a).split('.').map(Number), pb = String(b).split('.').map(Number);
@@ -1592,12 +1625,11 @@ function updateBaseCandidates() {
     const saved = localStorage.getItem('life.updateBase');
     if (saved) list.push(saved.replace(/\/$/, ''));
   } catch (e) {}
-  /* 排除本机地址：APK 内部跑在 http://localhost，它不是服务器 */
+  if (releaseBase) list.push(releaseBase);
   if (/^https?:/.test(location.protocol) && !/^https?:\/\/(localhost|127\.0\.0\.1)/.test(location.origin)) {
     list.push(location.origin);
   }
   list.push('https://xuanhu.netlify.app');
-  list.push('http://10.100.2.93:8791');
   return Array.from(new Set(list.filter(Boolean)));
 }
 
@@ -1606,10 +1638,9 @@ function downloadPageUrl(base) {
     const saved = localStorage.getItem('life.downloadPage');
     if (saved) return saved;
   } catch (e) {}
-  return (base || updateBaseCandidates()[0] || '') + '/download';
+  return (base || releaseBase || 'https://xuanhu.netlify.app') + '/download.html';
 }
 
-/* 在线更新暂未开放：改为"联系作者获取最新版" */
 function openGetLatest() {
   openSheet('获取最新版', '当前 v' + APP_VERSION, []);
   const list = document.querySelector('#sheetList');
@@ -1618,8 +1649,7 @@ function openGetLatest() {
   try { contact = localStorage.getItem('life.contact') || ''; } catch (e) {}
   list.innerHTML =
     '<div style="padding:12px 14px;font-size:13px;line-height:1.9;color:var(--ink-2)">' +
-      '在线更新目前没有开放（需要公网服务器，暂时没搭）。<br>' +
-      '想要新版本的话，直接联系作者要安装包。' +
+      '下载页提供网页版和可离线打开的 HTML。发布者提供安卓安装包时，也会列在下载页。' +
     '</div>' +
     '<div class="sec">当前版本</div>' +
     '<div style="padding:0 14px 10px;display:flex;align-items:center;gap:10px">' +
@@ -1627,12 +1657,12 @@ function openGetLatest() {
       '<button id="glCopy" class="pill" style="padding:8px 14px;cursor:pointer">复制版本号</button>' +
       '</div>' +
       '<div style="padding:0 14px 12px">' +
-      '<a id="glOpen" href="' + 'https://xuanhu.netlify.app' + '" target="_blank" class="pill" style="display:block;padding:12px;text-align:center;text-decoration:none;background:rgba(211,58,58,.10);color:#a33;font-weight:700;border-radius:12px">打开下载页</a>' +
+      '<a id="glOpen" target="_blank" class="pill" style="display:block;padding:12px;text-align:center;text-decoration:none;background:var(--accent-soft);color:var(--accent);font-weight:700;border-radius:12px">打开下载页</a>' +
     '</div>' +
     '<div class="sec">联系方式</div>' +
     '<div style="padding:0 14px 10px">' +
       '<textarea id="glContact" placeholder="在这里写你的联系方式（微信 / QQ / 群号），会保存在本机" ' +
-      'style="width:100%;height:70px;padding:10px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink);font:inherit;font-size:12.5px;resize:none">' + contact + '</textarea>' +
+      'style="width:100%;height:70px;padding:10px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink);font:inherit;font-size:12.5px;resize:none"></textarea>' +
     '</div>' +
     '<div style="display:flex;gap:8px;padding:0 14px 14px">' +
       '<button id="glSave" class="pill" style="flex:1;padding:10px;cursor:pointer">保存</button>' +
@@ -1641,6 +1671,8 @@ function openGetLatest() {
       '提示：这个面板里的"联系方式"只存在你这台设备上，发给别人前请自己确认内容。' +
     '</div>';
   const ta = list.querySelector('#glContact');
+  ta.value = contact;
+  list.querySelector('#glOpen').href = downloadPageUrl();
   list.querySelector('#glSave').addEventListener('click', () => {
     try { localStorage.setItem('life.contact', ta.value.trim()); } catch (e) {}
     toast('已保存联系方式');
@@ -1656,12 +1688,13 @@ async function checkUpdate() {
   const list = document.querySelector('#sheetList');
   if (!list) return;
   list.innerHTML = '<div style="padding:16px 14px;font-size:13px;color:#8a8078">正在查找更新…</div>';
+  const loading = list.firstElementChild;
 
   const cands = updateBaseCandidates();
   let info = null, usedBase = null;
   for (const b of cands) {
     try {
-      const r = await fetch(b + '/version.json?t=' + Date.now(), { cache: 'no-store' });
+      const r = await fetch(b + '/version.json?t=' + Date.now(), { cache: 'no-store', signal: AbortSignal.timeout(5000) });
       if (!r.ok) continue;
       const j = await r.json();
       if (j && j.version) { info = j; usedBase = b; break; }
@@ -1669,6 +1702,7 @@ async function checkUpdate() {
   }
 
   /* 找不到服务器：给出"打开下载页 / 分享给朋友"的路径，而不是死胡同 */
+  if (!list.contains(loading) || !$('#sheet').classList.contains('on')) return;
   if (!info) {
     const dl = downloadPageUrl(cands[0]);
     list.innerHTML =
@@ -1719,7 +1753,7 @@ async function checkUpdate() {
     '<div class="sec">获取新版本</div>' +
     '<div style="padding:0 14px 10px;display:flex;gap:8px">' +
       '<a href="' + dl + '" target="_blank" class="pill" style="flex:1;padding:11px;text-align:center;text-decoration:none;background:rgba(211,58,58,.10);color:#a33;font-weight:700;border-radius:12px">下载页</a>' +
-      '<a href="' + usedBase + (info.apk || '/apk') + '" target="_blank" class="pill" style="flex:1;padding:11px;text-align:center;text-decoration:none;border-radius:12px">直接下 APK</a>' +
+      (info.apk ? '<a href="' + escapeHtml(usedBase + info.apk) + '" target="_blank" class="pill" style="flex:1;padding:11px;text-align:center;text-decoration:none;border-radius:12px">下载 APK</a>' : '') +
     '</div>' +
     '<div style="padding:0 14px 16px">' +
       '<a href="' + usedBase + '/web/" target="_blank" class="pill" style="display:block;padding:11px;text-align:center;text-decoration:none;border-radius:12px">打开在线版（永远最新）</a>' +
@@ -1987,6 +2021,9 @@ function checkSigns() {
 }
 /* ---------------- 按钮 ---------------- */
 function bind() {
+  bindLobby();
+  $('#btnLobby').addEventListener('click', showLobby);
+  $('#sheetClose').addEventListener('click', dismissSheet);
   $('#btnDrug').addEventListener('click', () => openDrugSheet());
   $('#btnOps').addEventListener('click', () => {
     if (isCurrentPatient(S)) openSheet('操作', S.patient.name + ' · 急救与介入', actionRows(), S);
@@ -2024,7 +2061,7 @@ function bind() {
     {n:'获取最新版', tag:'下载页 / 联系方式', amt:'查看', run: () => openGetLatest()},
     {n:'医保说明 / 切换', tag: realism ? ((S && S.ins ? S.ins.t : '未参保') + ' · 可切换') : '看看怎么算', amt:'查看', run: () => openInsuranceHelp()},
     {n:'在线版模式', tag:'免安装更新', amt:'设置', run: () => openOnlineMode()},
-    ...(IS_WEB ? [{n:'下载离线版', tag:'APK · 离线可玩', amt:'下载', run: () => { location.href = '/xuanhu.apk'; }}] : []),
+    ...(IS_WEB || releaseBase ? [{n:'下载离线版', tag:'查看可用版本', amt:'下载', run: openGetLatest}] : []),
     {n:'统计', tag:'治愈率 · 常犯错', amt:'查看', run: () => openStats()},
     {n:'病历档案', tag:`最近 ${loadRecords().length} 例`, amt:'查看', run: () => openRecords()},
     {n:'行医手册', tag: handbookTag(), amt:'查看', run: () => openHandbook()},
@@ -2054,13 +2091,14 @@ function bind() {
        ['体质', (S.traits && S.traits.length) ? S.traits.map(x => x.n).join('、') : '无特殊体质'],
        ['提示', S.cas.hint]], '')},
   ]));
-  $('#mask').addEventListener('click', closeSheet);
+  $('#mask').addEventListener('click', dismissSheet);
   $('#detailX').addEventListener('click', closeDetail);
   $('#detail').addEventListener('click', e => { if (e.target.id === 'detail') closeDetail(); });
 
   $('#speed').addEventListener('click', e => {
     const p = e.target.closest('.pill'); if (!p) return;
     if (p.id === 'ff') { ff = !ff; syncSpeedUI(); return; }
+    ff = false;
     speed = +p.dataset.s; syncSpeedUI();
   });
 }
@@ -2358,128 +2396,104 @@ const RELEASES = [
 ];
 
 /* ---------------- 大厅（过渡页） ---------------- */
-function lobbyEnsure() {
-  if (document.getElementById('lobbyStyle')) return;
-  const st = document.createElement('style');
-  st.id = 'lobbyStyle';
-  st.textContent = `
-  #lobby { position:fixed; inset:0; z-index:200; display:flex; align-items:center; justify-content:center;
-    background:rgba(252,250,249,.94); backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
-    font-family:inherit; overflow:auto; padding:20px }
-  #lobby .box { width:min(560px, 92vw); max-height:92vh; overflow:auto }
-  #lobby h1 { font-size:24px; font-weight:700; letter-spacing:.5px; margin:0 0 4px }
-  #lobby .sub { font-size:12.5px; color:#8a8078; margin-bottom:18px }
-  #lobby .cap { font-size:11px; color:#a39a94; letter-spacing:1px; margin:16px 0 8px }
-  #lobby .bed { display:flex; align-items:center; gap:12px; padding:14px 16px; border-radius:14px;
-    background:#fff; border:1px solid #eee9e6; margin-bottom:9px; cursor:pointer; transition:.15s }
-  #lobby .bed:hover { border-color:#e2cfcf; transform:translateY(-1px) }
-  #lobby .bed.empty { background:#fbf9f8; border-style:dashed; color:#8a8078 }
-  #lobby .bed .no { width:34px; height:34px; border-radius:10px; background:#f7e6e6; color:#a33;
-    display:flex; align-items:center; justify-content:center; font-weight:700; font-size:14px; flex:0 0 auto }
-  #lobby .bed.empty .no { background:#f0ecea; color:#9a918c }
-  #lobby .bed .nm { flex:1; font-size:14px; font-weight:600 }
-  #lobby .bed .meta { font-size:11.5px; color:#9a918c; font-weight:400; margin-top:2px }
-  #lobby .bed .go { font-size:12px; color:#c0392b }
-  #lobby .links { display:flex; gap:8px; flex-wrap:wrap; margin-top:6px }
-  #lobby .links button { flex:1 1 auto; min-width:88px; padding:11px 10px; border-radius:12px; border:1px solid #eee9e6;
-    background:#fff; font:inherit; font-size:13px; color:#4b433f; cursor:pointer }
-  #lobby .links button:hover { border-color:#e2cfcf }
-  #lobby .foot { margin-top:18px; font-size:11px; color:#b3aaa4; text-align:center }
-  `;
-  document.head.appendChild(st);
+function bindLobby() {
+  const lobby = $('#lobby');
+  const release = RELEASES[0];
+  lobby.querySelector('.lobby-release summary').textContent = '更新记录 · v' + release.v;
+  lobby.querySelector('.lobby-release ul').innerHTML = release.notes.map(n => `<li>${escapeHtml(n)}</li>`).join('');
+  lobby.querySelector('[data-act="download"]').hidden = !IS_WEB && !releaseBase;
+  const actions = {
+    handbook: openHandbook, stats: openStats, chart: openChart, consult: openConsult,
+    ach: openAchievements, about: openAbout, download: openGetLatest,
+    diff: () => openSheet('难度设置', '病例与指导', difficultyRows()),
+    tutorial: () => TUTORIAL.open(0),
+  };
+  lobby.addEventListener('click', event => {
+    const button = event.target.closest('button');
+    if (!button || button.disabled) return;
+    if (button.hasAttribute('data-new')) {
+      startCase(CASEGEN.generate(diffFromLevel()));
+      hideLobby();
+    } else if (button.dataset.mode) {
+      if (button.dataset.mode === 'night') toggleNight(); else toggleRealism();
+      showLobby();
+    } else if (actions[button.dataset.act]) {
+      hideLobby();
+      returnToLobby = true;
+      actions[button.dataset.act]();
+    }
+  });
 }
 
 function showLobby() {
-  lobbyEnsure();
-  let el = document.getElementById('lobby');
-  if (!el) { el = document.createElement('div'); el.id = 'lobby'; document.body.appendChild(el); }
-  const bedHtml = beds.map((b, i) => {
-    const st = b.S;
-    const mins = Math.round(st.t / 60);
-    const state = st.death ? '已死亡' : (st.discharged ? '已出院' : '进行中');
-    return '<div class="bed" data-bed="' + i + '">' +
-      '<div class="no">' + (i + 1) + '</div>' +
-      '<div class="nm">' + (st.cas && st.cas.name) +
-        '<div class="meta">' + mins + ' 分钟 · ' + state + '</div></div>' +
-      '<div class="go">继续 →</div></div>';
-  }).join('');
-  const emptyCount = Math.max(0, MAX_BEDS - beds.length);
-  const emptyHtml = emptyCount > 0
-    ? '<div class="bed empty" data-new="1"><div class="no">+</div>' +
-      '<div class="nm">开一个新病例<div class="meta">' + beds.length + ' / ' + MAX_BEDS + ' 张床在用</div></div>' +
-      '<div class="go">开始 →</div></div>'
-    : '<div class="bed empty" data-new="0"><div class="no">满</div>' +
-      '<div class="nm">床位已满（' + MAX_BEDS + ' 张）<div class="meta">先处理或结束一个病例</div></div></div>';
-
-  const rel = RELEASES[0];
-  el.innerHTML = '<div class="box">' +
-    '<h1>悬壶</h1>' +
-    '<div class="sub">一间病房，四位患者，时间不会等你。</div>' +
-    '<div style="display:flex;gap:8px;margin:10px 0 4px">' +
-      '<button data-mode="night" style="flex:1;padding:10px;border-radius:12px;border:1px solid var(--line);background:' +
-        (nightMode ? '#1b2028;color:#ffd9a0' : '#fff;color:#4b433f') + ';font:inherit;font-size:13px;cursor:pointer">' +
-        (nightMode ? '🌙 夜间（已开启）' : '☀ 白天 / 🌙 夜间') + '</button>' +
-      '<button data-mode="realism" style="flex:1;padding:10px;border-radius:12px;border:1px solid var(--line);background:' +
-        (realism ? '#1b2028;color:#ffd9a0' : '#fff;color:#4b433f') + ';font:inherit;font-size:13px;cursor:pointer">' +
-        (realism ? '现实模式 开（点这里关闭）' : '现实模式 关（点这里开启）') + '</button>' +
-    '</div>' +
-    (rel ? '<div style="margin:10px 0 2px;padding:10px 12px;border-radius:12px;background:rgba(211,58,58,.07);border:1px solid rgba(211,58,58,.18);font-size:12px;line-height:1.6">' +
-      '<b style="color:#a33">更新公告 · v' + rel.v + '</b><br>' + rel.notes.map(x => '· ' + x).join('<br>') + '</div>' : '') +
-    '<div class="cap">床位</div>' + bedHtml + emptyHtml +
-    '<div class="cap">随身工具</div>' +
-    '<div class="links">' +
-    '<button data-act="handbook">行医手册</button>' +
-    '<button data-act="stats">统计</button>' +
-    '<button data-act="chart">指标走势</button>' +
-    '<button data-act="consult">会诊</button>' +
-    (IS_WEB ? '<button data-act="download">下载离线版</button>' : '') +
-    '<button data-act="ach">成就</button>' +
-    '<button data-act="diff">难度</button>' +
-    '<button data-act="tutorial">教程</button>' +
-    '<button data-act="about">关于·隐私</button>' +
-    '</div>' +
-    '<div class="foot">上级医师：' + ((window.MENTOR && MENTOR.LEVELS[level] && MENTOR.LEVELS[level].name) || '实习') +
-    ' · 病例难度 ' + caseDiff + ' · 已有 ' + beds.length + ' 张床</div>' +
-    '</div>';
-
-  el.querySelectorAll('[data-bed]').forEach(row => {
+  const lobby = $('#lobby');
+  const full = beds.length >= MAX_BEDS;
+  const list = lobby.querySelector('.bed-list');
+  list.innerHTML = beds.map(({ S: patient }, i) => `
+    <button type="button" class="bed" data-bed="${i}" aria-current="${patient === S}">
+      <span class="no">${i + 1}</span>
+      <span class="nm">${escapeHtml(patient.patient.name)}<span class="meta">${escapeHtml(patient.cas.name)} · ${Math.floor(patient.t / 60)} 分钟</span></span>
+      <span class="go">继续 →</span>
+    </button>`).join('') + `
+    <button type="button" class="bed empty" data-new="${full ? 0 : 1}" ${full ? 'disabled' : ''}>
+      <span class="no">${full ? '满' : '+'}</span>
+      <span class="nm">${full ? '床位已满' : '接诊新患者'}<span class="meta">${beds.length} / ${MAX_BEDS} 张床在用</span></span>
+    </button>`;
+  list.querySelectorAll('[data-bed]').forEach(row => {
     const patient = beds[+row.dataset.bed].S;
     row.addEventListener('click', () => { if (switchBed(patient)) hideLobby(); });
   });
-  el.querySelectorAll('[data-new]').forEach(b => {
-    b.addEventListener('click', () => {
-      if (b.dataset.new === '0') { toast('床位已满', true); return; }
-      startCase(window.CASEGEN.generate(diffFromLevel()));
-      hideLobby();
-    });
-  });
-  el.querySelectorAll('[data-mode]').forEach(b => {
-    b.addEventListener('click', () => {
-      if (b.dataset.mode === 'night') toggleNight(); else toggleRealism();
-      showLobby();
-    });
-  });
-  el.querySelectorAll('[data-act]').forEach(b => {
-    b.addEventListener('click', () => {
-      el.style.display = 'none';
-      const act = b.dataset.act;
-      if (act === 'handbook') openHandbook();
-      else if (act === 'stats') openStats();
-      else if (act === 'chart') openChart();
-      else if (act === 'consult') openConsult();
-      else if (act === 'download') { try { location.href = '/xuanhu.apk'; } catch (e) {} }
-      else if (act === 'about') openAbout();
-      else if (act === 'ach') openAchievements();
-      else if (act === 'diff') openDifficulty();
-      else if (act === 'tutorial') openTutorial();
-    });
-  });
-  el.style.display = 'flex';
+  lobby.querySelector('[data-mode="night"]').setAttribute('aria-pressed', nightMode);
+  lobby.querySelector('[data-mode="realism"]').setAttribute('aria-pressed', realism);
+  const guidance = MENTOR.LEVELS[level] || MENTOR.LEVELS.intern;
+  lobby.querySelector('.foot').textContent = `指导级别 · ${guidance.name}　 病例难度 · ${caseDiff}`;
+  lobby.style.display = 'flex';
 }
 
 function hideLobby() {
   const el = document.getElementById('lobby');
   if (el) el.style.display = 'none';
+}
+
+function bindDialogFocus() {
+  const lobby = $('#lobby'), sheet = $('#sheet'), detail = $('#detail');
+  const openers = new WeakMap();
+  let current = null;
+  function sync() {
+    const next = $('#severePopup') || (lobby.style.display === 'flex' ? lobby :
+      detail.classList.contains('on') ? detail : sheet.classList.contains('on') ? sheet : null);
+    if (next === current) return;
+    const previous = current;
+    current = next;
+    $('.screen').inert = $('.dock').inert = !!next;
+    for (const el of [lobby, sheet, detail]) el.inert = el !== next;
+    const restore = previous && openers.get(previous);
+    if (restore?.isConnected && restore.getClientRects().length && !restore.closest('[inert]') &&
+        (!next || next.contains(restore))) {
+      restore.focus({ preventScroll: true });
+      return;
+    }
+    if (next) {
+      if (!next.contains(document.activeElement)) openers.set(next, document.activeElement);
+      const first = next.querySelector('[aria-current="true"], #sevOk') ||
+        next.querySelector('button:not(:disabled)');
+      first?.focus({ preventScroll: true });
+    } else {
+      $('#btnLobby').focus({ preventScroll: true });
+    }
+  }
+  const observer = new MutationObserver(sync);
+  for (const el of [lobby, sheet, detail]) observer.observe(el, { attributes: true, attributeFilter: ['class', 'style'] });
+  observer.observe(document.body, { childList: true });
+  document.addEventListener('keydown', event => {
+    if (event.key !== 'Escape' || !current) return;
+    event.preventDefault();
+    if (current === detail) closeDetail();
+    else if (current === sheet) dismissSheet();
+    else if (current.id === 'severePopup') current.querySelector('#sevOk').click();
+    else if (beds.length) hideLobby();
+  });
+  sync();
 }
 
 /* ---------------- 启动 ---------------- */
@@ -2507,8 +2521,7 @@ syncLevel();
 showAdvice(false);
 if (beds.length > 1) flashBedBar(3000);
 showLobby();
-/* 自动化测试（Playwright 会置 navigator.webdriver）直接进局，避免大厅遮挡点击 */
-if (navigator.webdriver || location.protocol === 'file:') hideLobby();
+bindDialogFocus();
 settleBeds();
 saveGame();
 window.addEventListener('pagehide', saveGame);

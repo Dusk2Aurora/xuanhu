@@ -971,12 +971,22 @@ function silenceMonitor() {
   nextArrestAlarmAt = 0;
   lastBeatAt = null;
 }
+document.addEventListener('visibilitychange', () => { if (document.hidden) silenceMonitor(); });
+window.addEventListener('pagehide', silenceMonitor);
 
 function pumpSound(ts, warning) {
-  if (!window.SOUND?.enabled) { silenceMonitor(); return; }
-  // 一个病房共用一组报警。当前床和后台床的同级事件合并，危急心律优先。
-  const arrest = beds.some(b => b.S.rhythm === 'vf' || b.S.rhythm === 'asystole');
-  if (arrest) {
+  if (!window.SOUND?.enabled || document.hidden) { silenceMonitor(); return; }
+  // 先听当前床的骤停报警；当前床有自主心律时，后台室颤优先于后台心静止。
+  let rhythm = S.rhythm;
+  if (rhythm === 'sinus') {
+    if (beds.some(b => b.S.rhythm === 'vf')) rhythm = 'vf';
+    else if (beds.some(b => b.S.rhythm === 'asystole')) rhythm = 'asystole';
+  }
+  if (rhythm !== 'asystole' && SOUND.flatlinePlaying) SOUND.stopMonitorAlarm();
+  if (rhythm === 'asystole') {
+    if (!SOUND.flatlinePlaying) SOUND.flatline();
+    nextArrestAlarmAt = 0;
+  } else if (rhythm === 'vf') {
     if (ts >= nextArrestAlarmAt) {
       SOUND.alarm();
       nextArrestAlarmAt = ts + 1500;

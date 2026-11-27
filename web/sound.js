@@ -1,7 +1,7 @@
 /* ==========================================================================
  * 声音：全部用 WebAudio 实时合成，不需要任何音频文件
  *  - 心电：每次有效心搏对应一个短 QRS 音
- *  - 监护报警：按优先级播报高音三短声或较低的双声
+ *  - 监护报警：心静止长音、室颤三短声、一般提醒双声
  *  - 点击/给药：短促轻巧；给药为带泛音的小铃铛
  *  - 成功：C 大三和弦上行分解 + 长尾混响；失败：A 小调下行，低通压暗
  *  - 总线：master → 低通 → 压缩器 → 软限幅 → 用户音量，并带一条轻混响发送
@@ -15,6 +15,7 @@ const TRIM = 0.9;         // 压缩后补偿；末端还有一个软限幅器兜
 let ctx = null, master = null, busLP = null, comp = null, trim = null, limiter = null, output = null;
 let space = null;         // 混响发送总线（ConvolverNode 输入）
 let monitorAlarm = null;
+let resumePending = false;
 let enabled = true;
 let lastVolume = 20;
 try {
@@ -72,8 +73,10 @@ function buildSpace() {
 
 function ensure() {
   if (ctx) {
-    if (ctx.state === 'suspended' && typeof ctx.resume === 'function' && !ctx.startRendering) {
-      try { ctx.resume(); } catch (e) {}
+    if (ctx.state === 'suspended' && typeof ctx.resume === 'function' && !ctx.startRendering && !resumePending &&
+        root.navigator?.userActivation?.hasBeenActive !== false) {
+      resumePending = true;
+      ctx.resume().catch(() => {}).finally(() => { resumePending = false; });
     }
     return ctx;
   }
@@ -197,39 +200,49 @@ function stopMonitorAlarm() {
   const { osc, gain } = monitorAlarm;
   monitorAlarm = null;
   const now = ctx.currentTime;
+  const level = gain.value;
   gain.cancelScheduledValues(now);
+  gain.setValueAtTime(level, now);
   gain.setTargetAtTime(0, now, 0.003);
   osc.stop(now + 0.015);
 }
 
-// 参考迈瑞 T1 的 Mode 2 节奏。音高与包络为游戏合成，组内间隔由音频时钟控制。
-function playMonitorAlarm(high) {
-  if (!enabled || (!high && monitorAlarm)) return;
+// 短声参考迈瑞 T1 的 Mode 2 节奏。心静止另用较轻的持续音，由心律调度停止。
+function playMonitorAlarm(kind) {
+  const continuous = kind === 'flatline';
+  if (!enabled || (continuous && monitorAlarm?.kind === kind) || (kind === 'warning' && monitorAlarm)) return;
   const c = ensure();
   if (!c || (c.state !== 'running' && !c.startRendering)) return;
   stopMonitorAlarm();
   const osc = c.createOscillator(), amp = c.createGain();
-  osc.type = 'triangle';
-  osc.frequency.value = high ? 980 : 600;
   const start = c.currentTime;
-  const count = high ? 3 : 2, spacing = high ? 0.20 : 0.27, duration = high ? 0.10 : 0.14;
-  const end = start + (count - 1) * spacing + duration;
-  amp.gain.value = 0;
-  for (let i = 0; i < count; i++) {
-    const at = start + i * spacing;
-    env(amp.gain, at, high ? 0.24 : 0.17, 0.008, duration, 'beep');
-    amp.gain.setValueAtTime(0, at + duration + 0.001);
-  }
   osc.connect(amp);
   amp.connect(master);
-  monitorAlarm = { osc, gain: amp.gain };
+  monitorAlarm = { kind, osc, gain: amp.gain };
   osc.onended = () => {
     if (monitorAlarm?.osc === osc) monitorAlarm = null;
     osc.disconnect();
     amp.disconnect();
   };
-  osc.start(start);
-  osc.stop(end + 0.005);
+  amp.gain.setValueAtTime(0, start);
+  if (continuous) {
+    osc.type = 'sine';
+    osc.frequency.value = 830;
+    amp.gain.linearRampToValueAtTime(0.11, start + 0.035);
+    osc.start(start);
+  } else {
+    const high = kind === 'vf';
+    osc.type = 'triangle';
+    osc.frequency.value = high ? 980 : 600;
+    const count = high ? 3 : 2, spacing = high ? 0.20 : 0.27, duration = high ? 0.10 : 0.14;
+    for (let i = 0; i < count; i++) {
+      const at = start + i * spacing;
+      env(amp.gain, at, high ? 0.24 : 0.17, 0.008, duration, 'beep');
+      amp.gain.setValueAtTime(0, at + duration + 0.001);
+    }
+    osc.start(start);
+    osc.stop(start + (count - 1) * spacing + duration + 0.005);
+  }
 }
 
 /* ---------- 具体音效 ---------- */
@@ -272,8 +285,10 @@ const S = {
     }
   },
 
-  alarm() { playMonitorAlarm(true); },
-  critical() { playMonitorAlarm(false); },
+  alarm() { playMonitorAlarm('vf'); },
+  flatline() { playMonitorAlarm('flatline'); },
+  get flatlinePlaying() { return monitorAlarm?.kind === 'flatline'; },
+  critical() { playMonitorAlarm('warning'); },
   stopMonitorAlarm,
 
   /* 出院：C 大三和弦上行分解，每个音独立衰减 */

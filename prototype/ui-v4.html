@@ -360,6 +360,12 @@ button { color: inherit; }
 .sheet .list { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 6px 10px 10px; }
 .sheet input, .sheet canvas, .sheet img, .sheet video { max-width: 100%; }
 .sheet input { display: block; width: 100%; }
+.sound-settings { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 4px 16px; padding: 10px; }
+.sound-settings label { font-weight: 650; }
+.sound-settings output { font-variant-numeric: tabular-nums; color: var(--ink-2); text-align: right; }
+.sound-settings input { min-height: 44px; min-width: 0; margin: 0; accent-color: var(--accent); cursor: pointer; }
+.sound-settings button { min-height: 44px; padding: 0 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); cursor: pointer; }
+.sound-settings button[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
 .sheet canvas { display: block; width: 100% !important; height: auto; margin: 8px 0; border-radius: 10px; background: var(--subtle); }
 .drow {
   display: flex;
@@ -609,7 +615,8 @@ button.drow { width: 100%; border: 0; background: transparent; color: inherit; f
 #lobby .meta { display: block; margin-top: 2px; color: var(--ink-2); font-size: 11.5px; font-weight: 450; }
 #lobby .go { grid-column: 2; justify-self: start; color: var(--accent); font-size: 12px; font-weight: 670; }
 .lobby-modes, #lobby .links { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
-#lobby .links button, #lobby [data-mode] {
+.lobby-modes { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+#lobby .links button, .lobby-modes button {
   min-width: 0;
   min-height: 44px;
   padding: 5px 7px;
@@ -634,7 +641,7 @@ button.drow { width: 100%; border: 0; background: transparent; color: inherit; f
 #lobby .foot { grid-area: foot; color: var(--ink-3); font-size: 12px; }
 
 @media (hover: hover) {
-  #lobby button.bed:hover, #lobby .links button:hover, #lobby [data-mode]:hover { border-color: var(--accent); }
+  #lobby button.bed:hover, #lobby .links button:hover, .lobby-modes button:hover { border-color: var(--accent); }
 }
 @media (max-width: 620px) {
   #lobby .box { grid-template-columns: minmax(0, 1fr); grid-template-areas: "heading" "beds" "tools" "foot"; }
@@ -743,6 +750,7 @@ button.drow { width: 100%; border: 0; background: transparent; color: inherit; f
       <div class="lobby-modes">
         <button type="button" data-mode="night" aria-pressed="false">夜间模式</button>
         <button type="button" data-mode="realism" aria-pressed="false">现实模式</button>
+        <button type="button" data-act="sound" aria-haspopup="dialog">音效设置</button>
       </div>
       <h2 class="cap">随身工具</h2>
       <div class="links">

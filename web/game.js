@@ -1986,6 +1986,29 @@ function checkSigns() {
   }
 }
 /* ---------------- 按钮 ---------------- */
+function openSoundSettings() {
+  openSheet('音效设置', '', []);
+  const list = $('#sheetList');
+  list.innerHTML = `<div class="sound-settings">
+    <label for="soundVolume">音量</label><output for="soundVolume" id="soundPercent"></output>
+    <input type="range" id="soundVolume" min="0" max="100" step="1">
+    <button type="button" id="soundMute">静音</button>
+  </div>`;
+  const slider = $('#soundVolume'), mute = $('#soundMute');
+  function sync() {
+    const percent = SOUND.volume + '%';
+    slider.value = SOUND.volume;
+    slider.setAttribute('aria-valuetext', percent);
+    $('#soundPercent').value = percent;
+    mute.setAttribute('aria-pressed', String(!SOUND.enabled));
+  }
+  slider.addEventListener('input', () => { SOUND.volume = slider.valueAsNumber; sync(); });
+  slider.addEventListener('change', () => SOUND.click());
+  mute.addEventListener('click', () => { SOUND.enabled = !SOUND.enabled; sync(); SOUND.click(); });
+  sync();
+  slider.focus({ preventScroll: true });
+}
+
 function bind() {
   bindLobby();
   $('#opTitle').addEventListener('change', event => selectOrgan(event.target.value));
@@ -2019,7 +2042,7 @@ function bind() {
   });
   $('#btnBlood').addEventListener('click', bloodReport);
   $('#btnMenu').addEventListener('click', () => openSheet('菜单', '', [
-    {n:(window.SOUND && SOUND.enabled) ? '关闭音效' : '开启音效', tag:'', amt:'', run: () => { if (window.SOUND) { SOUND.enabled = !SOUND.enabled; SOUND.click(); } closeSheet(); toast((window.SOUND && SOUND.enabled) ? '音效已开启' : '音效已关闭'); }},
+    {n:'音效设置', tag:SOUND.enabled ? SOUND.volume + '%' : '静音', amt:'调节', run:openSoundSettings},
     {n:'会诊', tag:'分享 / 接手病例', amt:'查看', run: () => openConsult()},
     {n:'费用与医保', tag: realism ? '查看明细' : '现实模式才计费', amt:'查看', run: () => openCostSheet()},
     {n:'检查更新', tag:'在线 · v' + APP_VERSION, amt:'查看', run: () => checkUpdate()},
@@ -2371,7 +2394,7 @@ function bindLobby() {
   lobby.querySelector('[data-act="download"]').hidden = !IS_WEB && !releaseBase;
   const actions = {
     handbook: openHandbook, stats: openStats, chart: openChart, consult: openConsult,
-    ach: openAchievements, about: openAbout, download: openGetLatest,
+    ach: openAchievements, about: openAbout, download: openGetLatest, sound: openSoundSettings,
     diff: () => openSheet('难度设置', '病例与指导', difficultyRows()),
     tutorial: () => TUTORIAL.open(0),
   };

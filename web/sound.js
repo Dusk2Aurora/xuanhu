@@ -5,7 +5,7 @@
  *  - 报警：880/1174Hz 双音提示，正弦 + 柔和滤波，首尾包络归零，重复无爆音
  *  - 点击/给药：短促轻巧；给药为带泛音的小铃铛
  *  - 成功：C 大三和弦上行分解 + 长尾混响；失败：A 小调下行，低通压暗
- *  - 总线：master → 低通 → 压缩器 → 软限幅 → 输出，并带一条轻混响发送
+ *  - 总线：master → 低通 → 压缩器 → 软限幅 → 用户音量，并带一条轻混响发送
  * ========================================================================== */
 (function (root) {
 'use strict';
@@ -13,10 +13,34 @@
 const BUS_LEVEL = 0.9;    // 总音量（压缩器之前）
 const TRIM = 0.9;         // 压缩后补偿；末端还有一个软限幅器兜底
 
-let ctx = null, master = null, busLP = null, comp = null, trim = null, limiter = null;
+let ctx = null, master = null, busLP = null, comp = null, trim = null, limiter = null, output = null;
 let space = null;         // 混响发送总线（ConvolverNode 输入）
 let enabled = true;
-try { enabled = localStorage.getItem('life.sound') !== '0'; } catch (e) {}
+let lastVolume = 100;
+try {
+  enabled = localStorage.getItem('life.sound') !== '0';
+  const saved = Number(localStorage.getItem('life.soundVolume'));
+  if (Number.isInteger(saved) && saved >= 1 && saved <= 100) lastVolume = saved;
+} catch (e) {}
+
+function setVolume(percent) {
+  if (!Number.isFinite(percent)) return;
+  const volume = Math.max(0, Math.min(100, Math.round(percent)));
+  if (volume === (enabled ? lastVolume : 0)) return;
+  enabled = volume > 0;
+  if (enabled) lastVolume = volume;
+  try {
+    localStorage.setItem('life.sound', enabled ? '1' : '0');
+    localStorage.setItem('life.soundVolume', String(lastVolume));
+  } catch (e) {}
+  if (!output) return;
+  const gain = output.gain;
+  const now = ctx.currentTime;
+  const current = gain.value;
+  gain.cancelScheduledValues(now);
+  gain.setValueAtTime(current, now);
+  gain.linearRampToValueAtTime(volume / 100, now + 0.02);
+}
 
 /* 轻混响：程序生成的短噪声脉冲响应，给和弦/铃声一点空间感 */
 function buildSpace() {
@@ -57,7 +81,7 @@ function ensure() {
   try { ctx = new AC(); } catch (e) { return null; }
 
   master = ctx.createGain();
-  master.gain.value = enabled ? BUS_LEVEL : 0;
+  master.gain.value = BUS_LEVEL;
 
   // 总线低通：削掉合成器的高频毛刺
   busLP = ctx.createBiquadFilter();
@@ -93,7 +117,10 @@ function ensure() {
   busLP.connect(comp);
   comp.connect(trim);
   trim.connect(limiter);
-  limiter.connect(ctx.destination);
+  output = ctx.createGain();
+  output.gain.value = enabled ? lastVolume / 100 : 0;
+  limiter.connect(output);
+  output.connect(ctx.destination);
 
   buildSpace();
   return ctx;
@@ -173,18 +200,9 @@ function beatCutoff(spo2) {
 /* ---------- 具体音效 ---------- */
 const S = {
   get enabled() { return enabled; },
-  set enabled(v) {
-    enabled = !!v;
-    try { localStorage.setItem('life.sound', v ? '1' : '0'); } catch (e) {}
-    if (!ctx) return;
-    const t = ctx.currentTime;
-    try {
-      master.gain.cancelScheduledValues(t);
-      master.gain.setTargetAtTime(enabled ? BUS_LEVEL : 0, t, 0.02);
-    } catch (e) {
-      master.gain.value = enabled ? BUS_LEVEL : 0;
-    }
-  },
+  set enabled(v) { setVolume(v ? lastVolume : 0); },
+  get volume() { return enabled ? lastVolume : 0; },
+  set volume(v) { setVolume(v); },
   unlock() { ensure(); },
 
   /* 心电滴声：短促滤波脉冲；音高与亮度都随血氧 */

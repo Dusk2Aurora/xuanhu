@@ -35,6 +35,25 @@ async function checkDock(page) {
   }
 }
 
+async function clickVisibleOrgan(page, locator, touch) {
+  await locator.scrollIntoViewIfNeeded();
+  const point = await locator.evaluate(el => {
+    // The center can lie behind another organ or between two halves of a paired organ.
+    const r = el.getBoundingClientRect();
+    const x = Math.round(r.left + r.width / 2), y = Math.round(r.top + r.height / 2);
+    if (el.contains(document.elementFromPoint(x, y))) return { x, y };
+    for (let y = Math.ceil(r.top + 1); y < r.bottom; y += 2) {
+      for (let x = Math.ceil(r.left + 1); x < r.right; x += 2) {
+        if ([[0, 0], [-1, 0], [1, 0], [0, -1], [0, 1]].every(([dx, dy]) =>
+          el.contains(document.elementFromPoint(x + dx, y + dy)))) return { x, y };
+      }
+    }
+  });
+  assert.ok(point, `器官有可点选的可见区域：${await locator.getAttribute('aria-label') || await locator.textContent()}`);
+  if (touch) await page.touchscreen.tap(point.x, point.y);
+  else await page.mouse.click(point.x, point.y);
+}
+
 async function checkAtlas(page, touch, pelvicOrgan) {
   const groups = page.locator('#anat .org');
   const ids = await groups.evaluateAll(items => items.map(el => el.dataset.o));
@@ -45,26 +64,11 @@ async function checkAtlas(page, touch, pelvicOrgan) {
   assert.ok(ids.includes('bladder'));
   assert.ok(ids.includes(pelvicOrgan));
   for (const id of ids) {
-    const organ = page.locator(`#anat [data-o="${id}"]`);
-    await organ.scrollIntoViewIfNeeded();
-    const point = await organ.evaluate(el => {
-      // A paired organ's bounding-box center can fall in a different organ.
-      const r = el.getBoundingClientRect();
-      for (let y = Math.ceil(r.top + 1); y < r.bottom; y += 2) {
-        for (let x = Math.ceil(r.left + 1); x < r.right; x += 2) {
-          if ([[0, 0], [-1, 0], [1, 0], [0, -1], [0, 1]].every(([dx, dy]) =>
-            el.contains(document.elementFromPoint(x + dx, y + dy)))) return { x, y };
-        }
-      }
-    });
-    assert.ok(point, `器官有可点选的可见区域：${id}`);
-    if (touch) await page.touchscreen.tap(point.x, point.y);
-    else await page.mouse.click(point.x, point.y);
+    await clickVisibleOrgan(page, page.locator(`#anat [data-o="${id}"]`), touch);
     assert.equal(await picker.inputValue(), id);
   }
   const rectum = page.locator('#anat [data-o="gut"] path').filter({ has: page.locator('title', { hasText: '直肠' }) });
-  if (touch) await rectum.tap();
-  else await rectum.click();
+  await clickVisibleOrgan(page, rectum, touch);
   assert.equal(await picker.inputValue(), 'gut');
   if (pelvicOrgan === 'prostate') {
     await picker.selectOption('bladder');

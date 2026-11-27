@@ -278,7 +278,7 @@
 
   const colonCurve = `M121 571 C114 555 119 540 116 524 C114 507 121 497 134 497
     C155 497 168 504 184 504 C204 504 220 492 235 498 C246 501 247 512 243 529
-    C239 550 245 571 233 587 C222 601 207 593 200 604 C195 611 197 617 197 624`;
+    C239 550 245 571 233 587 C221 600 204 593 192 600 C184 604 180 611 180 620`;
 
   const bowel = organ('gut', '肠道与直肠', `
     <path class="wa-tissue" fill="url(#wa-bowel)" d="
@@ -298,13 +298,13 @@
     <path class="wa-bowel-edge" fill="none" d="${colonCurve}"/>
     <path class="wa-detail" stroke="#c69378" stroke-width="15.5" d="${colonCurve}"/>
     <path class="wa-tissue" fill="#c69378" d="
-      M188.2 624 C188.2 633 190 635 189 642 C188 649 189 653 190 656
-      Q191 659 190 664 C189 668 194 670 195 665 Q196 658 200 654
-      C209 645 205.8 633 205.8 624"><title>直肠</title></path>
+      M171.2 620 C171.2 630 169 638 170 646 C171 656 174 659 175 666
+      Q176 674 180 674 Q184 674 185 666 C186 660 191 654 191 645
+      C192 635 188.8 627 188.8 620"><title>直肠</title></path>
     <path class="wa-detail" stroke="#f0c4a1" stroke-width="2.1" opacity=".68" d="
       M118 567 Q113 546 116 520 Q118 497 135 499 C154 500 170 505 185 506 Q203 505 221 499
       Q245 494 244 514 M240 534 Q237 553 239 561 Q239 583 225 590
-      M217 593 Q198 595 195 607 C191 619 197 630 194 641"/>
+      M217 593 C200 594 190 598 184 607 Q177 617 177 635"/>
     <path class="wa-detail" stroke="#9d675e" stroke-width="1.3" opacity=".71" d="
       M113 551q5-5 10-1m-11-16q6-5 11-1m-12-16q5-4 10-2m0-21q0 5 4 9
       M142 490q-4 6-2 12m20-7q-4 4-4 10m20-6q-2 6-2 11m21-12q3 4 3 10
@@ -313,34 +313,34 @@
   `);
 
   const uterus = organ('uterus', '子宫与卵巢', `
-    <path class="wa-tissue" fill="none" d="M154 615 Q142 605 132 618 M180 615 Q197 603 212 616"/>
+    <path class="wa-tissue" fill="none" d="M166 615 Q154 604 144 617 M193 615 Q205 604 216 616"/>
     <path class="wa-tissue" fill="url(#wa-pelvic)" d="
-      M151 615 C151 607 160 607 167 608 C176 607 184 608 184 615
-      C183 622 174 625 171 631 L170 635 Q167 637 164 635 L163 631
-      C161 625 152 623 151 615Z"/>
-    <ellipse class="wa-tissue" fill="url(#wa-pelvic)" cx="130" cy="620" rx="7" ry="4"/>
-    <ellipse class="wa-tissue" fill="url(#wa-pelvic)" cx="215" cy="618" rx="7" ry="4"/>
+      M163 615 C163 607 172 607 180 608 C188 607 197 608 197 615
+      C196 622 187 625 184 631 L183 635 Q180 637 177 635 L176 631
+      C173 625 164 623 163 615Z"/>
+    <ellipse class="wa-tissue" fill="url(#wa-pelvic)" cx="141" cy="620" rx="7" ry="4"/>
+    <ellipse class="wa-tissue" fill="url(#wa-pelvic)" cx="219" cy="618" rx="7" ry="4"/>
   `);
 
   const bladder = organ('bladder', '膀胱', `
     <path class="wa-tissue" fill="#b2b6c1" d="
-      M149 638 C150 631 158 629 168 629 C178 629 186 631 187 638
-      C188 645 182 649 177 651 Q172 653 171 656 H165
-      Q164 653 159 651 C154 649 148 645 149 638Z"/>
+      M160 638 C161 630 169 627 180 627 C191 627 199 630 200 638
+      C201 645 195 649 189 651 Q184 653 183 656 H177
+      Q176 653 171 651 C165 649 159 645 160 638Z"/>
   `);
 
   const prostate = organ('prostate', '前列腺', `
     <path class="wa-tissue" fill="url(#wa-pelvic)" d="
-      M155 659 C157 655 163 655 168 656 C173 655 179 655 181 659
-      C182 664 175 669 168 670 C161 669 154 664 155 659Z"/>
+      M166 657 C168 653 175 652 180 653 C185 652 192 653 194 657
+      C195 662 188 667 180 668 C172 667 165 662 166 657Z"/>
   `);
 
   function callouts(female) {
     return `<g class="wa-callouts" aria-hidden="true">
       <path d="M30 78 H105 L128 70 M30 270 H73 L115 279 M29 395 H81 L108 405 M29 484 H80 L111 479 M29 564 H77 L113 557"/>
       <path d="M331 377 H269 L226 378 M332 418 H286 L266 413 M332 470 H282 L246 449"/>
-      <path d="M30 640 H113 L149 639 M331 647 H242 L202 644"/>
-      <path d="${female ? 'M30 605 H113 L152 616' : 'M42 666 H117 L155 661'}"/>
+      <path d="M30 640 H113 L162 639 M331 671 H242 L182 670"/>
+      <path d="${female ? 'M30 605 H113 L172 610' : 'M42 666 H117 L168 659'}"/>
       <text x="6" y="82">脑</text>
       <text x="6" y="274">肺</text>
       <text x="5" y="399">肝脏</text>
@@ -352,7 +352,7 @@
         <text x="355" y="381">心脏</text>
         <text x="354" y="422">脾</text>
         <text x="354" y="474">胃</text>
-        <text x="355" y="651">直肠</text>
+        <text x="355" y="675">直肠</text>
       </g>
     </g>`;
   }

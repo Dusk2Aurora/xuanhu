@@ -19,6 +19,19 @@ E.pollTests(bed);
 const stable = { ...bed, map: 85, hematoma: 0, bleedingSites: {}, pumps: {},
   given: [{ id: 'alteplase', d: 1, t: bed.t }], log: [] };
 assert.equal(procedure.start(stable).ok, false, '稳定患者刚开始溶栓，应先观察反应');
+// 正常的压力读数也可能来自循环支持。只有气体交换支持的 VV-ECMO 单独作对照。
+for (const [support, eligible] of [['dobutamine', true], ['vaEcmo', true], ['vvEcmo', false]]) {
+  const patient = Object.assign(E.create(bed.cas), JSON.parse(JSON.stringify({ ...stable, cas: undefined })));
+  E.restorePatient(patient);
+  if (support === 'dobutamine') assert.ok(E.give(patient, support, 5, '泵入'));
+  else assert.ok(E.advancedDeviceAction(patient, support, true).ok);
+  patient.map = 85;
+  const before = patient.cost;
+  assert.equal(procedure.start(patient).ok, eligible, support);
+  assert.equal(patient.cost - before, eligible ? procedure.cost : 0);
+  assert.equal(procedure.start(patient).ok, false);
+  assert.equal(patient.cost - before, eligible ? procedure.cost : 0);
+}
 stable.t += 15 * 60;
 assert.equal(procedure.start(stable).ok, true, '复评仍有显著残余血栓');
 bed.map = 60;

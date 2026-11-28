@@ -33,17 +33,17 @@ function start(S) {
     order.id === 'alteplase' && order.d > 0 && S.t - order.t >= 15 * 60 &&
     (!order.infusionMinutes || root.LIFE?.infusionProgress(S, order)?.deliveredDose > 0) &&
     (previousSuccessAt == null || order.t > previousSuccessAt));
+  const E = root.LIFE;
+  const { running, timed } = E.activeCirculationSupport(S);
+  const unstable = S.map < 65 || E.advancedDevice(S, 'vaEcmo').active || running.length > 0 || timed.length > 0;
   if (previousSuccessAt != null) {
     if (!(report.sampledAt > previousSuccessAt && report.values?.pulmonaryClotBurden >= repeatClotLoad)) {
       return { ok: false, reason: '再次介入需复查 CT 肺动脉造影，确认术后出现明显血栓负荷。' };
     }
-    const E = root.LIFE;
-    const { running, timed } = E.activeCirculationSupport(S);
-    const unstable = S.map < 65 || E.advancedDevice(S, 'vaEcmo').active || running.length > 0 || timed.length > 0;
     if (!(unstable && (bleeding || S.cranied || reassessedAfterLysis))) {
       return { ok: false, reason: '再次介入需评估循环不稳，并确认出血风险或溶栓后仍未改善。' };
     }
-  } else if (!root.LIFE?.allowsRiskyActions(S) && !bleeding && !reassessedAfterLysis && S.map >= 65 && !S.pumps?.norepi?.rate) {
+  } else if (!root.LIFE?.allowsRiskyActions(S) && !bleeding && !reassessedAfterLysis && !unstable) {
     return { ok: false, reason: '循环稳定，会诊建议先评估抗凝、出血风险和治疗反应。' };
   }
   const blocked = root.LIFE?.procedureRetryBlock(S, 'peIntervention', baseRisk);

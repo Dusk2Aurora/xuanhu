@@ -201,6 +201,53 @@ const reload = (scenario, saved) => {
 }
 
 {
+  const esmolol = SUB.byId('esmolol');
+  const route = esmolol.routes[0];
+  const scenario = CASEGEN.generate(2, 101, ['aorticDissection']);
+  const S = bed(105, scenario), control = bed(105, scenario);
+  const advance = (patient, minutes) => {
+    for (let second = 0; second < minutes * 60; second += 2) {
+      E.tick(patient, 2);
+      CASEGEN.step(patient, 2, E);
+    }
+    assert.ok(patient.running);
+  };
+  assert.equal(esmolol.unit, 'μg/kg/min');
+  assert.equal(E.give(S, esmolol.id, 50, '静推'), null);
+  assert.equal(E.give(S, esmolol.id, 225, route.r), null);
+  assert.equal(E.give(S, esmolol.id, 50, route.r), 50);
+  assert.equal(S.drugCost, 0);
+  advance(S, 9);
+  advance(control, 9);
+  assert.ok(S.hr < control.hr - 8 && E.bp(S).sys < E.bp(control).sys);
+  assert.ok(S.aorticDissectionLoad < control.aorticDissectionLoad, '较低的心率和血压减缓夹层进展');
+  close(E.pumpDelivery(S, esmolol.id).dose, 47.25, '按体重和实际分钟数换算输注毫克量');
+  close(S.drugCost, 10.8, '按体重和泵入时间计费');
+  const beforeAdjust = E.pumpEffect(S, esmolol.id);
+  assert.equal(E.give(S, esmolol.id, 100, route.r), 100);
+  close(E.pumpEffect(S, esmolol.id), beforeAdjust, '调速延续已有药效');
+  advance(S, 9);
+  assert.ok(S.hr < 80 && E.bp(S).map > 65);
+  assert.ok(E.dischargeCheck(S).majorReasons.some(reason => reason.includes(esmolol.n)));
+  const beforePause = E.pumpEffect(S, esmolol.id);
+  const hrBeforePause = S.hr;
+  assert.equal(E.pausePump(S, esmolol.id), 100);
+  assert.match(S.log.at(-1)[1], /100 μg\/kg\/min.*94\.5 mg.*¥21\.60/);
+  const { cas, ...state } = S;
+  const restored = reload(cas, JSON.parse(JSON.stringify(state)));
+  advance(restored, 9);
+  assert.ok(E.pumpEffect(restored, esmolol.id) < beforePause * 0.65 && restored.hr > hrBeforePause);
+  close(restored.drugCost, 32.4, '暂停期间保留已计费用');
+  assert.equal(E.give(restored, esmolol.id, 100, route.r), 100);
+  assert.equal(restored.given.at(-1).pumpAction, 'resume');
+  advance(restored, 1);
+  assert.equal(E.stopPump(restored, esmolol.id), 100);
+  assert.equal(E.pumpDelivery(restored, esmolol.id).unit, 'mg');
+  close(E.pumpDelivery(restored, esmolol.id).dose, 152.25, '暂停、恢复和停用保留累计输注量');
+  close(restored.drugCost, 34.8, '只对实际泵入时段计费');
+}
+
+{
   const budgets = Array.from({ length: 2048 }, (_, seed) => FINANCE.initInsurance({ seed }).oopCap)
     .sort((a, b) => a - b);
   assert.ok(budgets[0] < 9000 && budgets[511] < 25000, '新预算仍覆盖困难家庭和相对有限的家庭');

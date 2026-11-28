@@ -175,16 +175,40 @@ async function testFailedDischarge(page) {
 }
 
 async function testSuccessfulDischarges(page, status) {
+  const early = status === 'penalized';
   await openRules(page);
+  await rule(page, 'insurance').click();
   await rule(page, 'signedDischarge').click();
-  await assertRules(page, false, true);
+  if (!early) await rule(page, 'noPause').click();
+  await assertRules(page, true, true, !early);
   await page.locator('#sheetClose').click();
   await startPatient(page);
-  if (status === 'penalized') await startSodiumObservation(page);
+  if (early) {
+    await startSodiumObservation(page);
+    await page.locator('#btnMenu').click();
+    await page.locator('#sheet.on').getByText('现实模式', { exact: true }).click();
+    await rule(page, 'insurance').click();
+    await rule(page, 'insurance').click();
+    await rule(page, 'noPause').click();
+    await assertRules(page, true, true, true);
+    await page.locator('#sheetClose').click();
+  }
   await assertSignedOutcome(page, await openSigning(page), status);
-  const deduction = page.locator('.case-review-score').getByRole('row', { name: /出院条件未达标/ });
-  if (status === 'penalized') assert.match(await deduction.innerText(), /−30/);
+  const score = page.locator('.case-review-score');
+  const deduction = score.getByRole('row', { name: /出院条件未达标/ });
+  if (early) assert.match(await deduction.innerText(), /−30/);
   else assert.equal(await deduction.count(), 0);
+  const bonusRows = score.getByRole('row', { name: /现实模式加分/ });
+  assert.deepEqual(await bonusRows.allTextContents(), early ? ['现实模式加分（真实出院）+15'] :
+    ['现实模式加分（医保与自付）+15', '现实模式加分（真实出院）+15', '现实模式加分（禁用暂停）+15']);
+  const total = early ? '85 / 115' : '145 / 145';
+  assert.equal(await score.getByRole('row', { name: /最终得分/ }).locator('td').innerText(), total);
+  if (!early) {
+    await page.reload();
+    await page.locator('#lobby [data-act="records"]').click();
+    await page.locator('#sheet.on').getByText('出院规则测试病例', { exact: true }).click();
+    assert.equal(await score.getByRole('row', { name: /最终得分/ }).locator('td').innerText(), total);
+  }
 }
 
 async function testSodiumObservation(page) {

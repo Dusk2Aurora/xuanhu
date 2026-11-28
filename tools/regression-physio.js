@@ -137,7 +137,7 @@ function check(name, ok, detail) { out.push({ name, ok, detail }); }
     '撤氧后室内空气观察未满五分钟，无速度奖励');
 
   const critical = makeBed();
-  Object.assign(critical, { k: 7.2, temp: 38.1, t: 120 });
+  Object.assign(critical, { k: 7.2, temp: 38.1, t: 120, realismBonusRules: ['insurance', 'signedDischarge', 'noPause'] });
   const before = critical.log.length;
   const failure = E.signDischarge(critical);
   E.tick(critical, 60);

@@ -6,6 +6,7 @@
 'use strict';
 const E = window.LIFE;
 const FINANCE = window.LIFE_FINANCE;
+const REALISM_BONUS = E.REALISM_BONUS;
 function isEDIntake(patient) { return (patient?.intake?.difficulty ?? patient?.diff ?? patient?.cas?.diff) >= 6; }
 const $ = s => document.querySelector(s);
 const r1 = x => Math.round(x * 10) / 10;
@@ -31,9 +32,9 @@ let bigFont = false;
 /* 白天 / 夜间：夜间难度显著提升（病情推进更快、提示更少、界面转暗） */
 let nightMode = false;
 const REALISM_RULES = {
-  insurance: { name: '医保与自付', note: '普通病例按参保类型结算并追踪家庭自付。无病探索可自由使用设备和药品。' },
-  signedDischarge: { name: '真实出院', note: '自行判断出院时机。签字后结算，病情未达标扣分，重大问题直接判负。' },
-  noPause: { name: '禁用暂停', note: '全病房持续推进，仍可调整倍速、快进或等病情变化。' },
+  insurance: { name: REALISM_BONUS.names.insurance, note: '普通病例按参保类型结算并追踪家庭自付。无病探索可自由使用设备和药品。' },
+  signedDischarge: { name: REALISM_BONUS.names.signedDischarge, note: '自行判断出院时机。签字后结算，病情未达标扣分，重大问题直接判负。' },
+  noPause: { name: REALISM_BONUS.names.noPause, note: '全病房持续推进，仍可调整倍速、快进或等病情变化。' },
 };
 const realismRules = { insurance: false, signedDischarge: false, noPause: false };
 function insuranceApplies(patient) {
@@ -932,7 +933,7 @@ function refreshInfusions(patient) {
     if (record.endedAt != null && record.pumpSeconds > 0) {
       return infusionRow(record.n || record.id, '已完成泵入时段', `
         <p class="infusion-meta">${caseTime(record.t)}–${caseTime(record.endedAt)} · ${infusionAmount(record.dose, record.unit)}
-        · 已泵入 ${infusionAmount(record.pumpDose, 'U')} · 药费 ${money(record.cost)} · 医嘱 #${record.givenNumber}</p>`);
+        · 已泵入 ${infusionAmount(record.pumpDose, record.pumpDoseUnit || 'U')} · 药费 ${money(record.cost)} · 医嘱 #${record.givenNumber}</p>`);
     }
     const status = record.pumpAction === 'stop' ? '已停泵' : progress?.stoppedAt != null ? '已停止' :
       progress && !progress.running ? '已完成' : '单次医嘱';
@@ -981,7 +982,7 @@ function refreshInfusions(patient) {
     const seconds = delivery?.seconds ?? (startedAt == null ? null : patient.t - startedAt);
     el.textContent = `累计泵入 ${seconds == null ? '未记录' : infusionDuration(Math.max(0, Math.floor(seconds + 1e-6)))}`;
     const amounts = el.parentElement.querySelector('[data-pump-delivery]');
-    if (amounts) amounts.innerHTML = `已泵入 ${infusionAmount(delivery.dose, 'U')} · 药费 ${money(delivery.cost)}`;
+    if (amounts) amounts.innerHTML = `已泵入 ${infusionAmount(delivery.dose, delivery.unit || 'U')} · 药费 ${money(delivery.cost)}`;
   });
 }
 
@@ -1009,7 +1010,7 @@ function openGiveConfig(it, patient, back, { backLabel = '返回药物列表', r
     const sameRate = pump && currentRate === dose;
     const order = pump ? (sameRate ? '维持当前泵速' : E.pumpOrder(it.n, currentRate ? 'adjust' : pausedRate ? 'resume' : 'start', dose, unit))
       : infusion ? `开始${rt.r} ${it.n}（${E.infusionDetails(dose, unit, infusion)}）`
-        : `给予 ${it.n} ${fmt(dose)}${unit}`;
+        : `给予 ${it.n} ${fmt(dose)}${unit}${it.id === 'ketamine' ? '（共 ' + fmt(dose * patient.patient.weight) + ' mg）' : ''}`;
     const hi = rt.maxDose ?? it.doseRange?.[1] ?? rt.d * 10;
     const over = dose > (rt.maxDose ?? rt.d * 2.5), under = dose < rt.d * 0.4;
     const doseLabel = pump ? '泵速' : '剂量';
@@ -1437,6 +1438,13 @@ function actionRows() {
     };
     if (id === 'intubate' && patient.vent) return { n: '调节呼吸机吸气流量',
       tag: `${E.ventilatorSettings(patient).flow} L/min`, amt: '调节', run: () => openRespiratoryFlow(patient) };
+    if (id === 'intubate' || id === 'chestTube') return {
+      n: a.name, tag: '', amt: money(a.cost), run: () => performAction(id, a),
+      related: { label: id === 'intubate' ? '氯胺酮诱导' : '氯胺酮镇静镇痛', run: () => {
+        const back = () => openSheet('操作', patient.patient.name + ' · 急救与介入', actionRows(), patient);
+        openGiveConfig(window.SUBSTANCES.byId('ketamine'), patient, back, { backLabel: '返回操作', returnAfterApply: true });
+      } },
+    };
     if (id === 'oxygen' && !patient.vent) return { n: '调节氧疗供氧流量',
       tag: `${E.oxygenSettings(patient).flow} L/min`, amt: '调节', run: () => openRespiratoryFlow(patient),
       related: { label: a.name, run: () => performAction(id, a) } };
@@ -1958,6 +1966,9 @@ function loadGame() {
       if (st.death || st.discharged || st.dischargeOutcome?.status === 'failed') st.running = false;
       if (!Array.isArray(st.usedRealismRules)) {
         st.usedRealismRules = [...new Set([...(st.admissionSettings?.realism ? ['insurance'] : []), ...enabledRules()])];
+      }
+      if (Array.isArray(st.realismBonusRules)) {
+        st.realismBonusRules = enabledRules(st).filter(key => st.realismBonusRules.includes(key));
       }
       if (st.cas.exploration) {
         delete st.ins;
@@ -2907,7 +2918,7 @@ function archiveCase(st, wardCount) {
   const breakdown = E.scoreBreakdown(st);
   const min = Math.round(st.t / 60);
   const name = (st.cas && st.cas.name) || st.caseId;
-  const rules = enabledRules();
+  const rules = enabledRules(st);
   const chart = INTAKE.view(st);
   const settings = {
     admission: st.admissionSettings,
@@ -3087,7 +3098,7 @@ function openCaseRecord(r) {
       ${summary.map(([label, value]) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd>`).join('')}</dl></section>
     <section class="case-review-section case-review-score"><h5>评分明细</h5><table>
       <tbody>${scoreRows.map(([label, value]) => `<tr><th scope="row">${escapeHtml(label)}</th><td>${escapeHtml(value)}</td></tr>`).join('')}</tbody>
-      <tfoot><tr><th scope="row">最终得分</th><td>${escapeHtml(r.评分 ?? '—')} / 100</td></tr></tfoot></table>
+      <tfoot><tr><th scope="row">最终得分</th><td>${escapeHtml(r.评分 ?? '—')} / ${escapeHtml(breakdown?.maxScore ?? 100)}</td></tr></tfoot></table>
       ${breakdown ? '' : '<p>旧病历未保存加扣分明细。</p>'}</section>
     <section class="case-review-section case-review-log-panel"><h5 id="caseReviewLogHeading">操作日志${log?.length ? ' · ' + log.length + ' 条' : ''}</h5>
       <div class="case-review-log" tabindex="0" role="region" aria-labelledby="caseReviewLogHeading">${log?.length ?
@@ -3376,7 +3387,7 @@ function openFeedback() {
 }
 
 /* ---------------- 版本 / 更新检查 ---------------- */
-const APP_VERSION = '1.57.2';
+const APP_VERSION = '1.57.3';
 const releaseRoot = document.querySelector('meta[name="xuanhu-release-root"]')?.content;
 const releaseBase = releaseRoot ? new URL(releaseRoot, location.href).href.replace(/\/$/, '') : '';
 const platformName = location.protocol === 'file:' ? '离线 HTML' :
@@ -4016,6 +4027,7 @@ function prepareCase(st, intakeDifficulty = caseDiff) {
   const rules = enabledRules(st);
   st.admissionSettings = { level, realism: rules.length > 0, rules };
   st.usedRealismRules = [...rules];
+  st.realismBonusRules = st.cas.exploration ? [] : [...rules];
   const { hr, sys, dia, temp, rr, spo2, gcs } = E.snapshot(st);
   st.admissionVitals = { t: st.t, hr, sys, dia, temp, rr, spo2, gcs, vent: !!st.vent, rhythm: st.rhythm };
   INTAKE.init(st, st.diff ?? intakeDifficulty);
@@ -4250,7 +4262,8 @@ function restoreRealismRules(saved) {
 
 function openRealismSettings() {
   const entries = Object.entries(REALISM_RULES);
-  openSheet('现实模式', '独立开关，即时应用到全病房及新接诊患者', entries.map(([key, rule]) => ({
+  const subtitle = `设置即时生效。新接诊病例中，每项全程开启的规则加 ${REALISM_BONUS.points} 分。`;
+  openSheet('现实模式', subtitle, entries.map(([key, rule]) => ({
     n: rule.name, tag: rule.note, amt: realismRules[key] ? '已开启' : '已关闭',
     run: () => {
       if (!hasCurrentWard()) return;
@@ -4268,6 +4281,9 @@ function openRealismSettings() {
         if (!patient.running || (key === 'insurance' && patient.cas.exploration)) continue;
         patient.usedRealismRules ??= [];
         if (realismRules[key] && !patient.usedRealismRules.includes(key)) patient.usedRealismRules.push(key);
+        if (!realismRules[key] && Array.isArray(patient.realismBonusRules)) {
+          patient.realismBonusRules = patient.realismBonusRules.filter(ruleKey => ruleKey !== key);
+        }
         patient.log.push([E.fmt(patient.t), (realismRules[key] ? '开启' : '关闭') + '规则 · ' + rule.name, 'info', patient.t, null, true]);
       }
       if (key === 'insurance' && realismRules.insurance && S && !S.ins) initInsurance();
@@ -4420,6 +4436,10 @@ function renderAll() {
 
 /* 更新公告：每次发版在这里加一条（新的放最前面） */
 const RELEASES = [
+  { v: '1.57.3', notes: [
+    '新增艾司洛尔短效静脉泵入，支持调速、暂停和恢复。新增氯胺酮静脉镇静镇痛，可在插管或胸腔引流前单独开立。',
+    '新接诊病例的医保、真实出院和禁用暂停，每项全程开启可在结算时额外获得 15 分。重大问题签字失败仍为 0 分。',
+  ] },
   { v: '1.57.2', notes: [
     '病情变化中断快进时立即刷新临床状态。意识异常持续显示 GCS，急诊首诊注明首测或上次查体。',
     '所有收开机费的设备均可试撤，保留试撤前读数，恢复时沿用同一次开机计费。',

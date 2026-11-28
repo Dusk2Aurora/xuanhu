@@ -207,6 +207,17 @@ async function main() {
     assert.match(await heparinRow.innerText(), /持续泵入.*1300 U\/h.*已泵入 20 U/s);
     await heparinRow.getByRole('button', { name: '凝血复查', exact: true }).click();
     assert.equal(await rows.getByText('凝血功能', { exact: true }).isVisible(), true);
+    await closeSheet();
+    await page.locator('#btnOps').click();
+    await choose('氯胺酮镇静镇痛');
+    assert.match(await rows.locator('#dGo').innerText(), /氯胺酮 1mg\/kg（共 [\d.]+ mg）/);
+    await rows.locator('#dGo').click();
+    assert.equal(await rows.getByText('胸腔闭式引流', { exact: true }).isVisible(), true);
+    await choose('氯胺酮诱导');
+    await rows.locator('#drugBack').click();
+    const ketamineOrders = await page.evaluate(() => window.__LIFE_GAME.S.given.filter(o => o.id === 'ketamine'));
+    assert.equal(ketamineOrders.length, 1);
+    assert.equal(ketamineOrders[0].route, '缓慢静注');
     assert.deepEqual(errors, []);
     console.log('床旁操作日志、定时输注进度、普通肝素泵药管理、刷新及床位隔离均通过。');
   } finally {

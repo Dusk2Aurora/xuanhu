@@ -74,6 +74,23 @@ assert.ok(platelets.plt > controlPlatelets.plt + 15 && platelets.coag > controlP
 assert.ok(whiteCells.wbc > controlWhiteCells.wbc + 0.2, '输注白细胞应改变白细胞计数');
 
 const pairs = SUBSTANCES.INTERACTIONS.map(({ a, b }) => [a, b].sort().join('|'));
+for (const procedure of ['intubate', 'chestTube']) {
+  const [treated, control] = compare('exploration', 'ketamine', 2);
+  assert.ok(treated.gcs < control.gcs && treated.mod.hr > control.mod.hr);
+  for (const S of [treated, control]) {
+    S.tensionPTX = 0.4;
+    S.diff = 1;
+    E.ACTIONS[procedure].apply(S);
+  }
+  assert.ok(control.procedureStress.strength > (treated.procedureStress?.strength || 0));
+  assert.ok(treated.log.some(([, msg]) => msg.includes('氯胺酮已起效')));
+  assert.equal(treated.vent, control.vent);
+}
+const [sedated] = compare('exploration', 'ketamine', 2);
+const [overdose] = compare('exploration', 'ketamine', 2, 5);
+assert.ok(overdose.mod.rr < sedated.mod.rr);
+advance(sedated, 18);
+assert.ok(sedated.gcs >= 14);
 assert.equal(new Set(pairs).size, pairs.length, '每组相互作用只计算一次');
 
 console.log('普通病例、急诊首诊与无病探索的物质效应通过');

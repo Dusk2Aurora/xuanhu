@@ -98,6 +98,9 @@ const DRUGS = [
   ['metoprolol','美托洛尔',    'β阻滞剂',  25, 'mg',     14, { note:'减慢心率，常用于心室率控制。' }],
   ['atenolol', '阿替洛尔',     'β阻滞剂',  25, 'mg',     12, { note:'减慢心率，用于高血压或心绞痛。' }],
   ['labetalol','拉贝洛尔',     'β阻滞剂',  10, 'mg',     20, { e:{hr:-14, svr:-1.2}, note:'兼有 α 与 β 阻滞作用，用于急性降压。' }],
+  ['esmolol',  '艾司洛尔',     'β阻滞剂',  50, 'μg/kg/min', 48, { on:1, du:40, e:{hr:-24, sv:-6, svr:0},
+    note:'超短效 β₁ 受体阻滞剂。急性主动脉综合征时可随心率、血压和灌注调节泵速。留意心动过缓、低血压和心排量降低。',
+    clinicalNote:'严重窦性心动过缓、二度或三度房室传导阻滞、失代偿心衰及心源性休克禁用；反应性气道疾病谨慎。' }],
   ['captopril','卡托普利',     'ACEI',     12.5,'mg',     8,  { note:'短效 ACE 抑制剂；留意高血钾。' }],
   ['enalapril','依那普利',     'ACEI',     5,  'mg',     9,  { note:'用于高血压及部分心衰患者。' }],
   ['lisinopril','赖诺普利',    'ACEI',     5,  'mg',     9,  { note:'用于长期降压；随访血钾和肾功能。' }],
@@ -231,6 +234,7 @@ const EXTRA = [
   /* 镇静 / 精神 / 神经 */
   ['midazolam',        '咪达唑仑',     '镇静',     5,  'mg',     16, { on:1, du:90, e:{gcs:-5, rr:-3, hr:-4}, note:'镇静、止惊；留意呼吸抑制。' }],
   ['propofol',         '丙泊酚',       '镇静',     100,'mg',     46, { on:1, du:30, e:{gcs:-6, rr:-5, svr:-1.5}, note:'快速镇静；留意低血压与呼吸抑制。' }],
+  ['ketamine',         '氯胺酮',       '镇静',       1,'mg/kg',  42, { r:'缓慢静注', on:1, du:8, e:{gcs:-8, rr:-1, hr:8, svr:1.2}, adverse:{threshold:1.5, eff:{rr:-7}}, note:'短效镇静镇痛，可用于疼痛操作或插管诱导。留意呼吸、心率和血压。' }],
   ['haloperidol',      '氟哌啶醇',     '抗精神病', 5,  'mg',     22, { e:{gcs:-2}, note:'治疗重度激越；留意镇静。', clinicalNote:'可延长 QT 间期。' }],
   ['phenytoin',        '苯妥英钠',     '抗癫痫',   500,'mg',     32, { e:{seizure:-0.40, svr:-0.4}, note:'抗癫痫；静脉给药留意低血压。' }],
   ['levetiracetam',    '左乙拉西坦',   '抗癫痫',   2000,'mg',    48, { on:2, du:120, e:{seizure:-0.65}, note:'惊厥性癫痫持续状态二线；留意嗜睡。' }],
@@ -380,6 +384,7 @@ const ROUTE_MAP = {
   dobutamine: [{ r:'持续静脉泵入', on:2, pumpHalfLife:2 }],
   isoproterenol: [{ r:'持续静脉泵入', on:0, pumpHalfLife:3 }],
   nicardipine: [{ r:'持续静脉泵入', on:0, pumpHalfLife:30, pumpStep:2.5, maxDose:15 }],
+  esmolol:    [{ r:'持续静脉泵入', pumpHalfLife:9, pumpStep:25, maxDose:200, pumpPause:true }],
   epi:         [{ r:'泵入', d:1, on:1, du:8 }, { r:'静推', d:1, on:1, du:5 }],
   levothyroxine: [{ r:'口服', d:100, on:240, du:1440 }, { r:'静推', d:100, on:60, du:1440 }],
   kcl:        [{ r:'静滴', d:20, on:5,  du:60  }, { r:'口服', d:20, on:45, du:120 }],
@@ -554,6 +559,7 @@ function build() {
 
 /* 别名：同一种药在不同教材/科室里的叫法不同，搜索时都要能命中 */
 const ALIASES = {
+  'ketamine':'氯胺酮',
   '艾滋病毒': '人类免疫缺陷病毒',
   '氢化可的松': '氢化皮质酮',
   '氢化考的松': '氢化皮质酮',
@@ -570,6 +576,7 @@ const ALIASES = {
   '吗啡注射液': '吗啡',
   '硝普钠针': '硝普钠',
   '盐酸尼卡地平': '尼卡地平',
+  '盐酸艾司洛尔': '艾司洛尔',
   '左乙拉西坦注射液': '左乙拉西坦',
   '西地兰': '去乙酰毛花苷',
   '心律平': '普罗帕酮',

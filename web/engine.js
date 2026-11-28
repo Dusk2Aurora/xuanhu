@@ -582,6 +582,7 @@ const ACTIONS = {
     apply: (S) => {
       if (S.vent) { S.log.push(['操作', '已在机械通气中', 'warn']); return; }
       if (allowsRiskyActions(S) || S.gcs <= 8 || S.rr < 8 || S.spo2 < 88 || (S.airwayResistance || 0) > 0.55) {
+        recordProcedureStimulus(S, '插管');
         S.vent = 1;
         S.oxygenFlow = 0;
         S.rr = VENT_RATE;
@@ -653,6 +654,7 @@ const ACTIONS = {
     apply: (S) => {
       if ((S.tensionPTX || 0) > 0) {
         if (!resolveProcedure(S, 'chestTube', ACTIONS.chestTube.name, ACTIONS.chestTube.cost, 0.04).ok) return;
+        recordProcedureStimulus(S, '胸腔引流');
         S.tensionPTX = 0;
         S.chestTubePlaced = true;
         S.log.push(['操作', '胸腔闭式引流完成 → 气胸解除', 'good']);
@@ -1476,6 +1478,13 @@ function pumpRate(S, drugId) {
   return S.pumps?.[drugId]?.rate || 0;
 }
 
+const REFERENCE_DOSING_WEIGHT = 70;
+const WEIGHT_BASED_PUMP_UNIT = 'μg/kg/min';
+
+function dosingWeight(patient) {
+  return Number.isFinite(patient?.weight) && patient.weight > 0 ? patient.weight : REFERENCE_DOSING_WEIGHT;
+}
+
 function drugPrice(sub, dose, patient) {
   // The first route defines the catalog price (one dose, or one hour for pump-only drugs).
   const referenceDose = sub?.dose ?? sub?.defaultDose;
@@ -1483,9 +1492,7 @@ function drugPrice(sub, dose, patient) {
   if (!(Number.isFinite(sub?.cost) && sub.cost > 0 && Number.isFinite(referenceDose) && referenceDose > 0 &&
         Number.isFinite(quantity) && quantity > 0)) return 0;
   // 按实际用量计价；体重相关医嘱以 70 kg 的实际用量为参考。
-  const referenceWeight = 70;
-  const weight = Number.isFinite(patient?.weight) && patient.weight > 0 ? patient.weight : referenceWeight;
-  const weightScale = /\/kg\b/.test(sub.unit || '') ? weight / referenceWeight : 1;
+  const weightScale = /\/kg\b/.test(sub.unit || '') ? dosingWeight(patient) / REFERENCE_DOSING_WEIGHT : 1;
   const billedQuantity = sub.billingStep > 0 ? Math.ceil(quantity / sub.billingStep) * sub.billingStep : quantity;
   return sub.cost * (billedQuantity / referenceDose) * weightScale;
 }
@@ -1577,6 +1584,27 @@ function bolusEffectModifier(order, elapsed, lag, ke) {
   const ramp = Math.min(1, (elapsed - lag) / Math.max(1, (order.onset || 1) * 0.8));
   const plateau = elapsed <= lag + order.dur ? 1 : Math.exp(-ke * (elapsed - lag - order.dur));
   return Math.max(0, ramp) * plateau;
+}
+
+function recordProcedureStimulus(S, procedure) {
+  if (S.rhythm !== 'sinus') return;
+  let ketamine = 0, opioid = 0;
+  for (const p of S.pk || []) {
+    const sub = root.SUBSTANCES?.byId(p.id);
+    if (p.id !== 'ketamine' && sub?.cls !== '阿片') continue;
+    const age = (S.t - p.t) / 60;
+    if (age < 0 || age > p.dur * 1.8) continue;
+    const effect = p.scale * bolusEffectModifier(p, age, (p.onset || 0) * 0.35, Math.LN2 / Math.max(1, p.dur / 4.5));
+    if (p.id === 'ketamine') ketamine += effect;
+    else if (!(S.naloxoneUntil > S.t)) opioid += effect;
+  }
+  const awake = clamp((S.gcs - 6) / 7, 0, 1);
+  const strength = awake * (1 - clamp(ketamine + opioid * 0.6, 0, 1));
+  if (strength > 0) S.procedureStress = { t: S.t, strength };
+  if (ketamine >= 0.2 || strength >= 0.3) {
+    const response = ketamine >= 0.2 ? '氯胺酮已起效，操作刺激减轻' : '出现短时操作应激，可复评心率和血压';
+    S.log.push([fmt(S.t), procedure + ' · ' + response, 'info', S.t, null, true]);
+  }
 }
 
 function coagulation(S) {
@@ -1787,14 +1815,15 @@ function changePump(S, sub, route, rate, pause = false) {
   S.given ||= [];
   let segment;
   if (route.pumpPause) {
+    const pumpDoseUnit = unit === WEIGHT_BASED_PUMP_UNIT ? 'mg' : sub.unit;
     segment = S.given[previous?.givenIndex];
     if (segment) segment.endedAt = S.t;
     if (pause) pump.pausedRate = oldRate;
     if (rate > 0) {
       pump.givenIndex = S.given.length;
-      Object.assign(record, { pumpSeconds: 0, pumpDose: 0, cost: 0 });
+      Object.assign(record, { pumpSeconds: 0, pumpDose: 0, pumpDoseUnit, cost: 0 });
     }
-    pump.delivery = action === 'start' ? { startedAt: S.t, seconds: 0, dose: 0, cost: 0 } : previous.delivery;
+    pump.delivery = action === 'start' ? { startedAt: S.t, seconds: 0, dose: 0, unit: pumpDoseUnit, cost: 0 } : previous.delivery;
     if (action === 'adjust') pump.delivery.adjustedAt = S.t;
   }
   S.pumps ||= {};
@@ -1807,7 +1836,7 @@ function changePump(S, sub, route, rate, pause = false) {
   if (action === 'start' && root.TRAITS) root.TRAITS.onDrug(S, sub, rate);
   if (rate > 0 && S.lastGiven !== undefined) S.lastGiven = sub.id;
   const details = segment?.pumpSeconds > 0
-    ? ` · 上段已泵入 ${Math.round(segment.pumpDose * 1000) / 1000} ${sub.unit}，药费 ¥${r2(segment.cost).toFixed(2)}` : '';
+    ? ` · 上段已泵入 ${Math.round(segment.pumpDose * 1000) / 1000} ${segment.pumpDoseUnit || sub.unit}，药费 ¥${r2(segment.cost).toFixed(2)}` : '';
   S.log.push([fmt(S.t), pumpOrder(sub.n, action, recordedRate, unit) + details, 'good', S.t, null, true]);
   return recordedRate;
 }
@@ -1897,6 +1926,7 @@ function give(S, drugId, dose, route, bill = true) {
           (s.routes?.length === 1 && s.routes[0].infusionMinutes))) return null;
       const infusionMinutes = selectedRoute?.infusionMinutes;
       const d = dose ?? (infusionMinutes ? selectedRoute.d : s.dose);
+      if (s.id === 'ketamine' && (!selectedRoute || !(Number.isFinite(d) && d > 0))) return null;
       if (infusionMinutes && (!(Number.isFinite(d) && d > 0) || d > (selectedRoute.maxDose ?? Infinity))) return null;
       if (s.id === 'heparin' && !(Number.isFinite(d) && d > 0)) return null;
       const cost = bill ? drugPrice(s, d, S.patient) : 0;
@@ -1906,7 +1936,7 @@ function give(S, drugId, dose, route, bill = true) {
       // 以同等总量的静推剂量作效应标尺，泵速只决定送入体内的时间。
       const refDose = infusionMinutes ? s.dose : (selectedRoute?.d ?? s.dose);
       const perKg = /\/kg/.test(s.unit || '');
-      const wScale = perKg ? (S.weight || 70) / 70 : 1;
+      const wScale = perKg && s.id !== 'ketamine' ? (S.weight || 70) / 70 : 1;
       const scale = (d / (refDose || 1)) * wScale;
       const pkMul = S.pkScale || 1;
       S.pk = S.pk || [];
@@ -1955,7 +1985,7 @@ function give(S, drugId, dose, route, bill = true) {
       if (s.id === 'atropine' && S.tox.op > 0) S.tox.op = Math.max(0, S.tox.op - d);
       const label = infusionMinutes
         ? `开始${selectedRoute.r} ${s.n}（${infusionDetails(d, s.unit, infusionMinutes)}）`
-        : `给予 ${s.n} ${d}${s.unit}（${route || s.route || '静推'}）`;
+        : `给予 ${s.n} ${d}${s.unit}（${route || s.route || '静推'}${s.id === 'ketamine' ? '，共 ' + r1(d * S.patient.weight) + ' mg' : ''}）`;
       S.log.push([fmt(S.t), label, 'good', S.t, null, true]);
       if (s.id === 'calcium' || s.id === 'calcium_cl') S.caProtectUntil = S.t + (s.dur || 45) * 60;
       if (s.id === 'insulin' && !infusionMinutes) S.eff.insulin = Math.min(3.5, S.eff.insulin + d / 10);
@@ -2166,7 +2196,9 @@ function tick(S, dtSec) {
       const cost = drugPrice(sub, pump.rate, S.patient) * dtSec / 3600;
       chargeSubstance(S, sub, cost);
       if (pump.delivery) {
-        const dose = pump.rate * dtSec / 3600;
+        const dose = (route.unit || sub.unit) === WEIGHT_BASED_PUMP_UNIT
+          ? pump.rate * dosingWeight(S.patient) * dtSec / 60000
+          : pump.rate * dtSec / 3600;
         const segment = S.given[pump.givenIndex];
         pump.delivery.seconds += dtSec;
         pump.delivery.dose += dose;
@@ -2249,7 +2281,11 @@ function tick(S, dtSec) {
         /* Emax 饱和：E = Emax·D/(EC50+D)，取 EC50=3 使 D=1 时等于原有效应。
            替代线性放大——原来给 10 倍剂量就是 10 倍效应，10 mg 吗啡能把人打死。 */
         const sat = p.scale * 4 / (3 + p.scale);
-        const effect = p.eff[key] * sat * cMod;
+        let effect = p.eff[key] * sat * cMod;
+        if (p.id === 'ketamine' && (key === 'hr' || key === 'svr')) {
+          // 循环代偿耗竭时交感效应减弱，失去对血压的支撑。
+          effect *= 1.5 * (S.compReserve ?? 1) - 0.5;
+        }
         if (key === 'temp' && effect < 0 && ['NSAID', '解热镇痛', '糖皮质激素'].includes(sub?.cls)) {
           feverReduction -= effect;
         } else {
@@ -2544,12 +2580,14 @@ function tick(S, dtSec) {
 
   const hypovolemic = Math.max(0, (4.2 - S.vol) / 1.6);
   const symp = clamp((85 - mapNow) / 30 + hypovolemic * 0.8 + 0.15, 0, 2.2);
+  const stress = S.procedureStress;
+  const stimulus = stress ? stress.strength * clamp(1 - (S.t - stress.t) / 180, 0, 1) : 0;
   /* 高钾抑制心肌传导：K>5.5 起心率下降，K>7 可出现窦室传导甚至停搏（原来只有室颤一条路） */
   const kHr = S.k > 5.5 ? -clamp((S.k - 5.5) * 13, 0, 55) : 0;
   /* 高钾心电图：K>5.5 T 波高尖 → K>6.5 QRS 增宽 → K>7.5 正弦波 */
   S.qrsWide = Math.max(S.k > 6.2 ? clamp((S.k - 6.2) / 2.6, 0, 1) : 0, clamp(S.tca || 0, 0, 1));
   S.prLong  = S.k > 6.0 ? clamp((S.k - 6.0) / 3.0, 0, 1) : 0;
-  const hrTarget = clamp(78 + symp * 32 + (S.hrDrive || 0) - 47 * (S.digoxinLoad || 0) + (S.mod.hr || 0) + toxHr + envHr + wdHr
+  const hrTarget = clamp(78 + symp * 32 + 14 * stimulus + (S.hrDrive || 0) - 47 * (S.digoxinLoad || 0) + (S.mod.hr || 0) + toxHr + envHr + wdHr
                          - 55 * (S.cholinergic || 0) + clamp((S.temp - 37) * 8, 0, 26) + kHr - 32 * thyroidDepression
                           - 5 * coolingDepth - clamp(((S.icp || 0) - 0.60) * 70, 0, 40) + (S.flushHr || 0), 28, 200);
   if (!inArrest) {
@@ -2565,7 +2603,7 @@ function tick(S, dtSec) {
      32 μg/min 与 8 μg/min 撞到同一个天花板，剂量-效应完全平掉。 */
   const vasoNet = (S.mod.svr || 0);
   const pressorGain = clamp(1 + vasoNet / 16, 0.30, 3.6);
-  const toneTarget = clamp(17.5 * baro * (0.45 + 0.55 * reserve) * pressorGain
+  const toneTarget = clamp(17.5 * baro * (0.45 + 0.55 * reserve) * pressorGain + 1.5 * stimulus
       - (S.infection || 0) * 11.0
       - (S.hepatotox || 0) * 6.0        // 肝衰竭 → 血管扩张（肝肾综合征/低血压）
       + (S.svrDrive || 0)               // 病理模块的血管收缩驱动（替代旧的 svrFloor 直接钳制）
@@ -3170,6 +3208,7 @@ function dischargeCheck(S) {
   }
   const circulationObservation = assessCirculationObservation(S, b);
   if (pumpRate(S, 'nicardipine') > 0) add('仍在持续静脉泵入尼卡地平，需评估停泵后的血压', true);
+  if (pumpRate(S, 'esmolol') > 0) add('仍在持续静脉泵入艾司洛尔，需评估停泵后的心率和血压', true);
   if (circulationObservation?.reason) {
     const { phase, reason } = circulationObservation;
     add(reason, phase === 'active' || (phase === 'unstable' && b.map < CIRCULATION_MIN_MAP));
@@ -3634,6 +3673,11 @@ const fmt = s => {
   return String(hh).padStart(2, '0') + ':' + String(mm).padStart(2, '0');
 };
 
+const REALISM_BONUS = Object.freeze({
+  points: 15,
+  names: Object.freeze({ insurance: '医保与自付', signedDischarge: '真实出院', noPause: '禁用暂停' }),
+});
+
 function scoreBreakdown(S) {
   const base = 100;
   const items = [];
@@ -3684,10 +3728,19 @@ function scoreBreakdown(S) {
   if (Number.isFinite(subtotal) && rounded !== subtotal) {
     items.push({ label: '四舍五入', delta: rounded - subtotal });
   }
-  const score = Math.max(0, Math.min(100, rounded));
-  if (rounded > 100) items.push({ label: '100 分封顶', delta: score - rounded });
-  if (rounded < 0) items.push({ label: '0 分保底', delta: score - rounded });
-  return { base, items, score };
+  const clinicalScore = Math.max(0, Math.min(base, rounded));
+  if (rounded > base) items.push({ label: '100 分封顶', delta: clinicalScore - rounded });
+  if (rounded < 0) items.push({ label: '0 分保底', delta: clinicalScore - rounded });
+
+  let realismBonus = 0;
+  if ((S.discharged || S.death) && dischargeStatus !== 'failed' && !S.cas?.exploration && Array.isArray(S.realismBonusRules)) {
+    for (const [key, name] of Object.entries(REALISM_BONUS.names)) {
+      if (!S.realismBonusRules.includes(key)) continue;
+      items.push({ label: `现实模式加分（${name}）`, delta: REALISM_BONUS.points });
+      realismBonus += REALISM_BONUS.points;
+    }
+  }
+  return { base, items, score: clinicalScore + realismBonus, maxScore: base + realismBonus };
 }
 
 function finalScore(S) {
@@ -3696,7 +3749,7 @@ function finalScore(S) {
 
 const API = {
   setIdentity(p) { IDENTITY = p || null; }, CASES, DRUGS, ACTIONS, TESTS, DELIVERY_DURATION, create, restorePatient, tick, give, acetaminophenExposure, setEnv, finalScore, scoreBreakdown, bp, snapshot,
-              ventilatorSettings, setVentilatorFlow, oxygenSettings, setOxygenFlow,
+              REALISM_BONUS, ventilatorSettings, setVentilatorFlow, oxygenSettings, setOxygenFlow,
               ADVANCED_DEVICES: ADVANCED.DEVICES, advancedDevice, advancedDeviceAction, advancedDeviceReadings, vaEcmoReadings,
               advancedDeviceCost: S => S.deviceCost || 0, advancedDischargeBlockers: ADVANCED.dischargeBlockers,
               eegReading: ADVANCED.eegReading, aorticBypassIndicated, aorticBypassReady, aorticPerfusionStable,

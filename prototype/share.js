@@ -115,8 +115,15 @@
     if (data.c === 'gen') {
       if (!root.CASEGEN) return null;
       const gen = root.CASEGEN;
-      if (data.g > gen.VERSION) return null;
-      spec = gen.generateVersion(data.d || 3, data.s || 0, data.g || 1);
+      const version = data.g ?? 1;
+      const difficulty = data.d ?? 3;
+      const seed = data.s ?? 0;
+      if (!Number.isInteger(version) || version < 1 || version > gen.VERSION ||
+          !Number.isInteger(difficulty) || difficulty < 1 || difficulty > 6 ||
+          !Number.isSafeInteger(seed)) return null;
+      spec = gen.generateVersion(difficulty, seed, version);
+    } else if (typeof spec !== 'string' || !Object.hasOwn(E.CASES, spec)) {
+      return null;
     }
     const p = data.p;
     const identity = p ? {

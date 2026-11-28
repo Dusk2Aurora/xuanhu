@@ -440,6 +440,37 @@ function traceOne(mod, mode, seed) {
   return r;
 }
 
+// 会诊接手必须重建原始入院状态。省略生成器版本的旧码按第一版处理。
+for (let version = 1; version <= G.VERSION; version++) {
+  for (let difficulty = 1; difficulty <= 6; difficulty++) {
+    for (const seed of [0, 101]) {
+      const spec = G.generateVersion(difficulty, seed, version);
+      const original = E.create(spec, spec.patient);
+      const { data, ok } = share.parse(share.make(original));
+      assert.ok(ok);
+      if (version === 1 && seed === 0) delete data.g;
+      const replay = share.rebuild(data, E);
+      assert.deepEqual(replay.cas.cases, original.cas.cases);
+      assert.deepEqual(replay.cas.init, original.cas.init);
+      assert.deepEqual(replay.cas.admission, original.cas.admission);
+      assert.deepEqual(replay.patient, original.patient);
+      assert.deepEqual(E.snapshot(replay), E.snapshot(original));
+    }
+  }
+}
+for (const version of [0, -1, 1.5, G.VERSION + 1]) {
+  assert.equal(share.rebuild({ c: 'gen', g: version, s: 101, d: 3 }, E), null);
+}
+assert.equal(share.rebuild({ c: 'gen', s: '101' }, E), null);
+assert.equal(share.rebuild({ c: 'gen', d: 7 }, E), null);
+assert.equal(share.rebuild({ c: 'missing-teaching-case' }, E), null);
+for (const id of Object.keys(E.CASES)) {
+  const original = E.create(id);
+  const replay = share.rebuild(share.parse(share.make(original)).data, E);
+  assert.equal(replay.caseId, id);
+  assert.deepEqual(replay.patient, original.patient);
+}
+
 /* 重大急症要经过检查、处置和观察，5 版重放仍使用原病理池。 */
 function checkEmergencyCases() {
   for (const [id, seed, test] of [

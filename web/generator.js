@@ -800,7 +800,7 @@ const MODULES = [
       [null, '院前交接', '转运时见面颈部烧伤、气促、声音嘶哑及炭末样痰，估计烧伤面积约 35%。'],
     ],
     goal:['血氧回升','血压稳定','尿量 ≥ 30 mL/h'],
-    check:S=> (S.map || 100) < 68 ? ['平均动脉压不足'] : [],
+    check:S=> (S.map ?? 100) < 68 ? ['平均动脉压不足'] : [],
     hint:'烧伤先看气道：声音嘶哑 + 炭末痰 = 吸入性损伤，气道会肿到堵死，宁可早插管。补液按体重×面积算。',
     advance(S, dtMin){
       /* 血浆渗漏到组织间隙（前 8 小时最快） */
@@ -833,7 +833,7 @@ const MODULES = [
     goal:['恢复冠脉灌注','血压心率稳定','ST 段回落'],
     ...observeAfter(S => S.reperfused ? (S.reperfusionAt ?? 0) : null, 900, 'PCI 后观察未满 15 分钟', (S, issue = dischargeReason) => [
       S.stemi > 0.15 ? issue('冠脉未再通（ST 仍抬高）') : null,
-      (S.map || 100) < 68 ? '平均动脉压不足' : null,
+      (S.map ?? 100) < 68 ? '平均动脉压不足' : null,
     ].filter(Boolean)),
     hint:'ST 段抬高型心梗：抗血小板 + 抗凝 + 尽快再通。硝酸甘油只能缓解症状，救不了濒死心肌。',
     advance(S, dtMin){
@@ -883,13 +883,13 @@ const MODULES = [
     measures: { vol: 3.6, uo: 0.5 },
     ...observeAfter(S => S.bleedingSites.spleen === 0 ? (S.surgicalHemostasisAt ?? 0) : null, 900, '止血术后观察未满 15 分钟', (S, issue = dischargeReason) => [
       S.bleedingSites.spleen > 0 ? issue('脾脏仍在出血') : null,
-      (S.map || 100) < 68 ? '平均动脉压不足' : null,
+      (S.map ?? 100) < 68 ? '平均动脉压不足' : null,
     ].filter(Boolean)),
     hint:'钝性腹部外伤 + 失血性休克，要考虑脾破裂：液体复苏是争取时间，腹腔内出血不会自己停——该手术。',
     advance(S, dtMin, E){
       /* 包膜下出血：不手术就持续渗血；血压越高出得越快（压力依赖性） */
       if (S.bleedingSites.spleen > 0) {
-        E.setBleedingRate(S, 'spleen', 0.026 + 0.012 * Math.max(0, Math.min(1, ((S.map || 90) - 70) / 40)));
+        E.setBleedingRate(S, 'spleen', 0.026 + 0.012 * Math.max(0, Math.min(1, ((S.map ?? 90) - 70) / 40)));
       }
     },
   },
@@ -910,12 +910,12 @@ const MODULES = [
     measures: { vol: 3.6, uo: 0.5 },
     ...observeAfter(S => S.bleedingSites.ectopic === 0 ? (S.surgicalHemostasisAt ?? 0) : null, 900, '止血术后观察未满 15 分钟', (S, issue = dischargeReason) => [
       S.bleedingSites.ectopic > 0 ? issue('盆腔仍在出血') : null,
-      (S.map || 100) < 68 ? '平均动脉压不足' : null,
+      (S.map ?? 100) < 68 ? '平均动脉压不足' : null,
     ].filter(Boolean)),
     hint:'育龄女性 + 停经 + 突发下腹痛 + 休克 = 宫外孕破裂。补液是争取时间，必须立刻手术。',
     advance(S, dtMin, E){
       if (S.bleedingSites.ectopic > 0) {
-        E.setBleedingRate(S, 'ectopic', 0.030 + 0.010 * Math.max(0, Math.min(1, ((S.map || 90) - 70) / 40)));
+        E.setBleedingRate(S, 'ectopic', 0.030 + 0.010 * Math.max(0, Math.min(1, ((S.map ?? 90) - 70) / 40)));
       }
     },
   },
@@ -932,7 +932,7 @@ const MODULES = [
     measures: { coag: 0.65 },
     ...observeAfter(S => S.delivered ? (S.deliveryAt ?? 0) : null, 900, '产后观察未满 15 分钟', (S, issue = dischargeReason) => [
       !S.delivered ? issue('重度子痫前期的产科病因尚未解除') : null,
-      (S.map || 100) > 118 ? `平均动脉压 ${Math.round(S.map)}` : null,
+      (S.map ?? 100) > 118 ? `平均动脉压 ${Math.round(S.map)}` : null,
       (S.plt || 200) < 100 ? `血小板 ${Math.round(S.plt)}` : null,
     ].filter(Boolean)),
     hint:'重度子痫前期：解痉（硫酸镁）比降压更优先，血压别降太猛——胎盘灌注会掉。根治只有终止妊娠。',
@@ -949,7 +949,7 @@ const MODULES = [
       /* 旧种子在第一拍病程推进时才载入此驱动。 */
       if (S.genVersion < 3 && S.svrDrive === 0) S.svrDrive = PREECLAMPSIA_SVR_DRIVE;
       S.svrDrive = Math.min(16, (S.svrDrive ?? PREECLAMPSIA_SVR_DRIVE) + 0.012 * dtMin);
-      if ((S.map || 100) > 125) S.insult.icp += 0.10 * dtMin;   // 高血压脑病 → 脑水肿 → 子痫
+      if ((S.map ?? 100) > 125) S.insult.icp += 0.10 * dtMin;   // 高血压脑病 → 脑水肿 → 子痫
       S.plt = Math.max(20, (S.plt || 78) - 0.06 * dtMin);
       S.coag = Math.max(0.35, (S.coag || 0.82) - 0.0004 * dtMin);
     },
@@ -1566,7 +1566,7 @@ function generateCase(difficulty, seed, only, genVersion) {
 
 /* 界面上每 tick 之后调用：让病程钩子与引擎同步推进 */
 function step(S, dtSec, E) {
-  if (!S || !S.running) return;
+  if (!S || !S.running || !Number.isFinite(dtSec) || dtSec <= 0) return;
   const C = S.cas;
   if (C && typeof C.advance === 'function') {
     const k = S.hardScale || 1;

@@ -11,6 +11,21 @@ const E = require('../prototype/engine.js');
 try { const _E = require('../prototype/engine.js'); _E.setIdentity && _E.setIdentity({ name:'测试患者', sex:'男', age:45, weight:70, height:172 }); } catch (e) {}
 const G = globalThis.CASEGEN;
 
+const assert = require('node:assert/strict');
+{
+  const patient = E.create({ id: 'time-boundary', init: { ...G.BASE },
+    advance() { throw new Error('invalid timestep reached disease progression'); } });
+  const before = JSON.stringify(patient);
+  for (const seconds of [0, -1, NaN, Infinity]) {
+    E.tick(patient, seconds);
+    G.step(patient, seconds, E);
+    assert.equal(JSON.stringify(patient), before);
+  }
+  const burn = G.MODULES.find(m => m.id === 'burn');
+  assert.deepEqual(burn.check({ map: 0 }), ['平均动脉压不足']);
+  assert.deepEqual(burn.check({ map: 68 }), []);
+}
+
 const out = [];
 function check(name, ok, detail) { out.push({ name, ok, detail }); }
 

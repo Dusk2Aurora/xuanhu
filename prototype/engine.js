@@ -2420,7 +2420,7 @@ function lactateReadings(S) {
 }
 
 function tick(S, dtSec) {
-  if (!S.running) return S;
+  if (!S.running || !Number.isFinite(dtSec) || dtSec <= 0) return S;
   const endsAt = S.vascularAccess?.attempt?.endsAt;
   if (!Number.isFinite(endsAt) || endsAt > S.t + dtSec + 1e-7) return advancePhysiology(S, dtSec);
   const beforeAccess = clamp(endsAt - S.t, 0, dtSec);
@@ -2436,7 +2436,7 @@ function advancePhysiology(S, dtSec) {
   if (temperatureDevice === 'aorticBypass' && S.aorticSurgeryCompletedAt != null &&
       S.advancedCare.aorticBypass.phase !== 'rewarming') ADVANCED.action(S, 'aorticBypass', false, fmt);
   if (S.circulationStableSince != null && !circulationStable(S, bp(S))) S.circulationStableSince = null;
-  const dtMin = Math.max(1e-5, dtSec / 60);
+  const dtMin = dtSec / 60;
   advanceCompressions(S, dtSec);
   const inArrest = S.rhythm !== 'sinus';
   const inAsystole = S.rhythm === 'asystole';

@@ -659,12 +659,15 @@ for (const id of ['hyperkalemia', 'dka', 'bleed', 'sepsis', 'opioid']) {
     furoCheck.reasons.some(reason => reason.includes('肌酐回升')) && E.signDischarge(furo).status === 'failed',
     '模拟 GFR 约 8，肌酐低于 400 但仍在回升，总尿量达标时还需评估自身尿量');
 
+  const startDialysis = bed => {
+    E.give(bed, 'calcium', 10);
+    E.give(bed, 'insulin', 10);
+    E.give(bed, 'dextrose50', 25);
+    advance(bed, 310);
+    E.ACTIONS.dialysis.apply(bed);
+  };
   const bed = make();
-  E.give(bed, 'calcium', 10);
-  E.give(bed, 'insulin', 10);
-  E.give(bed, 'dextrose50', 25);
-  advance(bed, 310);
-  E.ACTIONS.dialysis.apply(bed);
+  startDialysis(bed);
   advance(bed, 180 * 60 - 20);
   const whileDialyzing = E.dischargeCheck(bed);
   const endAt = bed.dialysisUntil;
@@ -712,6 +715,51 @@ for (const id of ['hyperkalemia', 'dka', 'bleed', 'sepsis', 'opioid']) {
   check('稳定的 AKI 和由旧档恢复的患者均可在留观后正常签字', bed.cr < 400 && bed.renalFactor > 0.5 &&
     E.signDischarge(bed).status === 'normal' && E.signDischarge(legacyBed).status === 'normal',
     '常规处置后自身尿量达标，离透析稳定满 30 个模拟分钟');
+
+  const mild = make({ weight: 100 });
+  const urineRate = bed => bed.uo * 60 / bed.patient.weight;
+  startDialysis(mild);
+  advance(mild, 180 * 60);
+  const endOfDialysisUrine = urineRate(mild);
+  advance(mild, 15 * 60);
+  const mildProgress = E.dischargeCheck(mild);
+  const mildDip = restore(serialize(mild));
+  const mildRebound = restore(serialize(mild));
+  const factorBeforeDip = mildDip.renalFactor;
+  const crBeforeRebound = mildRebound.cr;
+  mildDip.renalFactor *= 0.88;
+  mildRebound.cr += 6;
+  for (const changed of [mildDip, mildRebound]) advance(changed, 20);
+  const dippedUrine = urineRate(mildDip);
+  const dipped = E.dischargeCheck(mildDip);
+  const rebounded = E.dischargeCheck(mildRebound);
+  mildDip.renalFactor = factorBeforeDip;
+  mildRebound.cr = crBeforeRebound;
+  for (const changed of [mildDip, mildRebound]) advance(changed, 15 * 60 - 20);
+  check('仍高于安全下限的尿量下降或肌酐反弹会重开留观', dippedUrine >= 0.3 &&
+    dipped.observationEndsAt > mildProgress.observationEndsAt &&
+    rebounded.reasons.some(reason => reason.includes('肌酐回升')) &&
+    !E.dischargeCheck(mildDip).ok && !E.dischargeCheck(mildRebound).ok,
+    '回落时自身尿量仍在轻度少尿区间，恢复后需要补足连续观察');
+
+  const restoredMild = restore(serialize(mild));
+  advance(restoredMild, 15 * 60 - 0.2);
+  const beforeDeadline = E.dischargeCheck(restoredMild);
+  advance(restoredMild, 0.2);
+  const overLimit = E.dischargeCheck({ ...restoredMild, cr: 401 });
+  const highPotassium = E.dischargeCheck({ ...restoredMild, k: 6.7 });
+  const mixed = E.create(G.generate(4, 101, ['aki', 'hhs']), { weight: 100 });
+  const mixedCheck = E.dischargeCheck({ ...restoredMild, tags: mixed.tags, cas: mixed.cas });
+  check('稳定轻度少尿的 AKI 留观满 30 分钟可正常签字', !mildProgress.ok &&
+    endOfDialysisUrine >= 0.3 && urineRate(restoredMild) < 0.5 &&
+    beforeDeadline.reasons.length === 1 && beforeDeadline.observationEndsAt === mildProgress.observationEndsAt &&
+    E.signDischarge(restoredMild).status === 'normal',
+    `透析结束时自身尿量 ${endOfDialysisUrine.toFixed(2)}，签字时 ${urineRate(restoredMild).toFixed(2)} mL/kg/h`);
+  check('轻度少尿仍受肌酐上限、高钾和合并病种尿量目标约束',
+    !overLimit.ok && overLimit.reasons.some(reason => reason.includes('≤400 µmol/L')) &&
+    highPotassium.majorReasons.some(reason => reason.startsWith('血钾')) &&
+    !mixedCheck.ok && mixedCheck.reasons.some(reason => reason.includes('>0.5 mL/kg/h')),
+    '保留 AKI 肌酐上限、通用高钾拦截和高渗高血糖状态的独立尿量目标');
 }
 {
   const assess = (ids, patch) => E.dischargeCheck(Object.assign(E.create(G.generate(4, 13, ids)), patch)).reasons;

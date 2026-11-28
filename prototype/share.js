@@ -59,6 +59,11 @@
       if (String(l[1]).startsWith('操作')) actions.push(['a', toSec(l[0]), String(l[1]).replace(/^操作\s*/, '').slice(0, 36), 0]);
     }
     actions.sort((x, y) => x[1] - y[1]);
+    const review = S.dischargeOutcome;
+    const failed = review?.status === 'failed';
+    const reason = S.death?.reason || (failed ? review.majorReasons?.[0] : '');
+    const score = review && typeof root.LIFE?.finalScore === 'function'
+      ? root.LIFE.finalScore(S) : (S.finalScore ?? S.score ?? 100);
     const payload = {
       v: V,
       c: isGen ? 'gen' : (S.caseId || S.cas.id),
@@ -67,9 +72,9 @@
       d: S.diff || (S.cas.diff || 3),
       p: { n: p.name || '', x: p.sex || '男', a: p.age || 45, w: p.weight || 70, h: p.height || 170 },
       t: Math.round((S.t || 0) / 60),
-      o: S.death ? 'death' : (S.discharged ? 'discharge' : 'open'),
-      r: S.death ? String(S.death.reason || '').slice(0, 20) : '',
-      sc: Math.round(S.score == null ? 100 : S.score),
+      o: S.death ? 'death' : S.discharged ? 'discharge' : failed ? 'failed' : 'open',
+      r: String(reason || '').slice(0, 20),
+      sc: Math.round(score),
       a: actions.slice(0, 120),
     };
     const body = b64.enc(JSON.stringify(payload));

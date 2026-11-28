@@ -28,8 +28,17 @@ let paused = false;
 let bigFont = false;
 /* 白天 / 夜间：夜间难度显著提升（病情推进更快、提示更少、界面转暗） */
 let nightMode = false;
-/* 现实模式：不给提示、不显示参考范围、化验必须开检查 */
-let realism = false;
+const REALISM_RULES = {
+  insurance: { name: '医保与自付', note: '按参保类型结算费用，追踪家庭自付负担。' },
+  signedDischarge: { name: '真实出院', note: '自行判断出院时机。签字后结算，病情未达标扣分，重大问题直接判负。' },
+};
+const realismRules = { insurance: false, signedDischarge: false };
+function enabledRules() {
+  return Object.keys(REALISM_RULES).filter(key => realismRules[key]);
+}
+function ruleNames(keys) {
+  return keys.map(key => REALISM_RULES[key]?.name).filter(Boolean).join('、') || '无';
+}
 /* 是否运行在网页版（http/https 且不是 APK 内的 localhost） */
 const IS_WEB = (function () {
   try {
@@ -381,6 +390,8 @@ function openSheet(title, sub, rows, patient) {
   const list = $('#sheetList');
   $('#sheetTitle').innerHTML = `${escapeHtml(title)} <small>${escapeHtml(sub)}</small>`;
   delete $('#sheetTitle').dataset.view;
+  delete $('#sheetTitle').dataset.eligible;
+  delete $('#sheetTitle').dataset.observation;
   list.innerHTML = rows.map((r, i) => {
     if (r.sec) return `<div class="sec">${r.sec}</div>`;
     const button = `<button type="button" class="drow" data-i="${i}"><span class="nm">${r.n}</span>
@@ -883,9 +894,15 @@ function openChecks(patient) {
   if (!isCurrentPatient(patient)) return;
   const rows = [{ sec: '床旁查体' }, { n: '双肺听诊', tag: '床旁', amt: '立即查体', run: examineLungs },
     { sec: '检查开单' }, ...testRows(patient)];
+  rows.push({ sec: '结局' });
+  if (realismRules.signedDischarge) {
+    rows.push({ n: '办理出院', tag: '', amt: '签字', run: () => confirmSignedDischarge(patient) });
+    openSheet('检查 / 结局', patient.patient.name + ' · 开单后出结果', rows, patient);
+    $('#sheetTitle').dataset.view = 'signed-checks';
+    return;
+  }
   const d = E.dischargeCheck(patient);
   const canObserve = canStartObservation(patient, d);
-  rows.push({ sec: '结局' });
   if (canObserve) {
     rows.push({ n: '稳定期留观快进', tag: '全病房 · 达到观察目标、遇重症或报告回报时停止', amt: '最多 6 小时', run: startObservation });
   }
@@ -927,6 +944,16 @@ function openChecks(patient) {
   $('#sheetTitle').dataset.view = 'checks';
   $('#sheetTitle').dataset.eligible = String(d.ok);
   $('#sheetTitle').dataset.observation = String(canObserve);
+}
+
+function confirmSignedDischarge(patient) {
+  openSheet('是否签字出院？', patient.patient.name, [
+    { n: '取消', tag: '', amt: '', run: () => openChecks(patient) },
+    { n: '确认签字出院', tag: '', amt: '', run: () => {
+      if (!hasCurrentWard() || !realismRules.signedDischarge) return;
+      if (E.signDischarge(patient)) settleBeds();
+    } },
+  ], patient);
 }
 
 function refreshDischargeAssessment(patient, assessment) {
@@ -1080,7 +1107,7 @@ function judge(kind, id, assessment, entry) {
 /* ---------------- 存档 ---------------- */
 const GAME_STORAGE_KEYS = [
   'life.save', 'life.records', 'life.handbook', 'life.ach', 'life.signs',
-  'life.level', 'life.caseDiff', 'life.autoHint', 'life.night', 'life.realism',
+  'life.level', 'life.caseDiff', 'life.autoHint', 'life.night', 'life.realism', 'life.realismRules',
   'life.insHelpShown', 'life.sound', 'life.soundVolume', 'life.contact',
   'life.updateBase', 'life.downloadPage', 'life.remoteBase',
 ];
@@ -1172,7 +1199,7 @@ function writeWard(nextBeds, index, revision) {
   try {
     const snapshot = JSON.stringify({
       v: 3, resetEpoch: saveEpoch, wardRevision: revision, level, caseDiff, activeIdx: index,
-      beds: nextBeds.map(b => serState(b.S)),
+      realismRules: { ...realismRules }, beds: nextBeds.map(b => serState(b.S)),
     });
     if (!hasCurrentWard()) return false;
     // 同一次写入公布床位及版本，其他标签页会一起读取两者。
@@ -1192,6 +1219,7 @@ function loadGame() {
     if (!d || !Array.isArray(d.beds) || (d.resetEpoch ?? null) !== saveEpoch) return false;
     if (d.v !== 3) { try { localStorage.removeItem('life.save'); } catch (err) {} window.__saveDiscarded = true; return false; }
     wardRevision = d.wardRevision ?? null;
+    if (d.realismRules) restoreRealismRules(d.realismRules);
     if (!d.beds.length) return true;
 
     const rebuilt = [];
@@ -1214,7 +1242,10 @@ function loadGame() {
       E.restoreTemperature(st, item.s);
       E.restoreDischargeObservation(st, item.s);
       E.restoreChestXrayReports(st);
-      if (st.death || st.discharged) st.running = false;
+      if (st.death || st.discharged || st.dischargeOutcome?.status === 'failed') st.running = false;
+      if (!Array.isArray(st.usedRealismRules)) {
+        st.usedRealismRules = [...new Set([...(st.admissionSettings?.realism ? ['insurance'] : []), ...enabledRules()])];
+      }
       if (i <= savedActive) rebuiltActive = rebuilt.length;
       rebuilt.push({ S: st });
     }
@@ -1374,8 +1405,9 @@ function loop(ts) {
   lastTs = ts;
   if (paused || !beds.length) { ecg.pause(); silenceMonitor(); requestAnimationFrame(loop); return; }
   if (beds.length) {
-    const observationStartedAt = observation ? S.t : null;
-    const hourlyBedCost = realism && S.ins ? (isSevere(S) ? 80 : 25) : 0;
+    const billedBeds = realismRules.insurance ? beds.filter(b => b.S.running).map(({ S: patient }) => ({
+      patient, from: patient.t, hourlyRate: isSevere(patient) ? 80 : 25,
+    })) : [];
     let observationEnd = observationStopReason();
     const adv = observationEnd ? 0 : !observation
       ? dt * (ff ? 20 : speed) * (nightMode ? 1.3 : 1)
@@ -1390,14 +1422,13 @@ function loop(ts) {
       acc -= 0.2;
       if (observation) observationEnd = observationStopReason();
     }
-    if (hourlyBedCost) {
-      const elapsed = observationStartedAt == null ? adv : S.t - observationStartedAt;
-      S.bedCost = (S.bedCost || 0) + hourlyBedCost * elapsed / 3600;
+    for (const { patient, from, hourlyRate } of billedBeds) {
+      patient.bedCost = (patient.bedCost || 0) + hourlyRate * (patient.t - from) / 3600;
     }
     const pendingFilm = S.tests.cxr && !S.tests.cxr.done;
     for (const b of beds) { try { E.pollTests(b.S); } catch (e) {} }
     if (pendingFilm && S.tests.cxr.done && $('#sheet').classList.contains('on') &&
-        $('#sheetTitle').dataset.view === 'checks' && isCurrentPatient(S)) openChecks(S);
+        ['checks', 'signed-checks'].includes($('#sheetTitle').dataset.view) && isCurrentPatient(S)) openChecks(S);
     let reviewMessage = '';
     if (observation && (observationEnd || (observation.kind === 'steady' && E.dischargeCheck(S).ok))) {
       if (observation.kind !== 'steady') {
@@ -1497,9 +1528,9 @@ function pumpSound(ts, warnings, rPeak, inLobby) {
 function renderHUD() {
   try {
     /* 兜底：现实模式下任何时候发现没参保，补一份（开局/读档/切床都覆盖） */
-    if (realism && S && !S.ins) initInsurance();
+    if (realismRules.insurance && S && !S.ins) initInsurance();
     let el = document.getElementById('budgetChip');
-    if (realism && S && S.ins) {
+    if (realismRules.insurance && S && S.ins) {
       if (!el) {
         el = document.createElement('span');
         el.id = 'budgetChip';
@@ -1623,7 +1654,7 @@ function observationStopReason() {
       if (previous.deadline != null && bed.S.t + 1e-7 >= previous.deadline) {
         return { patient: bed.S, message: `床位 ${index + 1} 已到预定复评时间` };
       }
-      if (reassess) {
+      if (reassess && !realismRules.signedDischarge) {
         const assessment = E.dischargeCheck(bed.S);
         if (!previous.ready && assessment.ok) return { patient: bed.S, message: `床位 ${index + 1} 已达到出院条件` };
         previous.ready = assessment.ok;
@@ -1688,8 +1719,8 @@ function startConditionReview() {
   const danger = beds.findIndex(b => attentionReason(b.S, true));
   if (danger >= 0) { toast(attentionMessage(danger, true) + '，请先处理', true); return; }
   const baselines = new Map(beds.map(({ S: patient }) => {
-    const assessment = E.dischargeCheck(patient);
-    return [patient, { vitals: E.conditionReviewBaseline(patient), deadline: assessment.observationEndsAt, ready: assessment.ok }];
+    const assessment = realismRules.signedDischarge ? null : E.dischargeCheck(patient);
+    return [patient, { vitals: E.conditionReviewBaseline(patient), deadline: assessment?.observationEndsAt, ready: assessment?.ok }];
   }));
   beginObservation({ kind: 'ward', startedAt: S.t, until: S.t + MAX_OBSERVATION_SECONDS, baselines, nextAssessment: S.t + 5 });
   toast('全病房等待病情变化，最多 6 个模拟小时');
@@ -1761,7 +1792,7 @@ function focusBed(i) {
   lastCrit = '';
   organBuiltFor = null;
   closePatientOverlays();
-  if (realism && !S.ins) initInsurance();
+  if (realismRules.insurance && !S.ins) initInsurance();
   drawBody();
   renderAll();
   showAdvice(false);
@@ -1809,7 +1840,7 @@ function settleBeds() {
     if (st === S) {
       review = { st, ...recap };
     } else {
-      toast(`床位 ${beds.indexOf(b) + 1} · ${escapeHtml(st.patient.name)}${st.discharged ? '已出院' : '已死亡'}`, !st.discharged);
+      toast(`床位 ${beds.indexOf(b) + 1} · ${escapeHtml(st.patient.name)} · ${caseOutcomeLabel(st)}`, !st.discharged);
     }
   }
   const nextBed = beds.slice(activeIdx + 1).find(b => b.S.running);
@@ -1832,7 +1863,7 @@ function settleBeds() {
     if ($('#sheet').classList.contains('on') && $('#sheetTitle').dataset.view === 'beds') openBeds();
     if ($('#lobby').style.display === 'flex') showLobby();
   }
-  saveGame({ empty: true });
+  writeWard(beds, activeIdx, newStorageRevision());
 }
 
 /* ---------------- 统计面板 ---------------- */
@@ -1875,9 +1906,10 @@ function openStats() {
   const row = (k, v) => '<tr><td style="padding:6px 4px;color:#8a8078">' + k + '</td>' +
     '<td style="padding:6px 4px;text-align:right;font-weight:600">' + v + '</td></tr>';
   html += row('总局数', total);
-  html += row('痊愈出院', cured);
+  html += row('出院', cured);
+  html += row('出院判定失败', recs.filter(r => r.结局 === '出院判定失败').length);
   html += row('死亡', died);
-  html += row('治愈率', rate + '%');
+  html += row('出院率', rate + '%');
   html += row('平均耗时', avg('耗时') + ' min');
   html += row('平均费用', '¥' + avg('费用'));
   html += row('平均评分', avg('评分'));
@@ -1939,7 +1971,7 @@ function mountBedBar() {
     'display:none', 'align-items:center', 'gap:6px',
     'padding:5px 10px', 'border-radius:999px',
     'background:rgba(255,255,255,.92)', 'box-shadow:0 2px 10px rgba(0,0,0,.10)',
-    'font-size:12px', 'color:#6b625d', 'z-index:60', 'cursor:pointer',
+    'font-size:12px', 'color:#6b625d', 'z-index:21', 'cursor:pointer',
     'backdrop-filter:blur(8px)', '-webkit-backdrop-filter:blur(8px)',
     'transition:opacity .45s ease',
   ].join(';');
@@ -1994,7 +2026,7 @@ function syncBedSeverity() {
 function openBeds() {
   const rows = beds.map((b, i) => {
     const st = b.S;
-    const tag = st.discharged ? '已出院' : (st.death ? '已死亡' : `${Math.round(st.t / 60)} min`);
+    const tag = st.running ? `${Math.round(st.t / 60)} min` : caseOutcomeLabel(st);
     return {
       n: `床位 ${i + 1}`,
       tag: `${b.S === S ? '当前 · ' : ''}${tag}<span data-bed-severity="${i}">${bedSeverity(st)}</span>`,
@@ -2014,20 +2046,30 @@ function recordDiagnosis(st, dx, suffix = '', outcome) {
   if (!rec) return;
   rec.sessionId = wardRecordId(st) + suffix;
   if (rec.therapy) rec.therapy.sessionId = rec.sessionId;
-  if (outcome) rec.outcome = outcome;
+  if (outcome) {
+    rec.outcome = outcome;
+    if (rec.therapy) rec.therapy.outcome = outcome;
+  }
   window.HANDBOOK.record(rec);
+}
+
+function caseOutcomeLabel(st) {
+  if (st.dischargeOutcome?.status === 'failed') return '出院判定失败';
+  if (st.discharged) return '出院';
+  return st.death ? '死亡' : '进行中';
 }
 
 function archiveCase(st, wardCount) {
   st._level = level;
   st._beds = wardCount;
-  const ok = st.discharged;
   const breakdown = E.scoreBreakdown(st);
   const min = Math.round(st.t / 60);
   const name = (st.cas && st.cas.name) || st.caseId;
+  const rules = enabledRules();
   const settings = {
     admission: st.admissionSettings,
-    level, realism,
+    level, realism: rules.length > 0, rules,
+    usedRules: st.usedRealismRules ?? rules,
     difficulty: st.diff ?? st.cas?.diff ?? null,
     fixed: st.caseId !== 'gen' && st.diff == null && st.cas?.diff == null,
   };
@@ -2075,7 +2117,8 @@ function archiveCase(st, wardCount) {
     病例名: name,
     患者: st.patient.name,
     诊断: name,
-    结局: ok ? '出院' : '死亡',
+    结局: caseOutcomeLabel(st),
+    签字评估: st.dischargeOutcome,
     耗时: min,
     费用: Math.round(st.cost),
     评分: breakdown.score,
@@ -2118,6 +2161,10 @@ function caseSettingsRows(settings) {
     ['指导等级', selection('level', guidance)],
     ['病例难度', difficulty ? settings.difficulty + ' · ' + difficulty[0] : (settings.fixed ? '固定病例' : '未记录')],
     ['现实模式', selection('realism', mode)],
+    ...(Array.isArray(settings.rules) ? [
+      ['结算时启用', ruleNames(settings.rules)],
+      ...(settings.usedRules?.some(key => !settings.rules.includes(key)) ? [['本例曾启用', ruleNames(settings.usedRules)]] : []),
+    ] : (typeof settings.realism === 'boolean' ? [['结算时启用', settings.realism ? '医保与自付' : '无']] : [])),
   ];
 }
 
@@ -2127,8 +2174,16 @@ function openCaseRecord(r) {
   if (r.死因) summary.push(['死因', r.死因]);
   if (r.终末血钾 != null) summary.push(['终末血钾', r.终末血钾 + ' mmol/L'], ['终末 pH', r.终末pH]);
   summary.push(...caseSettingsRows(r.设置));
+  const signing = r.签字评估;
+  if (signing) {
+    const labels = { normal: '符合全部出院条件', penalized: '未完全达标，扣分出院', failed: '仍有重大问题，本例失败' };
+    summary.push(['签字时评估', labels[signing.status]]);
+    if (signing.majorReasons.length) summary.push(['重大问题', signing.majorReasons.join('；')]);
+    const remaining = signing.reasons.filter(reason => !signing.majorReasons.includes(reason));
+    if (remaining.length) summary.push(['未达标项', remaining.join('；')]);
+  }
   if (r.新成就?.length) summary.push(['新成就', r.新成就.join('、')]);
-  openDetail(ok ? '患者出院' : '患者死亡', [r.患者, r.时间].filter(Boolean).join(' · '), [], '');
+  openDetail(ok ? '患者出院' : (r.结局 === '死亡' ? '患者死亡' : r.结局), [r.患者, r.时间].filter(Boolean).join(' · '), [], '');
   const detail = $('#detail');
   detail.classList.add('case-review', ok ? 'case-review-success' : 'case-review-failure');
   const body = document.createElement('div');
@@ -2327,7 +2382,7 @@ function buildFeedbackText() {
     lines.push('病例编号：' + (S.caseId || '随机') + ' / 难度 ' + (S.diff || caseDiff));
     const p = S.patient || {};
     lines.push('病人：' + (p.name || '—') + ' ' + (p.sex || '') + ' ' + (p.age || '') + ' 岁');
-    lines.push('游戏时间：' + Math.round((S.t || 0) / 60) + ' 分钟' + (S.death ? ' · 已死亡' : S.discharged ? ' · 已出院' : ' · 进行中'));
+    lines.push('游戏时间：' + Math.round((S.t || 0) / 60) + ' 分钟 · ' + caseOutcomeLabel(S));
     const vitals = E.snapshot(S);
     lines.push('体征：HR ' + vitals.hr + ' BP ' + vitals.sys + '/' + vitals.dia +
       ' SpO2 ' + (vitals.spo2 == null ? '无信号' : vitals.spo2 + '%') + ' T ' + S.temp.toFixed(1) +
@@ -2410,7 +2465,7 @@ function openFeedback() {
 }
 
 /* ---------------- 版本 / 更新检查 ---------------- */
-const APP_VERSION = '1.53.3';
+const APP_VERSION = '1.53.4';
 const releaseRoot = document.querySelector('meta[name="xuanhu-release-root"]')?.content;
 const releaseBase = releaseRoot ? new URL(releaseRoot, location.href).href.replace(/\/$/, '') : '';
 const platformName = location.protocol === 'file:' ? '离线 HTML' :
@@ -2577,18 +2632,18 @@ function openInsuranceHelp() {
   const bindSwitch = () => {
     list.querySelectorAll('[data-ins]').forEach(btn => {
       btn.addEventListener('click', () => {
-        if (!realism) { toast('先开启现实模式', true); return; }
+        if (!realismRules.insurance || !S) { toast('请先开启「医保与自付」并接诊患者', true); return; }
         initInsurance(btn.dataset.ins === 'random' ? 'random' : btn.dataset.ins);
         toast('已切换：' + (S.ins ? S.ins.t : ''));
         openInsuranceHelp();
       });
     });
   };
-  const ins = (S && S.ins) ? S.ins : null;
-  const c = (S && S.ins) ? costSummary() : null;
+  const ins = realismRules.insurance && S?.ins;
+  const c = ins ? costSummary() : null;
   list.innerHTML =
     '<div style="padding:12px 14px 6px;font-size:12.5px;line-height:1.85;color:var(--ink-2)">' +
-      '现实模式会计费。你要盯的不是"医院花多少"，而是<b>病人家庭自己掏多少</b>。' +
+      '开启「医保与自付」后，可查看医保报销和<b>患者家庭的自付金额</b>。' +
     '</div>' +
     '<div class="sec">三个数字</div>' +
     '<div style="padding:0 14px 10px;font-size:12.5px;line-height:1.9">' +
@@ -2629,7 +2684,7 @@ function openInsuranceHelp() {
         '">' + (t === 'random' ? '随机重抽' : t) + '</button>').join('') +
     '</div>' +
     '<div style="padding:6px 14px 16px;font-size:12px;color:var(--ink-3);line-height:1.8">' +
-      '不想被费用约束？主页「现实模式」按钮点一下就能关掉，随时可以再开。' +
+      '可在大厅或菜单的「现实模式」中单独开关「医保与自付」。' +
     '</div>';
   bindSwitch();
 }
@@ -2745,7 +2800,7 @@ function openConsult() {
       return (kind === 'd' ? '给药 ' : '操作 ') + id + (dose ? ' ' + dose : '');
     });
     const outcome = d.o === 'death' ? ('死亡' + (d.r ? '（' + d.r + '）' : ''))
-      : d.o === 'discharge' ? '出院' : '未结束';
+      : d.o === 'failed' ? ('出院判定失败' + (d.r ? '（' + d.r + '）' : '')) : d.o === 'discharge' ? '出院' : '未结束';
     pv.innerHTML =
       '<div style="font-size:13px;line-height:1.7">' +
       '<div><b>会诊病例</b></div>' +
@@ -2883,15 +2938,15 @@ function bind() {
     ...(DEBUG_TOOLS ? [{n:'强制移除当前患者（测试用）', tag:'释放当前床位', amt:'', run:confirmRemovePatient}] : []),
     {sec:'设置与工具'},
     {n:'会诊', tag:'分享 / 接手病例', amt:'查看', run: () => openConsult()},
-    {n:'费用与医保', tag: realism ? '查看明细' : '现实模式才计费', amt:'查看', run: () => openCostSheet()},
+    {n:'费用与医保', tag: realismRules.insurance ? '查看明细' : '医保规则已关闭', amt:'查看', run: () => openCostSheet()},
     {n:'检查更新', tag:'在线 · v' + APP_VERSION, amt:'查看', run: () => checkUpdate()},
     {n:'反馈问题', tag:'带上记录，一键复制', amt:'反馈', run: () => openFeedback()},
     {n:'关于 · 隐私', tag:'v' + APP_VERSION, amt:'查看', run: () => openAbout()},
     {n:'获取最新版', tag:'下载页 / 联系方式', amt:'查看', run: () => openGetLatest()},
-    {n:'医保说明 / 切换', tag: realism ? ((S && S.ins ? S.ins.t : '未参保') + ' · 可切换') : '看看怎么算', amt:'查看', run: () => openInsuranceHelp()},
+    {n:'医保说明 / 切换', tag: realismRules.insurance ? ((S && S.ins ? S.ins.t : '未参保') + ' · 可切换') : '看看怎么算', amt:'查看', run: () => openInsuranceHelp()},
     {n:'在线版模式', tag:'免安装更新', amt:'设置', run: () => openOnlineMode()},
     ...(IS_WEB || releaseBase ? [{n:'下载离线版', tag:'查看可用版本', amt:'下载', run: openGetLatest}] : []),
-    {n:'统计', tag:'治愈率 · 常犯错', amt:'查看', run: () => openStats()},
+    {n:'统计', tag:'出院率 · 常犯错', amt:'查看', run: () => openStats()},
     {n:'病历档案', tag:`最近 ${loadRecords().length} 例`, amt:'查看', run: () => openRecords()},
     {n:'行医手册', tag: handbookTag(), amt:'查看', run: () => openHandbook()},
     {n:'指标走势', tag:'血压·心率·血钾…', amt:'查看', run: () => openChart()},
@@ -2899,7 +2954,7 @@ function bind() {
     {n:'成就', tag: (window.ACHIEVEMENTS ? `${window.ACHIEVEMENTS.unlocked().size} / ${window.ACHIEVEMENTS.list.length} 已解锁` : '未加载'), amt:'查看', run: () => openAchievements()},
     {n:'难度设置', tag:'病例难度 ' + caseDiff + ' · 指导 ' + ((MENTOR.LEVELS[level]||MENTOR.LEVELS.intern).name), amt:'', run: () => openSheet('难度设置', '两轴独立', difficultyRows())},
     {n: nightMode ? '☀ 切回白天' : '🌙 夜间模式', tag: nightMode ? '病情推进 ×1.3 · 界面转暗' : '当前白天', amt:'切换', run: () => { closeSheet(); toggleNight(); }},
-    {n: realism ? '关闭现实模式' : '现实模式（医保与自付）', tag: realism ? ((S && S.ins ? S.ins.t : '已参保') + ' · 点此关闭') : '开：计费，看家庭自付', amt:'切换', run: () => { closeSheet(); toggleRealism(); }},
+    {n:'现实模式', tag:ruleNames(enabledRules()), amt:'设置', run:openRealismSettings},
     {n: '环境 / 场景', tag: '环境与活动', amt: '', run: () => openEnvSheet(S)},
     {n: autoHint ? '主动提示：开' : '主动提示：关', tag: autoHint ? '自动显示提示' : '只在给药后点评', amt: '', run: () => {
       autoHint = !autoHint;
@@ -2971,7 +3026,9 @@ function diffFromLevel() {
   return caseDiff;
 }
 function prepareCase(st) {
-  st.admissionSettings = { level, realism };
+  const rules = enabledRules();
+  st.admissionSettings = { level, realism: rules.length > 0, rules };
+  st.usedRealismRules = [...rules];
   const { hr, sys, dia, temp, rr, spo2, gcs } = E.snapshot(st);
   st.admissionVitals = { t: st.t, hr, sys, dia, temp, rr, spo2, gcs };
   try { if (window.DIAGNOSIS) st.dx0 = window.DIAGNOSIS.classify(st); } catch (e) {}
@@ -3142,24 +3199,36 @@ function toggleNight() {
   renderAll();
 }
 
-function toggleRealism() {
-  realism = !realism;
-  try { localStorage.setItem('life.realism', realism ? '1' : '0'); } catch (e) {}
-  if (realism && S) {
-    initInsurance();
-    let first = true;
-    try { first = localStorage.getItem('life.insHelpShown') !== '1'; } catch (e) {}
-    if (first) {
-      try { localStorage.setItem('life.insHelpShown', '1'); } catch (e) {}
-      openInsuranceHelp();
-    } else {
-      toast('现实模式：' + (S.ins ? S.ins.t + '，家庭可承受自付 ¥' + Math.round(S.ins.oopCap) : '已参保'));
-    }
-  } else if (S) {
-    S.ins = null;
-    toast('已回到标准模式（不计费、不限费）');
+function restoreRealismRules(saved) {
+  for (const key of Object.keys(REALISM_RULES)) realismRules[key] = saved?.[key] === true;
+}
+
+function openRealismSettings() {
+  const entries = Object.entries(REALISM_RULES);
+  openSheet('现实模式', '独立开关，即时应用到全病房及新接诊患者', entries.map(([key, rule]) => ({
+    n: rule.name, tag: rule.note, amt: realismRules[key] ? '已开启' : '已关闭',
+    run: () => {
+      if (!hasCurrentWard()) return;
+      realismRules[key] = !realismRules[key];
+      for (const { S: patient } of beds) {
+        if (!patient.running) continue;
+        patient.usedRealismRules ??= [];
+        if (realismRules[key] && !patient.usedRealismRules.includes(key)) patient.usedRealismRules.push(key);
+        patient.log.push([E.fmt(patient.t), (realismRules[key] ? '开启' : '关闭') + '规则 · ' + rule.name, 'info', patient.t]);
+      }
+      if (key === 'insurance' && realismRules.insurance && S && !S.ins) initInsurance();
+      try { localStorage.setItem('life.realismRules', JSON.stringify(realismRules)); } catch (e) {}
+      writeWard(beds, activeIdx, newStorageRevision());
+      if (S) renderHUD();
+      openRealismSettings();
+      $('#sheetList [data-rule="' + key + '"]').focus({ preventScroll: true });
+    },
+  })));
+  for (const button of $('#sheetList').querySelectorAll('.drow')) {
+    const [key] = entries[Number(button.dataset.i)];
+    button.dataset.rule = key;
+    button.setAttribute('aria-pressed', String(realismRules[key]));
   }
-  renderAll();
 }
 
 /* ---------------- 医保与费用 ----------------
@@ -3176,7 +3245,7 @@ const INSURANCE = [
 ];
 
 function initInsurance(forceType) {
-  if (!realism || !S) return;
+  if (!realismRules.insurance || !S) return;
   let k;
   if (forceType != null) {
     const list = INSURANCE;
@@ -3200,7 +3269,7 @@ function costSummary() {
 }
 
 function checkBudget() {
-  if (!realism || !S || !S.ins) return;
+  if (!realismRules.insurance || !S || !S.ins) return;
   const c = costSummary();
   if (!S._overWarned && c.selfPay > c.cap) {
     S._overWarned = 1;
@@ -3215,9 +3284,14 @@ function checkBudget() {
 }
 
 function openCostSheet() {
+  if (!realismRules.insurance || !S) {
+    openDetail('费用与医保', '', [['医保与自付', '已关闭，可在「现实模式」中开启。']], '');
+    return;
+  }
+  if (!S.ins) initInsurance();
   const c = costSummary();
   const ins = S.ins || { t: '未参保', rate: 0, ded: 0, cap: 0, income: 0 };
-  openDetail('费用与医保', realism ? '现实模式' : '标准模式（不计费）', [
+  openDetail('费用与医保', '医保与自付', [
     ['参保类型', ins.t + (ins.rate ? '（报销 ' + Math.round(ins.rate * 100) + '%）' : '')],
     ['总费用', '¥' + c.total + (S.bedCost ? '（含床位 ¥' + Math.round(S.bedCost) + '）' : '')],
     ['医保支付', '¥' + c.reimb],
@@ -3276,6 +3350,10 @@ function renderAll() {
 
 /* 更新公告：每次发版在这里加一条（新的放最前面） */
 const RELEASES = [
+  { v: '1.53.4', notes: [
+    '现实模式可分别开启「医保与自付」和「真实出院」，原有医保设置自动保留',
+    '真实出院由玩家签字决定，结算后可回看本例启用的规则、签字时的病情与扣分原因',
+  ] },
   { v: '1.53.3', notes: [
     '「操作 → 体温处置」集中物理降温与被动保暖，病房顶部可直接查看本床病例说明',
     '肺面板和操作页新增流量计，自主呼吸时调节供氧流量，插管后调节呼吸机吸气流量，单位均为 L/min',
@@ -3396,7 +3474,7 @@ function bindLobby() {
     if (button.hasAttribute('data-new')) {
       startCase(CASEGEN.generate(diffFromLevel()));
     } else if (button.dataset.mode) {
-      if (button.dataset.mode === 'night') toggleNight(); else toggleRealism();
+      if (button.dataset.mode === 'night') toggleNight(); else openRealismSettings();
       if ($('#sheet').classList.contains('on')) {
         hideLobby({ keepMode: true });
         returnToLobby = true;
@@ -3435,7 +3513,10 @@ function showLobby() {
     row.addEventListener('click', () => { if (switchBed(patient)) hideLobby(); });
   });
   lobby.querySelector('[data-mode="night"]').setAttribute('aria-pressed', nightMode);
-  lobby.querySelector('[data-mode="realism"]').setAttribute('aria-pressed', realism);
+  const ruleButton = lobby.querySelector('[data-mode="realism"]');
+  const rules = enabledRules();
+  ruleButton.classList.toggle('active-rules', rules.length > 0);
+  ruleButton.textContent = rules.length ? '现实模式 · ' + rules.length + ' 项' : '现实模式';
   const guidance = MENTOR.LEVELS[level] || MENTOR.LEVELS.intern;
   lobby.querySelector('.foot').textContent = `指导级别 · ${guidance.name}　 病例难度 · ${caseDiff}`;
   lobby.style.display = 'flex';
@@ -3498,7 +3579,8 @@ ensureMentorDOM();
 try { autoHint = localStorage.getItem('life.autoHint') === '1'; } catch (e) {}
 try {
   nightMode = localStorage.getItem('life.night') === '1';
-  realism = localStorage.getItem('life.realism') === '1';
+  const savedRules = localStorage.getItem('life.realismRules');
+  restoreRealismRules(savedRules ? JSON.parse(savedRules) : { insurance: localStorage.getItem('life.realism') === '1' });
 } catch (e) {}
 applyTheme();
 const _loaded = loadGame();
@@ -3509,7 +3591,7 @@ if (!_loaded && !saveEpoch) {
   activeIdx = 0;
   beds = [{ S }];
 }
-if (realism && S && !S.ins) initInsurance();
+if (realismRules.insurance && S && !S.ins) initInsurance();
 bind();
 if (S) drawBody();
 bindBedSwipe();

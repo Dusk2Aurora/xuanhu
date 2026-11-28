@@ -55,7 +55,8 @@ const PAGES = [
       <div class="tut-row"><b>指标走势</b><span>血压、心率、血钾、血糖等随时间的变化曲线，用来判断"在变好还是变坏"。</span></div>
       <div class="tut-row"><b>术语表</b><span>65 条医学名词的解释和正常范围。点击界面上的状态标签、生命体征标签，也能直接看解释。</span></div>
       <div class="tut-row"><b>病房床位</b><span>最多同时管 4 张床，时间同步流逝。底部胶囊显示床位状态，点一下就能切换；哪个床出院或死亡，床位就空出来。</span></div>
-      <div class="tut-row"><b>统计</b><span>治愈率、平均耗时费用、最常遇到的诊断与最常犯的错。</span></div>
+      <div class="tut-row"><b>现实模式</b><span>医保与自付、真实出院可独立开启。真实出院时自行评估并签字，判定理由在结算时公布。</span></div>
+      <div class="tut-row"><b>统计</b><span>出院率、平均耗时费用、最常遇到的诊断与最常犯的错。</span></div>
       <div class="tut-row"><b>暂停</b><span>点击顶部倍速左侧的「暂停」，所有床位同时停表；点击「继续」恢复。</span></div>
       <div class="tut-note">可以随时从「病房」返回大厅查看床位。</div>`,
   },

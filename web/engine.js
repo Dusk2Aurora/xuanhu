@@ -181,10 +181,10 @@ const CASES = {
     },
     goals: ['收缩压 ≥ 90 且心率 < 120', '血红蛋白 ≥ 80 g/L', '止血'],
     hint: '先补容量再谈输血。升压药不能替代容量。',
-    extra: S => {
+    extra: (S, issue = reason => reason) => {
       const out = [];
-      if (!S.bleedStopped) out.push('出血未止');
-      if (S.hb < 80) out.push(`血红蛋白 ${Math.round(S.hb)}`);
+      if (!S.bleedStopped) out.push(issue('出血未止'));
+      if (S.hb < 80) out.push(issue(`血红蛋白 ${Math.round(S.hb)}`, S.hb < 60));
       return out;
     },
   },
@@ -205,9 +205,9 @@ const CASES = {
     },
     goals: ['平均动脉压 ≥ 65', '乳酸下降', '感染控制'],
     hint: '先补液，再上血管活性药；抗生素越早越好，每拖一小时病死率都在涨。',
-    extra: S => {
+    extra: (S, issue = reason => reason) => {
       const out = [];
-      if ((S.infection || 0) > 0.25) out.push('感染未控制');
+      if ((S.infection || 0) > 0.25) out.push(issue('感染未控制', S.infection > 0.5));
       if (S.temp > 38.0) out.push(`仍发热 ${S.temp.toFixed(1)}℃`);
       return out;
     },
@@ -737,7 +737,7 @@ function create(caseId, identity = IDENTITY) {
     drugs: [], eff: { insulin: 0, norepi: 0, amio: 0, furo: 0, ppi: 0 },
     pk: [], pumps: {}, benzoPkVersion: 1, mod: makeMod(), modBase: makeMod(),
     log: [], tests: {}, labSnap: {}, labPrevious: {}, lungExam: { latest: null, previous: null }, xrayReports: [],
-    score: 100, death: null, discharged: false,
+    score: 100, death: null, discharged: false, dischargeOutcome: null,
     delivered: false, deliveryStartedAt: null, deliveryAt: null,
     caProtectUntil: -1, dialysisUntil: -1, o2: 0, fio2: ROOM_AIR_OXYGEN, oxygenFlow: 0, mapBoost: 0,
     bleedStopped: false, cost: 0, events: [], arrests: 0, infection: 0,
@@ -2217,11 +2217,22 @@ function note(S, id, msg, lvl) {
   S.log.push([fmt(S.t), msg, lvl === 'crit' ? 'bad' : lvl === 'bad' ? 'bad' : 'warn']);
 }
 
-function endCase(S, type, reason) {
-  if (S.death || S.discharged) return;
+function endCase(S, type, reason, dischargeOutcome = null) {
+  if (S.death || S.discharged || S.dischargeOutcome) return;
   S.running = false;
-  if (type === 'death') { S.death = { t: S.t, reason }; S.log.push([fmt(S.t), '患者死亡：' + reason, 'bad']); }
-  else { S.discharged = true; S.log.push([fmt(S.t), '患者出院', 'good']); }
+  if (type === 'death') {
+    S.death = { t: S.t, reason };
+    S.log.push([fmt(S.t), '患者死亡：' + reason, 'bad']);
+    return;
+  }
+  if (dischargeOutcome) S.dischargeOutcome = dischargeOutcome;
+  if (dischargeOutcome?.status === 'failed') {
+    S.log.push([fmt(S.t), '已签字，出院失败：仍有重大问题', 'bad']);
+    return;
+  }
+  S.discharged = true;
+  if (dischargeOutcome?.status === 'penalized') S.log.push([fmt(S.t), '已签字，患者扣分出院', 'warn']);
+  else S.log.push([fmt(S.t), '患者出院', 'good']);
 }
 
 /* --- 通用出院判据与病例专属判据 --- */
@@ -2262,36 +2273,51 @@ function assessCirculationObservation(S, pressure) {
 function dischargeCheck(S) {
   const b = bp(S);
   const bad = [];
+  const major = [];
+  function issue(reason, isMajor = true) {
+    if (isMajor) major.push(reason);
+    return reason;
+  }
+  function add(reason, isMajor) {
+    bad.push(issue(reason, isMajor));
+  }
   const tags = S.tags ?? [];
   const opioid = S.opioidTox || tags.includes('opioid');
   const lowSodium = tags.includes('hypona');
   const hyperosmolar = tags.includes('hhs');
   const observationDeadlines = S.cas?.observations?.(S).map(window => window.endsAt) ?? [];
-  if (S.rhythm !== 'sinus') bad.push('心律异常');
-  if (b.sys < CIRCULATION_MIN_SYSTOLIC) bad.push(`收缩压 ${b.sys}`);
+  if (S.rhythm !== 'sinus') add('心律异常', true);
+  if (b.sys < CIRCULATION_MIN_SYSTOLIC) add(`收缩压 ${b.sys}`, b.sys < 80 || b.map < CIRCULATION_MIN_MAP);
   const minHr = S.cas?.minDischargeHR ?? 50;
   const heartRateTarget = `${minHr}–119 次/分`;
   const hr = Math.round(S.hr);
   if (!Number.isFinite(S.hr)) bad.push('需复测心率');
-  else if (hr < minHr || hr >= 120) bad.push(`心率 ${hr} 次/分，出院目标 ${heartRateTarget}`);
+  else if (hr < minHr || hr >= 120) add(`心率 ${hr} 次/分，出院目标 ${heartRateTarget}`, hr < 45 || hr > 130);
   if (!Number.isFinite(S.spo2) || S.rhythm !== 'sinus') bad.push('需确认室内空气下 SpO₂ ≥94%');
-  else if (S.spo2 < 94) bad.push(`SpO₂ ${S.spo2.toFixed(1)}%，出院目标为室内空气下 ≥94%`);
-  if (S.vent) bad.push('仍需机械通气');
-  else if (S.fio2 > 0.21 || S.o2) bad.push('仍在吸氧，需评估室内空气血氧');
+  else if (S.spo2 < 94) add(`SpO₂ ${S.spo2.toFixed(1)}%，出院目标为室内空气下 ≥94%`, S.spo2 < 90);
+  if (S.vent) add('仍需机械通气', true);
+  else if (S.fio2 > 0.21 || S.o2) {
+    add('仍在吸氧，需评估室内空气血氧', roomAirSaturation(S) < 90);
+  }
   else if (S.hadOxygenSupport && (S.roomAirStableSince == null || S.t - S.roomAirStableSince < ROOM_AIR_OBSERVATION)) {
     bad.push('撤除呼吸支持后，室内空气血氧需稳定至少 5 分钟');
     if (S.roomAirStableSince != null) observationDeadlines.push(S.roomAirStableSince + ROOM_AIR_OBSERVATION);
   }
   const circulationObservation = assessCirculationObservation(S, b);
-  if (circulationObservation?.reason) bad.push(circulationObservation.reason);
+  if (circulationObservation?.reason) {
+    const { phase, reason } = circulationObservation;
+    add(reason, phase === 'active' || (phase === 'unstable' && b.map < CIRCULATION_MIN_MAP));
+  }
   if (circulationObservation?.phase === 'observing') {
     observationDeadlines.push((S.circulationStableSince ?? S.t) + CIRCULATION_OBSERVATION);
   }
   const minRespirations = tags.includes('opioid') ? 12 : 10;
-  if (S.rr < minRespirations || S.rr > 22) bad.push(`呼吸 ${Math.round(S.rr)} 次/分，出院目标 ${minRespirations}–22 次/分`);
+  if (S.rr < minRespirations || S.rr > 22) {
+    add(`呼吸 ${Math.round(S.rr)} 次/分，出院目标 ${minRespirations}–22 次/分`, S.rr < 8 || S.rr > 35);
+  }
   if (!Number.isFinite(S.temp)) bad.push('需复测体温');
-  else if (S.temp < 36 || S.temp > 37.8) bad.push(`体温 ${S.temp.toFixed(1)}℃`);
-  if (S.odsDamage) bad.push('渗透性脱髓鞘');
+  else if (S.temp < 36 || S.temp > 37.8) add(`体温 ${S.temp.toFixed(1)}℃`, temperatureStatus(S.temp) === 'crit');
+  if (S.odsDamage) add('渗透性脱髓鞘', true);
   const originalSodiumExceeded = S.na0 < 130 && S.t <= DAY && S.na - S.na0 > 10;
   if (originalSodiumExceeded || (S.naOvercorrectedAt != null && S.t - S.naOvercorrectedAt < SODIUM_RISK_OBSERVATION)) {
     bad.push('近期血钠纠正过快，需继续观察神经症状');
@@ -2305,26 +2331,26 @@ function dischargeCheck(S) {
   const minSodium = lowSodium ? 130 : 120;
   if (S.na < minSodium || ((lowSodium || hyperosmolar) && S.na > 145)) {
     const target = lowSodium || hyperosmolar ? `${minSodium}–145` : `≥${minSodium}`;
-    bad.push(`血钠 ${S.na.toFixed(1)} mmol/L，出院目标 ${target} mmol/L`);
+    add(`血钠 ${S.na.toFixed(1)} mmol/L，出院目标 ${target} mmol/L`, S.na < 120 || S.na >= 155);
   }
-  if (S.hco3 < 14) bad.push(`HCO₃ ${S.hco3.toFixed(1)}`);
-  if (S.ph < 7.28) bad.push(`pH ${S.ph.toFixed(2)}`);
+  if (S.hco3 < 14) add(`HCO₃ ${S.hco3.toFixed(1)}`, S.hco3 < 10);
+  if (S.ph < 7.28) add(`pH ${S.ph.toFixed(2)}`, S.ph < 7.15);
   const potassium = Number.isFinite(S.k) ? r1(S.k) : null;
   if (potassium == null) bad.push(`血钾需复测，出院目标 ${potassiumTarget}`);
   else if (potassium < DISCHARGE_K_MIN || potassium > DISCHARGE_K_MAX) {
-    bad.push(`血钾 ${potassium.toFixed(1)} mmol/L，出院目标 ${potassiumTarget}`);
+    add(`血钾 ${potassium.toFixed(1)} mmol/L，出院目标 ${potassiumTarget}`, potassium <= 2.5 || potassium > 6.5);
   }
   const { glucose, target: glucoseTarget, side: glucoseSide } = assessDischargeGlucose(S);
   if (glucose == null) bad.push(`血糖需复测，出院目标 ${glucoseTarget}`);
   else if (glucoseSide !== 0) {
-    bad.push(`血糖 ${glucose.toFixed(1)} mmol/L，出院目标 ${glucoseTarget}`);
+    add(`血糖 ${glucose.toFixed(1)} mmol/L，出院目标 ${glucoseTarget}`, glucose < 3 || glucose >= 20);
   }
   const needsFullConsciousness = opioid || lowSodium || hyperosmolar;
   if (S.gcs < (needsFullConsciousness ? 15 : 13)) {
     const target = needsFullConsciousness ? '15 分（本病例要求意识完全恢复）' : '≥13 分';
-    bad.push(`意识 GCS ${S.gcs} 分，出院目标 ${target}`);
+    add(`意识 GCS ${S.gcs} 分，出院目标 ${target}`, S.gcs < 12);
   }
-  if ((lowSodium || tags.includes('seizure')) && convulsionSigns(S)) bad.push('仍有抽搐，可在「脑」面板复查');
+  if ((lowSodium || tags.includes('seizure')) && convulsionSigns(S)) add('仍有抽搐，可在「脑」面板复查', true);
   if (opioid) {
     const lastNaloxone = S.lastNaloxoneAt ?? (S.naloxoneUntil > 0 ? S.naloxoneUntil - 45 * 60 : -Infinity);
     const observationEnds = Math.max((Math.max(S.lastOpioidAt || 0, 0)) + 6 * 3600, lastNaloxone + 4 * 3600);
@@ -2332,11 +2358,22 @@ function dischargeCheck(S) {
       bad.push(`阿片中毒观察还需 ${Math.ceil((observationEnds - S.t) / 60)} 分钟`);
       observationDeadlines.push(observationEnds);
     }
-    if (S.paco2 > 50) bad.push(`二氧化碳分压 ${Math.round(S.paco2)} mmHg`);
+    if (S.paco2 > 50) add(`二氧化碳分压 ${Math.round(S.paco2)} mmHg`, S.paco2 >= 65);
   }
-  if (S.cas && S.cas.extra) for (const r of S.cas.extra(S)) bad.push(r);
+  if (S.cas?.extra) bad.push(...S.cas.extra(S, issue));
   const observationEndsAt = observationDeadlines.length ? Math.min(...observationDeadlines) : null;
-  return { ok: bad.length === 0, reasons: [...new Set(bad)], heartRateTarget, circulationObservation, observationEndsAt };
+  return { ok: bad.length === 0, reasons: [...new Set(bad)], majorReasons: [...new Set(major)],
+    heartRateTarget, circulationObservation, observationEndsAt };
+}
+
+function signDischarge(S) {
+  if (S.dischargeOutcome) return S.dischargeOutcome;
+  if (S.death || S.discharged) return null;
+  const { ok, reasons, majorReasons } = dischargeCheck(S);
+  const status = ok ? 'normal' : majorReasons.length ? 'failed' : 'penalized';
+  const outcome = { status, t: S.t, reasons, majorReasons };
+  endCase(S, 'discharge', null, outcome);
+  return outcome;
 }
 
 function convulsionSigns(S) {
@@ -2601,7 +2638,10 @@ function scoreBreakdown(S) {
   }
 
   add('心脏骤停', -(S.arrests || 0) * 22);
-  if (S.discharged) add('出院用时奖励', Math.max(0, 25 - (S.t / 60) / 6));
+  const dischargeStatus = S.dischargeOutcome?.status;
+  if (S.discharged && dischargeStatus !== 'penalized') add('出院用时奖励', Math.max(0, 25 - (S.t / 60) / 6));
+  if (dischargeStatus === 'penalized') add('出院条件未达标', -30);
+  if (dischargeStatus === 'failed') add('出院存在重大问题', -base);
   if (S.death) add('死亡结局', -45);
   add('诊疗费用', -Math.min(15, Math.max(0, (S.cost - 800) / 120)));
 
@@ -2649,7 +2689,7 @@ function finalScore(S) {
 const API = {
   setIdentity(p) { IDENTITY = p || null; }, CASES, DRUGS, ACTIONS, TESTS, DELIVERY_DURATION, create, restorePatient, tick, give, acetaminophenExposure, setEnv, finalScore, scoreBreakdown, bp, snapshot,
               ventilatorSettings, setVentilatorFlow, oxygenSettings, setOxygenFlow,
-              dischargeCheck, glucoseDischargeTarget, glucoseReviewStatus, potassiumTarget, convulsionSigns, conditionReviewBaseline, conditionReviewChange,
+              dischargeCheck, signDischarge, glucoseDischargeTarget, glucoseReviewStatus, potassiumTarget, convulsionSigns, conditionReviewBaseline, conditionReviewChange,
               auscultate, orderTest, pollTests, testValue, chestXrayReports, restoreChestXrayReports,
               computeMap, fmt, endCase, setBleedingRate, restoreBleeding,
               benzodiazepineExposure, restoreBenzodiazepines, temperatureStatus, restoreTemperature, infusionDetails, insulinActivity,

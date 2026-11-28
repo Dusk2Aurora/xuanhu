@@ -110,6 +110,9 @@ const CASE_MEASURES = {
   },
 };
 
+/* 病例判据可在保留同一出院理由的同时，标记尚未解除的重大问题。 */
+const dischargeReason = reason => reason;
+
 function observeAfter(startTime, duration, reason, check) {
   const observation = S => {
     const start = startTime(S);
@@ -117,8 +120,8 @@ function observeAfter(startTime, duration, reason, check) {
     const endsAt = start + duration;
     return S.t < endsAt ? { endsAt, reason } : null;
   };
-  return { observation, check: S => {
-    const reasons = check(S);
+  return { observation, check: (S, issue) => {
+    const reasons = check(S, issue);
     const waiting = observation(S);
     if (waiting) reasons.unshift(waiting.reason);
     return reasons;
@@ -166,7 +169,10 @@ const MODULES = [
     ],
     medicationHistory:['长期服用阿司匹林'],
     goal:['收缩压 ≥90 且心率 <120','血红蛋白 ≥80 g/L','止血'],
-    check:S=>[ S.bleedingSites.bleed > 0 ? '消化道出血未止' : null, S.hb<80 ? `血红蛋白 ${Math.round(S.hb)}` : null ].filter(Boolean),
+    check:(S, issue = dischargeReason)=>[
+      S.bleedingSites.bleed > 0 ? issue('消化道出血未止') : null,
+      S.hb < 80 ? issue(`血红蛋白 ${Math.round(S.hb)}`, S.hb < 60) : null,
+    ].filter(Boolean),
     hint:'先补容量再谈输血。升压药不能替代容量。',
     /* 失血只丢全血（容量+红细胞同比例），Hb 由 rbcMass/vol 导出，
        补液后自然稀释——替代原来 S.hb 每拍直接下降 */
@@ -183,7 +189,7 @@ const MODULES = [
     ],
     goal:['平均动脉压 ≥65','乳酸下降','感染控制'],
     /* 去掉了 temp>38.0（全局出院标准已含 temp ≤37.8），只留感染控制 */
-    check:S=>[ (S.infection||0)>0.25 ? '感染未控制' : null ].filter(Boolean),
+    check:(S, issue = dischargeReason)=> S.infection > 0.25 ? [issue('感染未控制', S.infection > 0.5)] : [],
     hint:'先补液，再上血管活性药；抗生素越早越好。',
   },
   {
@@ -472,8 +478,10 @@ const MODULES = [
     drivers:{ kProd:0.011, lactProd:0.035 },
     history:[[null, '院前交接', '受伤后出现左胸剧痛、明显气促，左侧呼吸音减弱。']],
     goal:['血氧 ≥ 94%','收缩压 ≥ 90','呼吸频率 ≤ 22'],
-    check:S=>[ (S.tensionPTX||0) > 0.20 ? `胸腔内压仍高（${Math.round((S.tensionPTX||0)*100)}%）` : null,
-               (S.tensionPTX||0) > 0 && !S.chestTubePlaced ? '仍需胸腔闭式引流' : null ].filter(Boolean),
+    check:(S, issue = dischargeReason)=>[
+      S.tensionPTX > 0.20 ? issue(`胸腔内压仍高（${Math.round(S.tensionPTX*100)}%）`) : null,
+      S.tensionPTX > 0 && !S.chestTubePlaced ? issue('仍需胸腔闭式引流') : null,
+    ].filter(Boolean),
     hint:'张力性气胸是梗阻性休克：回心血量被压住，给升压药没用，必须先针刺减压。',
     advance(S, dtMin){
       const prev = S.tensionPTX == null ? 0 : S.tensionPTX;
@@ -506,8 +514,10 @@ const MODULES = [
     drivers:{ kProd:0.011, lactProd:0.05 },
     history:[[null, '院前交接', '右大腿开放性伤口、明显畸形及活动性出血，四肢湿冷。']],
     goal:['收缩压 ≥ 90','血红蛋白 ≥ 80','出血控制'],
-    check:S=>[ S.bleedingSites.trauma > 0 ? '创伤出血未控制' : null,
-               S.hb < 80 ? `血红蛋白 ${Math.round(S.hb)}` : null ].filter(Boolean),
+    check:(S, issue = dischargeReason)=>[
+      S.bleedingSites.trauma > 0 ? issue('创伤出血未控制') : null,
+      S.hb < 80 ? issue(`血红蛋白 ${Math.round(S.hb)}`, S.hb < 60) : null,
+    ].filter(Boolean),
     hint:'先压迫止血，同时补容量；升压药不能替代容量，也不能替代止血。',
   },
 
@@ -566,7 +576,8 @@ const MODULES = [
     drivers:{ kProd:0.010, lactProd:0.03 },
     history:[[null, '现场人员转述', '在通风不良的房间使用燃气热水器，离开现场前反应变慢。']],
     goal:['意识恢复','血氧饱和度与氧输送改善'],
-    check:S=>[ (S.coHb||0) > 0.10 ? `碳氧血红蛋白 ${Math.round((S.coHb||0)*100)}%` : null ].filter(Boolean),
+    check:(S, issue = dischargeReason)=> S.coHb > 0.10 ?
+      [issue(`碳氧血红蛋白 ${Math.round(S.coHb*100)}%`, S.coHb > 0.15)] : [],
     hint:'脉搏血氧仪会骗人——SpO₂ 看着正常，但携氧的血红蛋白被一氧化碳占住了。高流量氧是解药。',
   },
 
@@ -592,7 +603,8 @@ const MODULES = [
     drivers:{ kProd:0.011, lactProd:0.04 },
     history:[[null, '院前交接', '胸部受伤后曾烦躁，颈静脉怒张，心音低弱。']],
     goal:['收缩压 ≥ 90','心率 < 120','意识恢复'],
-    check:S=>[ (S.tamponade||0) > 0.15 ? `心包内压仍高（${Math.round((S.tamponade||0)*100)}%）` : null ].filter(Boolean),
+    check:(S, issue = dischargeReason)=> S.tamponade > 0.15 ?
+      [issue(`心包内压仍高（${Math.round(S.tamponade*100)}%）`, S.tamponade > 0.25)] : [],
     hint:'三联征（低血压 + 颈静脉怒张 + 心音遥远）提示心包填塞：穿刺抽液，补液只是争取时间。',
     advance(S, dtMin){
       /* 凝血性心包积血会持续再填塞：约 1.5 h 回到压塞水平，除非留置引流 */
@@ -671,7 +683,7 @@ const MODULES = [
     drivers:{ kProd:0.010, lactProd:0.035 },
     history:[[null, '院前病史', '吞服约 20 片阿米替林，约两小时后被发现反应迟钝、口干。']],
     goal:['QRS 变窄','意识恢复','心率 < 120'],
-    check:S=> (S.tca||0) > 0.25 ? ['三环类毒性仍高（QRS 增宽）'] : [],
+    check:(S, issue = dischargeReason)=> S.tca > 0.25 ? [issue('三环类毒性仍高（QRS 增宽）', S.tca > 0.55)] : [],
     hint:'三环类过量的解药不是"洗胃"，而是碳酸氢钠——碱化血液能窄化 QRS、止住室性心律失常。',
     advance(S, dtMin){
       S.tca = Math.max(0, (S.tca == null ? 0.78 : S.tca) - 0.0006 * dtMin);   // 自身清除极慢
@@ -689,8 +701,8 @@ const MODULES = [
     drivers:{ kProd:0.010, lactProd:0.03 },
     history:[[null, '院前交接', '左颞部撞伤后曾清醒，约一小时后逐渐出现嗜睡、呕吐。']],
     goal:['意识恢复','颅内压下降','血压心率回稳'],
-    ...observeAfter(S => S.cranied ? (S.craniotomyAt ?? 0) : null, 900, '开颅术后观察未满 15 分钟', S => [
-               (S.hematoma || 0) > 0.12 ? '颅内血肿未清除' : null ].filter(Boolean)),
+    ...observeAfter(S => S.cranied ? (S.craniotomyAt ?? 0) : null, 900, '开颅术后观察未满 15 分钟', (S, issue = dischargeReason) =>
+      S.hematoma > 0.12 ? [issue('颅内血肿未清除')] : []),
     hint:'硬膜外血肿有"中间清醒期"——意识变差就是再出血。甘露醇只是争取时间，必须开颅。',
     advance(S, dtMin){
       /* 动脉出血持续 → 血肿扩大；开颅后不再增长 */
@@ -738,9 +750,10 @@ const MODULES = [
     drivers:{ kProd:0.011, lactProd:0.040 },
     history:[[60, '院前病史', '出现持续的胸骨后压榨样痛，向左肩放射，伴冷汗。曾含服硝酸甘油，疼痛持续。']],
     goal:['胸痛缓解','血压心率稳定','ST 段回落'],
-    ...observeAfter(S => S.reperfused ? (S.reperfusionAt ?? 0) : null, 900, 'PCI 后观察未满 15 分钟', S => [
-               (S.stemi || 0) > 0.15 ? '冠脉未再通（ST 仍抬高）' : null,
-               (S.map || 100) < 68 ? '平均动脉压不足' : null ].filter(Boolean)),
+    ...observeAfter(S => S.reperfused ? (S.reperfusionAt ?? 0) : null, 900, 'PCI 后观察未满 15 分钟', (S, issue = dischargeReason) => [
+      S.stemi > 0.15 ? issue('冠脉未再通（ST 仍抬高）') : null,
+      (S.map || 100) < 68 ? '平均动脉压不足' : null,
+    ].filter(Boolean)),
     hint:'ST 段抬高型心梗：抗血小板 + 抗凝 + 尽快再通。硝酸甘油只能缓解症状，救不了濒死心肌。',
     advance(S, dtMin){
       /* 未再通则坏死面积扩大；再通后不再进展 */
@@ -784,9 +797,10 @@ const MODULES = [
     history:[[null, '院前交接', '左上腹受撞击后疼痛，向左肩放射，伴面色苍白、冷汗。']],
     goal:['血压稳定','乳酸下降','尿量 ≥ 30 mL/h'],
     measures: { vol: 3.6, uo: 0.5 },
-    ...observeAfter(S => S.bleedingSites.spleen === 0 ? (S.surgicalHemostasisAt ?? 0) : null, 900, '止血术后观察未满 15 分钟', S => [
-               S.bleedingSites.spleen > 0 ? '脾脏仍在出血' : null,
-               (S.map || 100) < 68 ? '平均动脉压不足' : null ].filter(Boolean)),
+    ...observeAfter(S => S.bleedingSites.spleen === 0 ? (S.surgicalHemostasisAt ?? 0) : null, 900, '止血术后观察未满 15 分钟', (S, issue = dischargeReason) => [
+      S.bleedingSites.spleen > 0 ? issue('脾脏仍在出血') : null,
+      (S.map || 100) < 68 ? '平均动脉压不足' : null,
+    ].filter(Boolean)),
     hint:'钝性腹部外伤 + 失血性休克，要考虑脾破裂：液体复苏是争取时间，腹腔内出血不会自己停——该手术。',
     advance(S, dtMin, E){
       /* 包膜下出血：不手术就持续渗血；血压越高出得越快（压力依赖性） */
@@ -807,9 +821,10 @@ const MODULES = [
     history:[[null, '院前病史', '停经七周，送医前突发下腹撕裂样痛、肛门坠胀，曾晕厥。']],
     goal:['血压稳定','尿量 ≥ 30 mL/h','腹腔出血已控制'],
     measures: { vol: 3.6, uo: 0.5 },
-    ...observeAfter(S => S.bleedingSites.ectopic === 0 ? (S.surgicalHemostasisAt ?? 0) : null, 900, '止血术后观察未满 15 分钟', S => [
-               S.bleedingSites.ectopic > 0 ? '盆腔仍在出血' : null,
-               (S.map || 100) < 68 ? '平均动脉压不足' : null ].filter(Boolean)),
+    ...observeAfter(S => S.bleedingSites.ectopic === 0 ? (S.surgicalHemostasisAt ?? 0) : null, 900, '止血术后观察未满 15 分钟', (S, issue = dischargeReason) => [
+      S.bleedingSites.ectopic > 0 ? issue('盆腔仍在出血') : null,
+      (S.map || 100) < 68 ? '平均动脉压不足' : null,
+    ].filter(Boolean)),
     hint:'育龄女性 + 停经 + 突发下腹痛 + 休克 = 宫外孕破裂。补液是争取时间，必须立刻手术。',
     advance(S, dtMin, E){
       if (S.bleedingSites.ectopic > 0) {
@@ -828,10 +843,11 @@ const MODULES = [
     history:[[2880, '病史回顾', '开始头痛、视物模糊，伴双下肢水肿。']],
     goal:['血压下降','头痛缓解','尿量 ≥ 30 mL/h'],
     measures: { coag: 0.65 },
-    ...observeAfter(S => S.delivered ? (S.deliveryAt ?? 0) : null, 900, '产后观察未满 15 分钟', S => [
-               !S.delivered ? '重度子痫前期的产科病因尚未解除' : null,
-               (S.map || 100) > 118 ? `平均动脉压 ${Math.round(S.map)}` : null,
-               (S.plt || 200) < 100 ? `血小板 ${Math.round(S.plt)}` : null ].filter(Boolean)),
+    ...observeAfter(S => S.delivered ? (S.deliveryAt ?? 0) : null, 900, '产后观察未满 15 分钟', (S, issue = dischargeReason) => [
+      !S.delivered ? issue('重度子痫前期的产科病因尚未解除') : null,
+      (S.map || 100) > 118 ? `平均动脉压 ${Math.round(S.map)}` : null,
+      (S.plt || 200) < 100 ? `血小板 ${Math.round(S.plt)}` : null,
+    ].filter(Boolean)),
     hint:'重度子痫前期：解痉（硫酸镁）比降压更优先，血压别降太猛——胎盘灌注会掉。根治只有终止妊娠。',
     advance(S, dtMin){
       /* 病因在胎盘：不终止妊娠，血管痉挛与血小板消耗都只会加重。
@@ -1239,7 +1255,7 @@ function generateCase(difficulty, seed, only, genVersion) {
     goals: Array.from(new Set(primary.flatMap(m => m.goal))),
     minDischargeHR: Math.max(...primary.map(m => m.minDischargeHR ?? 50)),
     hint: primary[0].hint,
-    extra: S => [...primary.flatMap(m => m.check?.(S) ?? []), ...caseMeasureReasons(primary, S)],
+    extra: (S, issue) => [...primary.flatMap(m => m.check?.(S, issue) ?? []), ...caseMeasureReasons(primary, S)],
     observations: S => primary.map(m => m.observation?.(S)).filter(Boolean),
     advance,
     cases,

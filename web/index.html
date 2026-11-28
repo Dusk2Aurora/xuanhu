@@ -414,6 +414,10 @@ button.drow { width: 100%; border: 0; background: transparent; color: inherit; f
 .drow .tag { padding: 2px 6px; border-radius: 5px; color: var(--ink-2); background: var(--subtle); font-size: 11px; }
 .drow .amt { color: var(--ink-2); font-family: var(--mono); font-size: 11px; text-align: right; }
 .drow .tag:empty, .drow .amt:empty { display: none; }
+.drow[data-rule] { display: grid; grid-template-columns: 1fr auto; gap: 5px 12px; }
+.drow[data-rule] .tag { grid-row: 2; grid-column: 1 / -1; background: none; padding: 0; line-height: 1.5; }
+.drow[data-rule] .amt { grid-column: 2; grid-row: 1; }
+.drow[data-rule][aria-pressed="true"] .amt { color: var(--accent); font-weight: 700; }
 .sec { padding: 12px 9px 3px; color: var(--ink-2); font-size: 12px; font-weight: 680; }
 
 .detail {
@@ -772,7 +776,7 @@ button.drow { width: 100%; border: 0; background: transparent; color: inherit; f
   font-size: 12px;
   cursor: pointer;
 }
-#lobby [data-mode][aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); border-color: var(--accent); }
+#lobby [data-mode][aria-pressed="true"], #lobby .active-rules { color: var(--accent); background: var(--accent-soft); border-color: var(--accent); }
 .lobby-release {
   padding: 7px 10px;
   border: 1px solid var(--line);
@@ -900,7 +904,7 @@ button.drow { width: 100%; border: 0; background: transparent; color: inherit; f
       <h2 class="cap">值班设置</h2>
       <div class="lobby-modes">
         <button type="button" data-mode="night" aria-pressed="false">夜间模式</button>
-        <button type="button" data-mode="realism" aria-pressed="false">现实模式</button>
+        <button type="button" data-mode="realism" aria-haspopup="dialog">现实模式</button>
         <button type="button" data-act="sound" aria-haspopup="dialog">音效设置</button>
       </div>
       <h2 class="cap">随身工具</h2>

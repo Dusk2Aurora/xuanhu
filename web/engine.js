@@ -3039,7 +3039,9 @@ function advancePhysiology(S, dtSec) {
   const prevTemp = S.temp;
   const regulated = temperatureDevice && ADVANCED.active(S, temperatureDevice) &&
     ADVANCED.regulateTemperature(S, temperatureDevice, dtSec, fmt);
-  if (!regulated) S.temp = lerp(S.temp, tempT, 1 - Math.exp(-0.05 * dtMin));
+  // 复温可能在本步中途完成；停机后的秒数按患者自身的热平衡推进。
+  const passiveSeconds = regulated ? S.t - (S.advancedCare[temperatureDevice].stoppedAt ?? S.t) : dtSec;
+  if (passiveSeconds > 0) S.temp = lerp(S.temp, tempT, -Math.expm1(-0.05 * passiveSeconds / 60));
   if (env.cooling && S.temp <= COOLING_TARGET) {
     if (prevTemp > COOLING_TARGET) S.temp = COOLING_TARGET;
     env.cooling = 0;

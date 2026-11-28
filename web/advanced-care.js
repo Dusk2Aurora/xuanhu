@@ -242,7 +242,8 @@ function regulateTemperature(S, id, seconds, fmt) {
   S.temp = session.target;
   if (session.phase === 'cooling') {
     session.phase = 'maintaining';
-    S.log.push([fmt(S.t), `${DEVICES[id].name} → 已达控温目标，进入维持阶段`, 'good', S.t, null, true]);
+    const reachedAt = S.t - seconds + Math.min(seconds, needed);
+    S.log.push([fmt(reachedAt), `${DEVICES[id].name} → 已达控温目标，进入维持阶段`, 'good', reachedAt, null, true]);
   } else if (session.phase === 'rewarming') {
     const stoppedAt = S.t - (seconds - elapsed);
     session.active = false;

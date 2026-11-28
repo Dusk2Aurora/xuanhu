@@ -346,6 +346,27 @@ function roundTrip(S) {
 }
 
 {
+  const S = bed({ temp: 34 });
+  S.roscAt = S.t;
+  S.gcs = 8;
+  act(S, 'ttm');
+  S.temp = 34.12;
+  E.tick(S, 120);
+  close(S.log.find(entry => entry[1].includes('进入维持阶段'))[3], 30);
+  S.temp = 36.4625;
+  act(S, 'ttm', false);
+  const split = roundTrip(S);
+  E.tick(S, 120);
+  E.tick(split, 30);
+  E.tick(split, 90);
+  close(S.advancedCare.ttm.stoppedAt, 150);
+  close(S.deviceRunningCost, 250 * 150 / 3600);
+  close(S.deviceRunningCost, split.deviceRunningCost);
+  assert.ok(S.temp > 36.5);
+  close(S.temp, split.temp);
+}
+
+{
   const id = 'ttm';
   const S = bed({ temp: 34 });
   S.roscAt = S.t;

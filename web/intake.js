@@ -48,6 +48,7 @@ const sourceByDescription = {
   '病史回顾': 'reported', '院前病史': 'reported',
   '急救交接': 'ems', '院前交接': 'ems',
   '家属转述': 'family', '现场人员转述': 'witness', '患者自述': 'patient',
+  '既往病历与用药记录': 'records',
 };
 const acuteBackground = new Set(['肺部感染', '骨盆骨折', '胸部外伤', '头部外伤', '腹部钝性外伤', '密闭空间火灾']);
 const pregnancyHistory = new Set(['早孕', '妊娠 34 周']);

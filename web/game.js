@@ -5,6 +5,7 @@
 (function () {
 'use strict';
 const E = window.LIFE;
+const FINANCE = window.LIFE_FINANCE;
 function isEDIntake(patient) { return (patient?.intake?.difficulty ?? patient?.diff ?? patient?.cas?.diff) === 6; }
 const $ = s => document.querySelector(s);
 const r1 = x => Math.round(x * 10) / 10;
@@ -147,7 +148,7 @@ const ORGAN_META = {
     ['尿量', s.uoHourly, 'mL/h'], ['导尿管', state.urineDrained ? '已留置' : '未留置', '']]},
   brain:   {n:'脑',   f: (s, state) => [
     ['意识', s.gcs, 'GCS'], ['脑灌注', s.map < 60 ? '不足' : '正常', ''], ['瞳孔', s.gcs < 6 ? '散大' : '等大', ''],
-    ['床旁观察', E.convulsionSigns(state) ?? '未见抽搐', '']]},
+    ['床旁观察', E.convulsionSigns(state) ?? '未见抽搐', ''], eegOrganRow(state)]},
   lung:    {n:'肺',   f: s => [['SpO₂', s.spo2 ?? '无信号', s.spo2 == null ? '' : '%'], ['PaO₂', s.pao2, 'mmHg'], ['FiO₂', Math.round(s.fio2 * 100), '%'], ['PaCO₂', s.paco2, 'mmHg'], ['RR', s.rr, s.vent ? 'rpm · 机械通气' : 'rpm']]},
   heart:   {n:'心脏', f: s => [['HR', s.hr, 'bpm'], ['EF', s.rhythm === 'sinus' ? s.ef : '—', s.rhythm === 'sinus' ? '%' : ''], ['MAP', s.map, 'mmHg'], ['心律', s.rhythm === 'sinus' ? '窦性' : (s.rhythm === 'vf' ? '室颤' : '心静止'), '']]},
   liver:   {n:'肝脏', f: (s, state) => [['凝血系数', state.coag.toFixed(2), ''], ['肝损伤指数', s.hepato, '']]},
@@ -157,6 +158,11 @@ const ORGAN_META = {
   kidney:  {n:'肾脏', f: s => [['血钾', s.k, 'mmol/L'], ['肌酐', s.cr, 'µmol/L'], ['尿量', s.uoHourly, 'mL/h'], ['GFR', s.gfr, 'mL/min']]},
   gut:     {n:'肠道与直肠', f: () => [['肠道功能', '无独立监测数据', '']]},
 };
+
+function eegOrganRow(patient) {
+  const reading = E.eegReading(patient);
+  return ['连续脑电', E.advancedDevice(patient, 'eeg').active ? reading.text : '未监测', ''];
+}
 
 function bleedingStatus(state, site) {
   if (!(site in state.bleedingSites)) return '病例未记录';
@@ -212,7 +218,7 @@ function edOrganRows(id, s, patient) {
     ];
     case 'brain': return [
       measured('意识', 'gcs', 'GCS'),
-      ['床旁观察', E.convulsionSigns(patient) ?? '未见抽搐', ''],
+      ['床旁观察', E.convulsionSigns(patient) ?? '未见抽搐', ''], eegOrganRow(patient),
     ];
     case 'liver': return [measured('凝血功能', 'coag', '模拟值'), measured('肝损伤指数', 'hepato', '模拟值')];
     case 'pancreas': return [measured('血糖', 'glu', 'mmol/L')];
@@ -401,6 +407,10 @@ function renderStates() {
     if (s.glu > 11) out.push('高血糖');
     if (s.glu < 3.9) out.push('低血糖');
   }
+  for (const [id, device] of Object.entries(E.ADVANCED_DEVICES)) {
+    if (E.advancedDevice(S, id).active) out.push(device.name + '运行中');
+  }
+  if (PE_INTERVENTION.active(S)) out.push('肺动脉导管取栓中');
   if (s.spo2 != null && s.spo2 < 92) out.push('低氧血症');
   if (s.sys < 90) out.push('低血压');
   if (ed) {
@@ -559,6 +569,10 @@ const DRUG_SECTIONS = {
 const drugSectionFor = new Map(Object.entries(DRUG_SECTIONS).flatMap(([section, classes]) =>
   classes.map(cls => [cls, section])));
 
+function drugPaymentText(drug) {
+  return [drug.imported && '进口', FINANCE.coverageLabel(drug.coverage)].filter(Boolean).join(' · ');
+}
+
 function openDrugSheet({ tab = 'all', query = '', expanded = new Set(), scrollTop = 0, focusRow } = {}) {
   const SUB = window.SUBSTANCES;
   const patient = S;
@@ -591,9 +605,10 @@ function openDrugSheet({ tab = 'all', query = '', expanded = new Set(), scrollTo
     const dose = rate || it.dose;
     const amount = pump ? `${rate ? '当前' : '默认'} ${dose} ${it.unit}` : `${dose}${it.unit}`;
     const price = money(E.drugPrice(it, dose, patient.patient)) + (pump ? '/小时' : '');
+    const payment = drugPaymentText(it);
     return `<button type="button" class="drow" data-id="${escapeHtml(it.id)}">
       <span class="nm">${drugName(it.n)}${it.note ? ' <small>· ' + escapeHtml(it.note) + '</small>' : ''}</span>
-      <span class="tag">${escapeHtml(it.route)}${it.routes?.length > 1 ? ' 等' + it.routes.length + ' 途径' : ''}</span>
+      <span class="tag">${escapeHtml(it.route)}${it.routes?.length > 1 ? ' 等' + it.routes.length + ' 途径' : ''}${payment ? '<br>' + payment : ''}</span>
       <span class="amt">${escapeHtml(amount)}<br>${price}</span></button>`;
   };
   const section = (name, items) => `<details data-section="${escapeHtml(name)}"${expanded.has(name) ? ' open' : ''}>
@@ -665,7 +680,9 @@ const EFF_NAME = { k:'血钾', na:'血钠', cl:'血氯', ca:'血钙', hco3:'HCO�
                    vol:'血容量', freeWater:'自由水', hb:'血红蛋白', hr:'心率', svr:'血管张力', sv:'心肌收缩力',
                    rr:'呼吸频率', spo2:'血氧', temp:'体温', gcs:'意识', uo:'尿量', infection:'感染负荷',
                    coag:'凝血能力', halfSaline:'低渗补液量', icp:'颅内压', estrogen:'雌激素',
-                   testosterone:'睾酮', pao2:'动脉氧分压', seizure:'抽搐' };
+                   testosterone:'睾酮', pao2:'动脉氧分压', seizure:'抽搐',
+                   warfarinFactors:'凝血因子补充', dabigatranBinding:'达比加群中和', digoxinBinding:'地高辛中和',
+                   fibrinogenReplacement:'纤维蛋白原补充', mtxCleavage:'血浆甲氨蝶呤清除', mtxCellProtection:'细胞保护' };
 function describeEff(eff) {
   const parts = [];
   for (const k in (eff || {})) {
@@ -945,8 +962,8 @@ function openGiveConfig(it, patient, back, { backLabel = '返回药物列表', r
     const quote = pump ? '按此泵速每小时' : '本次';
     const feeLabel = it.kind === 'food' ? '饮食费' : it.cls === '血液成分' || rt.r === '输血' ? '血液成分费用'
       : it.kind === 'virus' ? '模拟暴露费用' : '药费';
-    const selfPay = realismRules.insurance && patient.ins
-      ? costSummary(patient, price).selfPay - costSummary(patient).selfPay : null;
+    const selfPay = estimateSelfPay(patient, price, it.coverage);
+    const payment = drugPaymentText(it);
     const warn = over ? `⚠ ${doseLabel}明显高于常规，注意中毒风险`
                 : under ? `⚠ ${doseLabel}偏低，可能达不到治疗浓度` : '';
     $('#sheetTitle').innerHTML = `${it.n} <small>${escapeHtml(patient.patient.name)} · ${it.cls}</small>`;
@@ -973,6 +990,7 @@ function openGiveConfig(it, patient, back, { backLabel = '返回药物列表', r
         ${warn ? `<div class="note" style="margin-bottom:10px;color:#a33;background:#fdf3f2">${warn}</div>` : ''}
         <div class="note" style="margin-bottom:12px;font-size:11.5px">
           ${quote}${feeLabel} ${money(price)}${selfPay == null ? '' : ' · 预计新增自付 ' + money(selfPay)}<br>
+          ${payment ? '游戏支付 · ' + payment + '<br>' : ''}
           ${rt.maxDose ? `本方案${doseLabel}上限 ${rt.maxDose} ${it.unit}<br>` : ''}
           ${infusion ? `${rt.r} · 输注时长 ${infusion} 分钟<br>` : ''}
           ${pump ? `持续至手动停泵 · 模拟血药浓度半衰期约 ${pump} 分钟`
@@ -1057,6 +1075,11 @@ function openEnvControls(patient, title, controls, allowReset = false) {
   }
   $('#sheetTitle').dataset.view = 'env';
   syncEnvSheet();
+  if ($('#sheet').classList.contains('on')) {
+    const panel = $('#sheetTitle').dataset;
+    if (panel.view === 'device') refreshDeviceOrder(S);
+    if (panel.view === 'thrombectomy' && panel.active !== String(PE_INTERVENTION.active(S))) openThrombectomy(S);
+  }
 }
 
 function openTemperatureSheet(patient) {
@@ -1164,6 +1187,85 @@ function openRespiratoryFlow(patient) {
   });
 }
 
+function openAdvancedCare(patient) {
+  if (!isCurrentPatient(patient)) return;
+  const rows = Object.entries(E.ADVANCED_DEVICES).map(([id, device]) => ({
+    n: device.name, tag: E.advancedDevice(patient, id).active ? '本床运行中' : '可启用',
+    amt: '查看', run: () => openDeviceOrder(patient, id),
+  }));
+  rows.push({ n: PE_INTERVENTION.name, tag: PE_INTERVENTION.status(patient), amt: money(PE_INTERVENTION.cost),
+    run: () => openThrombectomy(patient) });
+  openSheet('高级设备与介入', `床位 ${activeIdx + 1} · ${patient.patient.name}`, rows, patient);
+}
+
+function openDeviceOrder(patient, id) {
+  const device = E.ADVANCED_DEVICES[id];
+  const { active } = E.advancedDevice(patient, id);
+  const firstHour = device.startCost + device.hourlyCost;
+  const estimate = estimateSelfPay(patient, active ? device.hourlyCost : firstHour, device.coverage);
+  const rows = [
+    { sec: escapeHtml(device.description) },
+    { sec: `开机耗材 ${money(device.startCost)} · 运行 ${money(device.hourlyCost)} / 模拟小时` },
+    { sec: '游戏支付 · ' + escapeHtml(LIFE_FINANCE.coverageLabel(device.coverage)) + ' · ' +
+      (active ? '继续运行一小时 ' + money(device.hourlyCost) : '开机并运行一小时 ' + money(firstHour)) +
+      (estimate == null ? '' : '，预计新增自付 ' + money(estimate)) },
+    { sec: '<span id="deviceProgress"></span>' },
+    { n: active ? '确认停止本床设备' : '确认在本床启用', tag: device.name, amt: active ? '停机' : '开机', run: () => {
+      if (!hasCurrentWard()) return;
+      const result = E.advancedDeviceAction(patient, id, !active);
+      if (!result.ok) { toast(result.reason || '请复核当前设备状态', true); return; }
+      checkBudget(patient);
+      saveGame();
+      renderAll();
+      openDeviceOrder(patient, id);
+    } },
+    { n: '返回高级设备与介入', tag: '', amt: '返回', run: () => openAdvancedCare(patient) },
+  ];
+  openSheet(device.name, `床位 ${activeIdx + 1} · ${patient.patient.name}`, rows, patient);
+  $('#sheetTitle').dataset.view = 'device';
+  $('#deviceProgress').dataset.device = id;
+  refreshDeviceOrder(patient);
+}
+
+function refreshDeviceOrder(patient) {
+  const el = $('#deviceProgress');
+  if (!el || !patient) return;
+  const id = el.dataset.device;
+  const state = E.advancedDevice(patient, id);
+  const status = state.active ? '运行中' : state.startedAt == null ? '尚未启用' : '已停机';
+  const lines = [status, '累计运行 ' + caseTime(state.seconds), '本设备累计 ' + money(state.cost)];
+  if (id === 'eeg' && state.startedAt != null) {
+    const reading = E.eegReading(patient);
+    lines.push(reading.text);
+    if (reading.lastSeizureAt != null) lines.push('最近发作样活动 ' + caseTime(reading.lastSeizureAt));
+  }
+  const text = lines.join(' · ');
+  if (el.textContent !== text) el.textContent = text;
+}
+
+function openThrombectomy(patient) {
+  const procedure = PE_INTERVENTION;
+  const rows = [
+    { sec: '肺动脉造影证实明显栓塞，合并循环不稳、出血风险或溶栓后仍有明显负荷时，可申请介入。操作耗时 20 个模拟分钟。' },
+    { sec: '一次性费用 ' + money(procedure.cost) + (realismRules.insurance ?
+      ' · 预计新增自付 ' + money(estimateSelfPay(patient, procedure.cost)) : '') },
+  ];
+  if (!patient.peIntervention) rows.push({ n: '确认申请肺动脉导管取栓', tag: '本床介入会诊', amt: '申请', run: () => {
+    if (!hasCurrentWard()) return;
+    const result = procedure.start(patient);
+    if (!result.ok) { toast(result.reason, true); return; }
+    checkBudget(patient);
+    saveGame();
+    openThrombectomy(patient);
+  } });
+  else rows.push({ sec: procedure.status(patient) + ' · ' + (procedure.active(patient) ?
+    '预计完成于 ' + caseTime(patient.peIntervention.dueAt) : '完成于 ' + caseTime(patient.peIntervention.completedAt)) });
+  rows.push({ n: '返回高级设备与介入', tag: '', amt: '返回', run: () => openAdvancedCare(patient) });
+  openSheet(procedure.name, patient.patient.name, rows, patient);
+  $('#sheetTitle').dataset.view = 'thrombectomy';
+  $('#sheetTitle').dataset.active = String(procedure.active(patient));
+}
+
 function actionRows() {
   const patient = S;
   const ed = isEDIntake(patient);
@@ -1192,7 +1294,8 @@ function actionRows() {
       id === 'oxygen' && S.vent ? '将呼吸机 FiO₂ 调至 100%' : a.name;
     return { n: name, tag: '', amt: a.cost ? '¥' + a.cost : '—', run: () => performAction(id, a) };
   });
-  return [{ n: '体温处置', tag: '物理降温 · 被动保暖', amt: '查看', run: () => openTemperatureSheet(patient) }, ...actions];
+  return [{ n: '高级设备与介入', tag: 'ECMO · CRRT · 脑电 · 导管取栓', amt: '查看', run: () => openAdvancedCare(patient) },
+    { n: '体温处置', tag: '物理降温 · 被动保暖', amt: '查看', run: () => openTemperatureSheet(patient) }, ...actions];
 }
 
 function performAction(id, a) {
@@ -1241,11 +1344,24 @@ function reportDetails(report, title = report.name, previous) {
   return `<details data-report-id="${escapeHtml(report.id)}"><summary>${escapeHtml(title)}</summary><dl>${fields}</dl></details>`;
 }
 
+function isBloodGas(report) {
+  return report.type === 'abg' || report.type === 'poct_abg';
+}
+
+function previousBloodGas(reports, report) {
+  if (!Number.isFinite(report.sampledAt)) return;
+  return reports.reduce((previous, candidate) => {
+    if (isBloodGas(candidate) && Number.isFinite(candidate.sampledAt) && candidate.sampledAt < report.sampledAt &&
+        (!previous || previous.sampledAt < candidate.sampledAt)) return candidate;
+    return previous;
+  }, undefined);
+}
+
 function openReportType(patient, type) {
   const reports = E.reports(patient, type);
   const latest = reports.at(-1);
   if (!latest) return;
-  const rows = reportRows(latest, reports.at(-2));
+  const rows = reportRows(latest, isBloodGas(latest) ? previousBloodGas(E.reports(patient), latest) : reports.at(-2));
   if (reports.length > 1) rows.push(['此前记录', reports.slice(0, -1).reverse()
     .map(report => reportDetails(report, report.name + ' · ' + caseTime(report.sampledAt))).join('')]);
   openDetail(latest.name, patient.patient.name, rows, '');
@@ -1750,7 +1866,8 @@ function openReports() {
   for (const group of byType.values()) {
     const latest = group[0];
     rows.push([escapeHtml(latest.name), group.map((report, i) => reportDetails(report,
-      (i ? '此前 · ' : '查看本次 · ') + caseTime(report.reportedAt), group[i + 1])).join('')]);
+      (i ? '此前 · ' : '查看本次 · ') + caseTime(report.reportedAt),
+      isBloodGas(report) ? previousBloodGas(reports, report) : group[i + 1])).join('')]);
   }
   const monitor = !isEDIntake(S) && isSevere(S) ? E.snapshot(S) : null;
   if (monitor) rows.push(...monitorReportRows(monitor));
@@ -1939,8 +2056,12 @@ function renderHUD() {
   try {
     /* 兜底：现实模式下任何时候发现没参保，补一份（开局/读档/切床都覆盖） */
     if (realismRules.insurance && S && !S.ins) initInsurance();
+    const insured = realismRules.insurance && S?.ins;
+    const costSheetOpen = S && $('#detail').dataset.view === 'cost' && $('#detail').classList.contains('on');
+    const cs = insured || costSheetOpen ? costSummary() : null;
+    if (costSheetOpen) updateCostSheet(cs);
     let el = document.getElementById('budgetChip');
-    if (realismRules.insurance && S && S.ins) {
+    if (insured) {
       if (!el) {
         el = document.createElement('span');
         el.id = 'budgetChip';
@@ -1949,8 +2070,6 @@ function renderHUD() {
         if (host) host.parentNode.insertBefore(el, host);
         el.title = '家庭自付 / 可承受上限';
       }
-      const cs = costSummary();
-      if ($('#detail').dataset.view === 'cost' && $('#detail').classList.contains('on')) updateCostSheet(cs);
       const over = cs.selfPay > cs.cap;
       el.textContent = '自付 ¥' + Math.round(cs.selfPay) + '/' + cs.cap;
       el.style.color = over ? '#c0392b' : '';
@@ -2617,6 +2736,7 @@ function archiveCase(st, wardCount) {
 
   /* 病历归档：每例结束追加一条，只留最近 30 条 */
   if (realismRules.insurance && !st.ins) initInsurance(undefined, st);
+  checkBudget(st);
   const bill = costSummary(st);
   const record = {
     recordId: wardRecordId(st),
@@ -2630,8 +2750,14 @@ function archiveCase(st, wardCount) {
     费用: bill.total,
     药费: Math.round((st.drugCost || 0) * 100) / 100,
     药费部分记录: !!st.drugCostPartial,
+    设备费: Math.round((st.deviceCost || 0) * 100) / 100,
+    设备启动费: Math.round((st.deviceSetupCost || 0) * 100) / 100,
+    设备运行费: Math.round((st.deviceRunningCost || 0) * 100) / 100,
     床位费: Math.round((st.bedCost || 0) * 100) / 100,
-    医保结算: realismRules.insurance ? { 类型: st.ins.t, 支付: bill.reimb, 自付: bill.selfPay } : null,
+    医保结算: realismRules.insurance ? {
+      类型: st.ins.t, 支付: bill.reimb, 自付: bill.selfPay, 家庭承受力: bill.cap,
+      全自费项目: bill.selfPayOnly, 部分支付先自付: bill.partialUpfront, 纳入医保计算: bill.eligible,
+    } : null,
     评分: breakdown.score,
     计分明细: breakdown,
     检查报告: E.reports(st),
@@ -2685,9 +2811,18 @@ function openCaseRecord(r) {
   const ok = r.结局 === '出院';
   const summary = [['诊断', r.诊断 || r.病例名], ['住院用时', r.耗时 + ' 分钟'], ['诊疗费用', money(r.费用)]];
   if (r.药费 != null) summary.push([r.药费部分记录 ? '药费含血制品（更新后）' : '药费（含血液制品）', money(r.药费)]);
+  if (r.设备费) summary.push(['器械费', money(r.设备费)],
+    ['启动与耗材费', money(r.设备启动费 ?? 0)], ['运行费', money(r.设备运行费 ?? 0)]);
   if (r.床位费) summary.push(['其中床位费', money(r.床位费)]);
-  if (r.医保结算) summary.push(['参保类型', r.医保结算.类型], ['医保支付', money(r.医保结算.支付)],
-    ['家庭自付', money(r.医保结算.自付)]);
+  if (r.医保结算) {
+    const ins = r.医保结算;
+    summary.push(['参保类型', ins.类型]);
+    if (ins.全自费项目) summary.push(['全自费项目金额', money(ins.全自费项目)]);
+    if (ins.部分支付先自付) summary.push(['部分支付先自付金额', money(ins.部分支付先自付)]);
+    if (ins.纳入医保计算 != null) summary.push(['纳入医保计算的金额', money(ins.纳入医保计算)]);
+    summary.push(['医保支付', money(ins.支付)], ['家庭自付', money(ins.自付)]);
+    if (ins.家庭承受力 != null) summary.push(['家庭承受力', money(ins.家庭承受力)]);
+  }
   if (r.死因) summary.push(['死因', r.死因]);
   if (r.终末血钾 != null) summary.push(['终末血钾', r.终末血钾 + ' mmol/L'], ['终末 pH', r.终末pH]);
   summary.push(...caseSettingsRows(r.设置));
@@ -3005,7 +3140,7 @@ function openFeedback() {
 }
 
 /* ---------------- 版本 / 更新检查 ---------------- */
-const APP_VERSION = '1.55';
+const APP_VERSION = '1.56';
 const releaseRoot = document.querySelector('meta[name="xuanhu-release-root"]')?.content;
 const releaseBase = releaseRoot ? new URL(releaseRoot, location.href).href.replace(/\/$/, '') : '';
 const platformName = location.protocol === 'file:' ? '离线 HTML' :
@@ -3173,8 +3308,10 @@ function openInsuranceHelp() {
     list.querySelectorAll('[data-ins]').forEach(btn => {
       btn.addEventListener('click', () => {
         if (!realismRules.insurance || !S) { toast('请先开启「医保与自付」并接诊患者', true); return; }
-        initInsurance(btn.dataset.ins === 'random' ? 'random' : btn.dataset.ins);
+        initInsurance(btn.dataset.ins);
         toast('已切换：' + (S.ins ? S.ins.t : ''));
+        checkBudget();
+        saveGame();
         openInsuranceHelp();
       });
     });
@@ -3187,20 +3324,25 @@ function openInsuranceHelp() {
     '</div>' +
     '<div class="sec">三个数字</div>' +
     '<div style="padding:0 14px 10px;font-size:12.5px;line-height:1.9">' +
-      '① <b>总费用</b>：药物、血液制品、检查、操作等费用，加床位费（普通 ¥25/小时，重症 ¥80/小时）。药库使用游戏模拟价，持续泵按实际泵速和时长计费。<br>' +
-      '② <b>医保报销</b> = min(封顶线, max(0, 总费用 − 起付线) × 报销比例)<br>' +
+      '① <b>总费用</b>包括药品、检查、操作、器械及床位费（普通 ¥25/小时，重症 ¥80/小时）。持续泵按实际泵速和时长收费，器械另计启动与运行费用。<br>' +
+      '② <b>医保报销</b>按纳入医保的费用计算。超过起付线的部分按参保比例报销，最高报至封顶线。<br>' +
       '③ <b>家庭自付</b> = 总费用 − 医保报销' +
+    '</div>' +
+    '<div class="sec">药品与器械的游戏支付方式</div>' +
+    '<div style="padding:0 14px 10px;font-size:12.5px;line-height:1.9">' +
+      '普通项目全额计入医保计算。标为全自费的项目由家庭承担全部费用。部分支付项目先自付 ' +
+      Math.round(FINANCE.PARTIAL_SELF_PAY * 100) + '%，余额计入医保。' +
     '</div>' +
     '<div class="sec">三条线</div>' +
     '<div style="padding:0 14px 10px;font-size:12.5px;line-height:1.9">' +
-      '· <b>起付线</b>：先自己掏够这个数，医保才开始报（职工 ¥800 / 居民 ¥500）<br>' +
+      '· <b>起付线</b>：纳入医保的费用超过这条线后开始报销（职工 ¥800 / 居民 ¥500）<br>' +
       '· <b>封顶线</b>：医保最多报到这个数（职工 ¥3 万 / 居民 ¥1.5 万）<br>' +
-      '· <b>家庭承受力</b> = 家庭月收入 × 3（因病致贫的粗略线）' +
+      '· <b>家庭承受力</b>按家庭月收入的 3 倍估算，切换参保类型时沿用本例预算。' +
     '</div>' +
-    '<div class="sec">什么时候算"出事"</div>' +
+    '<div class="sec">家庭预算提醒</div>' +
     '<div style="padding:0 14px 10px;font-size:12.5px;line-height:1.9">' +
       '· 自付 > 承受力：提醒<br>' +
-      '· 自付 > 承受力 × 1.3：<b style="color:#c0392b">触发医保拒付提醒</b>' +
+      '· 自付超过承受力的 130% 时，<b style="color:#c0392b">在病历中记录超支</b>。' +
     '</div>' +
     (ins ? (
       '<div class="sec">本例</div>' +
@@ -3220,8 +3362,8 @@ function openInsuranceHelp() {
     '<div style="display:flex;gap:6px;padding:0 14px 10px;flex-wrap:wrap">' +
       ['职工医保', '居民医保', '异地自费', 'random'].map(t =>
         '<button data-ins="' + t + '" class="pill" style="flex:1;min-width:80px;padding:9px;cursor:pointer;' +
-        ((S && S.ins && (S.ins.t === t || (t === 'random' && false))) ? 'background:rgba(211,58,58,.12);color:#a33;font-weight:700' : '') +
-        '">' + (t === 'random' ? '随机重抽' : t) + '</button>').join('') +
+        (S?.ins?.t === t ? 'background:rgba(211,58,58,.12);color:#a33;font-weight:700' : '') +
+        '">' + (t === 'random' ? '随机切换' : t) + '</button>').join('') +
     '</div>' +
     '<div style="padding:6px 14px 16px;font-size:12px;color:var(--ink-3);line-height:1.8">' +
       '可在大厅或菜单的「现实模式」中单独开关「医保与自付」。' +
@@ -3724,13 +3866,14 @@ function showAdmissionIntro(st) {
   timer = setTimeout(close, 5200);
 }
 
-function startCase(spec, replace, intakeDifficulty = caseDiff) {
+function startCase(spec, replace, intakeDifficulty = caseDiff, insurance) {
   if (!replace && beds.length >= MAX_BEDS) {
     closeSheet();
     toast(`床位已满（最多 ${MAX_BEDS} 张），先处理或结束一个病例`, true);
     return;
   }
   const st = ensurePresentation(E.create(spec));
+  if (insurance) st.ins = { ...insurance };
   installCase(st, replace, intakeDifficulty);
   showAdmissionIntro(st);
 }
@@ -3761,7 +3904,7 @@ function confirmRestart() {
   if (!isCurrentPatient(patient)) return;
   openSheet('重新开始本病例', patient.patient.name + ' · 将重置该患者的处置和病程', [
     { n: '确认重新开始', tag: '', amt: '重启',
-      run: () => startCase({ ...patient.cas, patient: patient.patient }, true, patient.intake.difficulty) },
+      run: () => startCase({ ...patient.cas, patient: patient.patient }, true, patient.intake.difficulty, patient.ins) },
     { n: '继续当前病例', tag: '', amt: '取消', run: closeSheet },
   ], patient);
 }
@@ -3861,44 +4004,25 @@ function openRealismSettings() {
   }
 }
 
-/* ---------------- 医保与费用 ----------------
-   现实模式下的"预算"不是医院限额，而是**家庭自付能力**：
-     总费用 = 医药/操作费 + 床位费（重症更贵）
-     报销   = min(封顶线, max(0, 总费用 − 起付线) × 报销比例)
-     自付   = 总费用 − 报销
-     家庭可承受自付 = 月收入 × 3（因病致贫的粗略线）
-   自付超过承受力 130% 时记录医保拒付。 */
-const INSURANCE = [
-  { t: '职工医保', rate: 0.78, ded: 800, cap: 30000 },
-  { t: '居民医保', rate: 0.58, ded: 500, cap: 15000 },
-  { t: '异地自费', rate: 0.00, ded: 0, cap: 0 },
-];
+/* ---------------- 医保与费用 ---------------- */
 
 function initInsurance(forceType, patient = S) {
   if (!realismRules.insurance || !patient) return;
-  let k;
-  if (forceType != null) {
-    const list = INSURANCE;
-    k = forceType === 'random' ? list[Math.floor(Math.random() * list.length)] : (list.find(x => x.t === forceType) || list[0]);
-  } else {
-    k = INSURANCE[Math.floor(Math.random() * INSURANCE.length)];
-  }
-  const income = 3000 + Math.round(Math.random() * 9000);   // 家庭月收入
-  const keepIncome = (patient.ins && patient.ins.income) ? patient.ins.income : income;
-  patient.ins = { ...k, income: keepIncome, oopCap: keepIncome * 3 };
-  patient.bedCost = patient.bedCost || 0;
-  patient._overWarned = 0; patient._refused = 0;
+  FINANCE.initInsurance(patient, forceType);
 }
 
 function money(value) {
   return '¥' + (Math.round(value * 100) / 100).toFixed(2);
 }
 
-function costSummary(patient = S, additionalCost = 0) {
-  const totalFen = Math.round(((patient.cost || 0) + (patient.bedCost || 0) + additionalCost) * 100);
-  const ins = patient.ins;
-  const reimbFen = ins ? Math.round(Math.min(ins.cap * 100, Math.max(0, totalFen - ins.ded * 100) * ins.rate)) : 0;
-  return { total: totalFen / 100, reimb: reimbFen / 100, selfPay: (totalFen - reimbFen) / 100, cap: ins?.oopCap || 0 };
+function costSummary(patient = S, additionalCost = 0, coverage) {
+  return FINANCE.costSummary(patient, additionalCost, coverage);
+}
+
+function estimateSelfPay(patient, amount, coverage) {
+  if (!patient || !realismRules.insurance) return null;
+  if (!patient.ins) initInsurance(undefined, patient);
+  return Math.round((costSummary(patient, amount, coverage).selfPay - costSummary(patient).selfPay) * 100) / 100;
 }
 
 function checkBudget(patient = S) {
@@ -3909,31 +4033,38 @@ function checkBudget(patient = S) {
     toast(escapeHtml(patient.patient.name) + ' · 自付 ' + money(c.selfPay) + ' 已超过家庭承受能力', true);
   }
   if (c.selfPay > c.cap * 1.3) {
-    patient._refused = 1;
-    patient.score = Math.max(0, (patient.score ?? 100) - 40);
-    patient.log.push([E.fmt(patient.t), '医保拒付：自付费用超过家庭承受力的 130%', 'bad']);
-    toast(escapeHtml(patient.patient.name) + ' · 医保拒付：自付费用超过家庭承受力的 130%', true);
+    patient._refused = 1; // 沿用存档中的超支记录标记。
+    const message = '家庭自付已超过承受力的 130%';
+    patient.log.push([E.fmt(patient.t), message, 'bad']);
+    toast(escapeHtml(patient.patient.name) + ' · ' + message, true);
   }
 }
 
 function openCostSheet() {
-  if (!realismRules.insurance || !S) {
-    openDetail('费用与医保', '', [['医保与自付', '已关闭，可在「现实模式」中开启。']], '');
-    return;
-  }
-  if (!S.ins) initInsurance();
+  if (!S) return;
+  if (realismRules.insurance && !S.ins) initInsurance();
   const c = costSummary();
-  const ins = S.ins || { t: '未参保', rate: 0, ded: 0, cap: 0, income: 0 };
-  openDetail('费用与医保', '医保与自付', [
-    ['参保类型', ins.t + (ins.rate ? '（报销 ' + Math.round(ins.rate * 100) + '%）' : '')],
+  const ins = realismRules.insurance && S.ins;
+  const rows = [
     ['总费用', '<span id="billTotal"></span>'],
     [S.drugCostPartial ? '药费含血制品（更新后）' : '药费（含血液制品）', '<span id="billDrugs"></span>'],
     ['其中床位费', '<span id="billBed"></span>'],
-    ['医保支付', '<span id="billReimb"></span>'],
-    ['家庭自付', '<span id="billSelf"></span>'],
-    ['家庭承受力', '¥' + c.cap + (ins.income ? '（月收入 ¥' + ins.income + ' ×3）' : '')],
-    ['起付线 / 封顶', '¥' + ins.ded + ' / ¥' + ins.cap],
-  ], '');
+  ];
+  if (S.deviceCost) rows.push(['器械费', '<span id="billDevices"></span>'],
+    ['启动与耗材费', '<span id="billDeviceSetup"></span>'], ['运行费', '<span id="billDeviceRunning"></span>']);
+  if (ins) {
+    rows.unshift(['参保类型', ins.t + (ins.rate ? '（报销 ' + Math.round(ins.rate * 100) + '%）' : '')]);
+    rows.push(
+      ['全自费项目金额', '<span id="billSelfPayOnly"></span>'],
+      ['部分支付先自付金额', '<span id="billPartialUpfront"></span>'],
+      ['纳入医保计算的金额', '<span id="billEligible"></span>'],
+      ['医保支付', '<span id="billReimb"></span>'],
+      ['家庭自付', '<span id="billSelf"></span>'],
+      ['家庭承受力', '¥' + c.cap + (ins.income ? '（月收入 ¥' + ins.income + '）' : '')],
+      ['起付线 / 封顶', '¥' + ins.ded + ' / ¥' + ins.cap],
+    );
+  }
+  openDetail('费用与医保', ins ? '医保与自付' : '医保规则已关闭', rows, '');
   $('#detail').dataset.view = 'cost';
   updateCostSheet(c);
 }
@@ -3942,6 +4073,15 @@ function updateCostSheet(c) {
   $('#billTotal').textContent = money(c.total);
   $('#billDrugs').textContent = money(S.drugCost || 0);
   $('#billBed').textContent = money(S.bedCost || 0);
+  if ($('#billDevices')) {
+    $('#billDevices').textContent = money(S.deviceCost || 0);
+    $('#billDeviceSetup').textContent = money(S.deviceSetupCost || 0);
+    $('#billDeviceRunning').textContent = money(S.deviceRunningCost || 0);
+  }
+  if (!$('#billReimb')) return;
+  $('#billSelfPayOnly').textContent = money(c.selfPayOnly);
+  $('#billPartialUpfront').textContent = money(c.partialUpfront);
+  $('#billEligible').textContent = money(c.eligible);
   $('#billReimb').textContent = money(c.reimb);
   $('#billSelf').textContent = money(c.selfPay);
   const warn = $('#dWarn');
@@ -3998,6 +4138,10 @@ function renderAll() {
 
 /* 更新公告：每次发版在这里加一条（新的放最前面） */
 const RELEASES = [
+  { v: '1.56', notes: [
+    '高级设备按床启停：VA/VV-ECMO、CRRT 与连续脑电按模拟时间计费，另可申请肺动脉导管取栓。',
+    '新增定向救援药、对应病例和床旁快速血气；支付明细区分游戏内全自费与部分支付，家庭可承受预算分布更广。',
+  ] },
   { v: '1.55', notes: [
     '急性肾损伤病例透析后观察 30 个模拟分钟。自身尿量仍偏低但病情稳定时，可结合肌酐趋势完成出院评估',
     '「不靠药」更名为「不用升压药」，按本床整局用药记录判定，涵盖已停用的升压药泵',

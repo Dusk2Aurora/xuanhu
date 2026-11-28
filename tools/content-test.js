@@ -43,6 +43,29 @@ const o2 = S => {
 
 /* ---------- 各模块的规范治疗路径 ---------- */
 const TREAT = {
+  warfarinBleed(S) {
+    if (!S.given?.some(o => o.id === 'pcc4')) { E.give(S, 'pcc4'); E.give(S, 'vitamin_k'); }
+    TREAT.bleed(S);
+  },
+  dabigatranBleed(S) {
+    if (!S.given?.some(o => o.id === 'idarucizumab')) E.give(S, 'idarucizumab');
+    TREAT.bleed(S);
+  },
+  fibrinogenBleed(S) {
+    if (!S.given?.some(o => o.id === 'fibrinogenConcentrate')) E.give(S, 'fibrinogenConcentrate');
+    TREAT.bleed(S);
+  },
+  digoxinTox(S) {
+    if (!S.given?.some(o => o.id === 'digoxinFab')) E.give(S, 'digoxinFab');
+  },
+  mtxDelayed(S) {
+    if (!S.given?.some(o => o.id === 'glucarpidase')) {
+      E.give(S, 'nacl', 500);
+      E.give(S, 'glucarpidase');
+    }
+    const enzyme = S.given?.find(o => o.id === 'glucarpidase');
+    if (enzyme && S.t >= enzyme.t + 121 * 60 && !S.given.some(o => o.id === 'leucovorin')) E.give(S, 'leucovorin');
+  },
   highK(S, t) {
     if (!S._p) { S._p = 1; E.give(S, 'calcium', 10); E.give(S, 'insulin', 10); E.give(S, 'dextrose50', 25); }
     if (S.k > 5.5 && !has(S, 'insulin')) { E.give(S, 'insulin', 10); E.give(S, 'dextrose50', 25); }
@@ -366,10 +389,10 @@ if (require.main === module) {
     assert.deepEqual(substances.searchUnlistedDrugs(brand), [generic]);
   }
   // 这两个种子在生成器 v3 分别会抽到不相符的老年与 2 型糖尿病体质。
-  const young = G.generate(5, 331);
+  const young = G.generateVersion(5, 331, 4);
   assert.deepEqual([young.patient.age, young.traits.length, young.traits.some(t => t.id === 'elderly_renal')], [34, 2, false]);
-  const dka = G.generate(5, 13);
-  const type2 = G.generate(5, 0);
+  const dka = G.generateVersion(5, 13, 4);
+  const type2 = G.generateVersion(5, 0, 4);
   assert.ok(dka.comorbidities.includes('1 型糖尿病') && dka.complaint.includes('停用胰岛素')
     && dka.traits.length === 2 && dka.traits.every(t => t.id !== 't2dm')
     && type2.traits.some(t => t.id === 't2dm') && type2.comorbidities.includes('2 型糖尿病')

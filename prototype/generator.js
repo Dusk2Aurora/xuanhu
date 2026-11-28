@@ -13,8 +13,9 @@
 (function (root) {
 'use strict';
 const clamp = (x,a,b)=>Math.min(b,Math.max(a,x));
-const VERSION = 4;
+const VERSION = 5;
 const traitsApi = root.TRAITS || (typeof module !== 'undefined' && module.exports ? require('./traits.js') : null);
+const substances = root.SUBSTANCES || (typeof module !== 'undefined' && module.exports ? require('./substances.js') : null);
 
 /* 随机数（可复现） */
 function mulberry32(a){ return function(){ a|=0; a=a+0x6D2B79F5|0; let t=Math.imul(a^a>>>15,1|a);
@@ -126,6 +127,32 @@ function observeAfter(startTime, duration, reason, check) {
     if (waiting) reasons.unshift(waiting.reason);
     return reasons;
   } };
+}
+
+const rescueBleedInit = {
+  vol:4.1, hb:77, bun:18, hr:113, svr:14, lac:2.3, rr:22, pao2:88,
+  paco2:37, spo2:96, uo:0.6, contractility:0.90,
+};
+
+function lastInfusionEnd(S, ...ids) {
+  return S.given?.reduce((end, order) => {
+    if (!order.infusionMinutes || !ids.includes(order.id)) return end;
+    return Math.max(end ?? 0, order.stoppedAt ?? order.t + order.infusionMinutes * 60);
+  }, null);
+}
+
+function rescueBleedReasons(S, issue) {
+  const reasons = [];
+  if (S.bleedingSites.bleed > 0) reasons.push(issue('消化道出血未控制'));
+  if (S.hb < 80) reasons.push(issue(`血红蛋白 ${Math.round(S.hb)} g/L`, S.hb < 60));
+  const infusionEnd = lastInfusionEnd(S, 'pcc4', 'idarucizumab', 'fibrinogenConcentrate', 'cryoprecipitate');
+  if (infusionEnd > S.t) reasons.push(issue('凝血救援药仍在输注'));
+  return reasons;
+}
+
+function observeRescueBleeding(check) {
+  return observeAfter(S => S.diagnosticReports?.find(report => report.type === 'endoscopy')?.reportedAt,
+    15 * 60, '内镜止血后观察未满 15 分钟', check);
 }
 
 /* ---------- 病理模块 ---------- */
@@ -942,6 +969,117 @@ const MODULES = [
       }
     },
   },
+  {
+    id:'warfarinBleed', name:'华法林相关大出血', tag:'warfarinBleed', weight:1, since:5, bleedingSite:'bleed',
+    ageRange:[50, 88], comorbidities:['心房颤动'],
+    init:{ ...rescueBleedInit, warfarinLoad:1, coag:0.34 }, drivers:{ bleedRate:0.014 },
+    history:[
+      [1440, '患者自述', '发现大便发黑，逐渐头晕乏力。'],
+      [null, '院前病史', '到院前呕血，起身时站立不稳。'],
+      [null, '既往病历与用药记录', '近期用药记录写有华法林。近一周调整过剂量，上次凝血复查已延期。', 'medications'],
+    ],
+    medicalHistory:['消化性溃疡'], medicationHistory:['长期服用华法林'],
+    goal:['控制消化道出血','血红蛋白 ≥80 g/L','INR 下降并恢复凝血因子合成'],
+    ...observeRescueBleeding((S, issue = dischargeReason) => {
+      const reasons = rescueBleedReasons(S, issue);
+      if (substances.warfarinEffect(S) > 0.15) reasons.push(issue('华法林抗凝效应仍明显', true));
+      if (S.warfarinLoad > 0.35) reasons.push(issue('维生素 K 依赖的凝血因子尚未充分恢复'));
+      return reasons;
+    }),
+    hint:'在复苏、止血和复查 INR 的同时，用四因子 PCC 补充凝血因子，并用维生素 K1 维持纠正。',
+    advance(S, minutes) { substances.advanceWarfarin(S, minutes); },
+  },
+  {
+    id:'dabigatranBleed', name:'达比加群相关大出血', tag:'dabigatranBleed', weight:1, since:5, bleedingSite:'bleed',
+    ageRange:[54, 88], comorbidities:['心房颤动'],
+    init:{ ...rescueBleedInit, cr:145, renalFactor:0.62, dabigatranLoad:1, coag:0.37 }, drivers:{ bleedRate:0.014 },
+    history:[
+      [720, '患者自述', '先出现黑便，随后呕出暗红色液体。'],
+      [240, '患者自述', '今天早上照常服了抗凝药。', 'medications'],
+      [null, '既往病历与用药记录', '随身药袋和门诊处方均记载达比加群酯。', 'medications'],
+    ],
+    medicationHistory:['长期服用达比加群酯'],
+    goal:['控制消化道出血','血红蛋白 ≥80 g/L','恢复凝血酶活性'],
+    ...observeRescueBleeding((S, issue = dischargeReason) => {
+      const reasons = rescueBleedReasons(S, issue);
+      if (S.dabigatranLoad > 0.15) reasons.push(issue('达比加群抗凝效应仍明显', true));
+      return reasons;
+    }),
+    hint:'核对口服抗凝药，结合凝血酶时间评估。依达赛珠单抗特异性结合达比加群，仍需处理出血点。',
+    advance(S, minutes) {
+      const previous = S.dabigatranLoad;
+      S.dabigatranLoad *= Math.exp(-Math.LN2 * minutes / 1150);
+      S.coag = Math.min(2, S.coag + 0.63 * (previous - S.dabigatranLoad));
+    },
+  },
+  {
+    id:'digoxinTox', name:'地高辛中毒', tag:'digoxinTox', weight:1, since:5, ageRange:[58, 88],
+    comorbidities:['心房颤动'],
+    init:{ vol:4.56, hr:48, cr:152, bun:11, renalFactor:0.59, k:5.9, digoxinLoad:1, lac:1.8 },
+    history:[
+      [720, '患者自述', '持续恶心、食欲差，后来出现头晕和视物偏黄。'],
+      [null, '家属转述', '药盒里少了几片地高辛，最近还出现少尿。', 'medications'],
+    ],
+    medicationHistory:['长期服用地高辛'],
+    get goal() { return ['解除地高辛毒性，心率及传导恢复', potassiumGoal()]; },
+    ...observeAfter(S => lastInfusionEnd(S, 'digoxinFab'), 10 * 60, 'Fab 输注结束后观察未满 10 分钟',
+      (S, issue = dischargeReason) => S.digoxinLoad > 0.18 ? [issue('地高辛相关心脏毒性仍明显', true)] : []),
+    hint:'核对地高辛用药，复查心电图、血钾、肾功能及地高辛浓度。免疫 Fab 结合游离地高辛，之后监测心率与血钾。',
+    advance(S, minutes) {
+      S.digoxinLoad *= Math.exp(-Math.LN2 * minutes / 1750);
+      S.k = Math.min(9.8, S.k + 0.011 * S.digoxinLoad * minutes);
+    },
+  },
+  {
+    id:'mtxDelayed', name:'甲氨蝶呤延迟清除', tag:'mtxDelayed', weight:1, since:5, ageRange:[23, 73],
+    comorbidities:['淋巴瘤'],
+    init:{ vol:4.18, hr:101, hco3:19, cr:238, bun:15, renalFactor:0.48, k:4.9, lac:2,
+           mtxLevel:15, mtxCellularStress:0.86, mtxHoursAtArrival:48 },
+    history:[
+      [2880, '既往病历与用药记录', '外院高剂量甲氨蝶呤输注从到院前约 48 小时开始。输注前肌酐为 79 µmol/L。', 'medications'],
+      [720, '患者自述', '小便较以往明显减少，开始恶心并有口腔疼痛。'],
+      [null, '既往病历与用药记录', '已开始亚叶酸钙救援，转诊前血浆甲氨蝶呤浓度仍高于本疗程清除曲线。', 'medications'],
+    ],
+    goal:['降低血浆甲氨蝶呤浓度','减轻细胞毒性并恢复肾功能'],
+    measures:{ cr:185 },
+    check(S, issue = dischargeReason) {
+      const reasons = [];
+      if (S.mtxLevel > 1) reasons.push(issue('甲氨蝶呤清除仍明显延迟', true));
+      if (S.mtxCellularStress > 0.25) reasons.push(issue('甲氨蝶呤细胞毒性仍明显'));
+      if (lastInfusionEnd(S, 'glucarpidase', 'leucovorin') > S.t) reasons.push(issue('甲氨蝶呤救援药仍在输注'));
+      return reasons;
+    },
+    hint:'结合甲氨蝶呤输注时间、血药浓度与肌酐确认延迟清除。Glucarpidase 处理血浆药物，继续补液和亚叶酸钙救援。',
+    advance(S, minutes) {
+      S.mtxLevel *= Math.exp(-0.004 * S.renalFactor * minutes);
+      const drugBurden = Math.min(1, S.mtxLevel / 8);
+      S.mtxFolinicReserve = (S.mtxFolinicReserve || 0) * Math.exp(-minutes / 55);
+      const cellProtection = 0.03 * S.mtxFolinicReserve;
+      S.mtxCellularStress = clamp(S.mtxCellularStress + (0.014 * drugBurden - 0.002 - cellProtection) * minutes, 0, 1);
+      if (S.mtxLevel > 3) {
+        S.renalFactor = Math.max(0.17, S.renalFactor - 0.010 * drugBurden * minutes);
+        S.hco3 = Math.max(2, S.hco3 - 0.08 * drugBurden * minutes);
+      } else if (S.vol >= 4.05 && S.map >= 65 && S.renalFactor < 0.86) {
+        S.renalFactor += (0.86 - S.renalFactor) * -Math.expm1(-minutes / 32);
+      }
+    },
+  },
+  {
+    id:'fibrinogenBleed', name:'大出血伴低纤维蛋白原', tag:'fibrinogenBleed', weight:1, since:5, bleedingSite:'bleed',
+    init:{ ...rescueBleedInit, coag:0.36, fibrinogen:0.62 }, drivers:{ bleedRate:0.016 },
+    history:[
+      [480, '患者自述', '反复解黑便，到院前还曾呕血。'],
+      [null, '院前交接', '已做初步液体复苏。静脉穿刺点持续渗血，反复压迫后仍有少量渗血。'],
+    ],
+    medicalHistory:['消化性溃疡'],
+    goal:['控制消化道出血','血红蛋白 ≥80 g/L','纤维蛋白原 ≥1.7 g/L'],
+    ...observeRescueBleeding((S, issue = dischargeReason) => {
+      const reasons = rescueBleedReasons(S, issue);
+      if (S.fibrinogen < 1.7) reasons.push(issue(`纤维蛋白原 ${S.fibrinogen.toFixed(2)} g/L`, true));
+      return reasons;
+    }),
+    hint:'穿刺点持续渗血时复查凝血和纤维蛋白原。浓缩物可较快补充，也可输注冷沉淀，仍需处理出血点。',
+  },
 ];
 
 /* 主诉只记录促使患者来诊的症状。补充症状、暴露及诱因留给问诊。 */
@@ -979,6 +1117,11 @@ const CHIEF_COMPLAINTS = {
   ectopic: ['突发下腹痛伴晕厥', null],
   preeclampsia: ['头痛、视物模糊约 2 天', 2880],
   bph: ['到院前无法自行排尿', null],
+  warfarinBleed: ['黑便约 1 天，伴呕血', 1440],
+  dabigatranBleed: ['黑便、呕血约 12 小时', 720],
+  digoxinTox: ['恶心、头晕约 12 小时', 720],
+  mtxDelayed: ['尿量减少、恶心约 12 小时', 720],
+  fibrinogenBleed: ['黑便约 8 小时，伴呕血', 480],
 };
 for (const m of MODULES) {
   m.complaint = m.history.map(([, , text]) => text).join('');
@@ -1021,8 +1164,10 @@ const incompatible = [
 ];
 
 function fitsEpisode(module, selected) {
+  const site = module.bleedingSite || module.id;
+  if (selected.some(m => (m.bleedingSite || m.id) === site)) return false;
   const ids = new Set(selected.map(m => m.id));
-  return !ids.has(module.id) && !incompatible.some(([a, b]) =>
+  return !incompatible.some(([a, b]) =>
     (a === module.id && ids.has(b)) || (b === module.id && ids.has(a)));
 }
 
@@ -1198,9 +1343,10 @@ function generateCase(difficulty, seed, only, genVersion) {
      3 危重 / 4 极危 / 5 噩梦（新增，叠加更多病理、更快恶化、更多基础病） */
   const nMods = diff <= 2 ? 1 : (diff === 3 ? 2 : 3);
   const severity = 0.75 + diff * 0.06;        // 保留（模块已自带严重度）
+  const eligible = MODULES.filter(m => (m.since ?? 1) <= genVersion);
   const primary = (only && only.length)
-    ? only.map(id => MODULES.find(m => m.id === id)).filter(Boolean).slice(0, nMods)
-    : pickWeighted(rnd, MODULES, nMods, genVersion);
+    ? only.map(id => eligible.find(m => m.id === id)).filter(Boolean).slice(0, nMods)
+    : pickWeighted(rnd, eligible, nMods, genVersion);
 
   if (!primary.length) throw new RangeError('缺少有效的病理模块');
   const demographics = demographicsFor(primary);
@@ -1222,14 +1368,14 @@ function generateCase(difficulty, seed, only, genVersion) {
 
   for (const m of primary) {
     const rate = m.drivers?.bleedRate ?? m.init?.bleedRate;
-    if (rate > 0) bleedingSites[m.id] = rate;
+    if (rate > 0) bleedingSites[m.bleedingSite || m.id] = rate;
     if (!unified && m.id === 'preeclampsia') {
       const { svrDrive, ...previousInit } = m.init;
       merge(admissionValues, previousInit);
     } else {
       merge(admissionValues, m.init);
     }
-    merge(drivers, m.drivers);
+    if (m.drivers) merge(drivers, m.drivers);
     const temp = m.init?.temp;
     if (Math.abs(temp - BASE.temp) > Math.abs(admissionTemp - BASE.temp)) admissionTemp = temp;
     if (m.preload) preload.push(...m.preload);

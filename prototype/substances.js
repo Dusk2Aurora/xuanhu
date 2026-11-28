@@ -239,9 +239,12 @@ const EXTRA = [
 
   /* 止血 / 抗凝拮抗 / 溶栓 */
   ['tranexamic_acid',  '氨甲环酸',     '止血药',   1,  'g',      36, { e:{coag:+0.28}, note:'抗纤溶，创伤/产后出血' }],
-  ['vitamin_k',        '维生素 K1',    '止血药',   10, 'mg',     12, { e:{coag:+0.38}, note:'拮抗华法林' }],
+  ['vitamin_k',        '维生素 K1',    '止血药',   10, 'mg',     12, { e:{vitaminK:+0.38}, note:'促进维生素 K 依赖的凝血因子再合成，华法林大出血时与四因子 PCC 配合。' }],
   ['protamine',        '鱼精蛋白',     '止血药',   50, 'mg',     44, { e:{coag:+0.42}, note:'拮抗肝素' }],
   ['alteplase',        '阿替普酶',     '溶栓',     100,'mg',     980,{ e:{coag:-0.60}, note:'急性缺血性卒中/肺栓塞溶栓；出血风险高' }],
+  ['pcc4', '四因子凝血酶原复合物', '止血药', 40, 'IU/kg', 5200, { on:1, du:60, e:{warfarinFactors:1.4}, rescue:true, coverage:'partial', note:'4F-PCC 迅速补充Ⅱ、Ⅶ、Ⅸ、Ⅹ因子，用于华法林相关大出血。与维生素 K1 配合，并复查 INR。' }],
+  ['fibrinogenConcentrate', '人纤维蛋白原浓缩物', '止血药', 4, 'g', 6400, { on:1, du:60, e:{fibrinogenReplacement:1.5}, rescue:true, coverage:'partial', note:'严重出血合并低纤维蛋白原时补足底物，复查纤维蛋白原浓度。' }],
+  ['cryoprecipitate', '冷沉淀', '止血药', 10, 'U', 1800, { on:1, du:60, e:{fibrinogenReplacement:1.5, vol:0.18}, note:'提供纤维蛋白原，输注较慢。' }],
 
   /* 解毒 */
   ['nacetylcysteine',  'N-乙酰半胱氨酸','解毒与拮抗',  150,'mg/kg',  120,{ note:'对乙酰氨基酚中毒解药' }],
@@ -249,6 +252,10 @@ const EXTRA = [
   ['fomepizole',       '甲吡唑',       '解毒与拮抗',    15, 'mg/kg',  420,{ note:'甲醇/乙二醇中毒' }],
   ['sodium_thiosulfate','硫代硫酸钠',  '解毒与拮抗',    12.5,'g',     58, { note:'氰化物中毒' }],
   ['lactulose',        '乳果糖',       '解毒与拮抗',    30, 'mL',     16, { r:'口服', note:'肝性脑病降血氨' }],
+  ['idarucizumab', '依达赛珠单抗', '解毒与拮抗', 5, 'g', 18000, { on:1, du:60, e:{dabigatranBinding:1.25}, rescue:true, imported:true, coverage:'selfPay', note:'特异性结合达比加群，用于相关危及生命或不可控出血。' }],
+  ['digoxinFab', '地高辛免疫 Fab', '解毒与拮抗', 4, '瓶', 32000, { on:1, du:60, e:{digoxinBinding:1.25}, rescue:true, imported:true, coverage:'selfPay', billingStep:1, note:'结合游离地高辛，减轻严重传导障碍与高钾。治疗后复查心电图和血钾。' }],
+  ['glucarpidase', 'Glucarpidase（羧肽酶 G2）', '解毒与拮抗', 50, 'U/kg', 80000, { on:1, du:60, e:{mtxCleavage:5}, rescue:true, imported:true, coverage:'selfPay', note:'高剂量甲氨蝶呤因肾损伤延迟清除时，迅速降低血浆药物浓度。继续细胞保护及肾脏支持，采用色谱法复查。' }],
+  ['leucovorin', '亚叶酸钙', '解毒与拮抗', 100, 'mg', 140, { on:1, du:60, e:{mtxCellProtection:0.65}, note:'用于甲氨蝶呤救援中的细胞保护。与 Glucarpidase 给药至少间隔 2 小时。' }],
 
   /* 呼吸 */
   ['ipratropium',      '异丙托溴铵',   '支气管扩张',0.5,'mg',     18, { e:{spo2:+3, rr:-2}, note:'抗胆碱能，慢阻肺' }],
@@ -396,6 +403,13 @@ const ROUTE_MAP = {
   salbutamol: [{ r:'吸入', d:2.5,on:3,  du:60  }, { r:'静滴', d:5,  on:5,  du:60 }],
   insulin:    [{ r:'静推', d:10, on:15, du:240 }, { r:'泵入', d:2,  on:30, du:720, infusionMinutes:60 }],
   levetiracetam: [{ r:'静滴', infusionMinutes:15, maxDose:3000 }],
+  pcc4: [{ r:'静滴', infusionMinutes:10, maxDose:50 }],
+  fibrinogenConcentrate: [{ r:'静滴', infusionMinutes:10, maxDose:8 }],
+  cryoprecipitate: [{ r:'输血', infusionMinutes:25, maxDose:20 }],
+  idarucizumab: [{ r:'静滴', infusionMinutes:5, maxDose:5 }],
+  digoxinFab: [{ r:'静滴', infusionMinutes:20, maxDose:20 }],
+  glucarpidase: [{ r:'静滴', infusionMinutes:2, maxDose:50 }],
+  leucovorin: [{ r:'静滴', infusionMinutes:10, maxDose:500 }],
   heparin:    [{ r:'静推', d:5000,on:5, du:180 }, { r:'皮下', d:5000,on:30,du:360 }],
   naloxone:   [{ r:'静推', d:0.4,on:1,  du:45  }, { r:'肌注', d:0.8,on:5,  du:90 }],
 };
@@ -484,6 +498,10 @@ function build() {
       eff: e,
       note: o.note || '',
       kind: 'drug',
+      ...(o.rescue ? { rescue: true } : {}),
+      ...(o.imported ? { imported: true } : {}),
+      ...(o.coverage ? { coverage: o.coverage } : {}),
+      ...(o.billingStep ? { billingStep: o.billingStep } : {}),
     };
     /* 多途径展开 */
     const rts = ROUTE_MAP[id];
@@ -552,6 +570,12 @@ const ALIASES = {
   '葡萄糖酸钙针': '葡萄糖酸钙',
   '氯化钾针': '氯化钾',
   '止血敏': '酚磺乙胺',
+  '4F-PCC': '四因子凝血酶原复合物',
+  'PCC': '四因子凝血酶原复合物',
+  'Idarucizumab': '依达赛珠单抗',
+  'DigiFab': '地高辛免疫 Fab',
+  'Voraxaze': 'Glucarpidase（羧肽酶 G2）',
+  'Leucovorin': '亚叶酸钙',
   '肾上腺素注射液': '肾上腺素',
   '去甲肾上腺素注射液': '去甲肾上腺素',
   '异丙肾': '异丙肾上腺素',
@@ -632,7 +656,8 @@ function aliasesFor(name) {
   return Object.keys(ALIASES).filter(alias => ALIASES[alias] === name);
 }
 function matchesName(name, q) {
-  return name.includes(q) || aliasesFor(name).some(alias => alias.includes(q));
+  const query = q.toLowerCase();
+  return name.toLowerCase().includes(query) || aliasesFor(name).some(alias => alias.toLowerCase().includes(query));
 }
 function search(q) {
   q = (q || '').trim().replace(/／/g, '/');
@@ -648,8 +673,89 @@ function searchUnlistedDrugs(q) {
   return UNLISTED_DRUGS.filter(name => matchesName(name, q));
 }
 
+const RESCUE_INFUSION_EFFECTS = new Set([
+  'warfarinFactors', 'dabigatranBinding', 'digoxinBinding', 'mtxCleavage',
+  'mtxCellProtection', 'fibrinogenReplacement',
+]);
+
+function isRescueInfusionEffect(key) {
+  return RESCUE_INFUSION_EFFECTS.has(key);
+}
+
+function warfarinEffect(S) {
+  return Math.max(0, (S.warfarinLoad || 0) - (S.warfarinFactors || 0));
+}
+
+function changeCoagulation(S, delta) {
+  S.coag = Math.max(0.05, Math.min(2, (S.coag ?? 1) + delta));
+}
+
+function updateWarfarin(S, load, factors) {
+  const previous = warfarinEffect(S);
+  S.warfarinLoad = load;
+  S.warfarinFactors = factors;
+  changeCoagulation(S, 0.66 * (previous - warfarinEffect(S)));
+}
+
+function advanceWarfarin(S, minutes) {
+  const load = S.warfarinLoad * Math.exp(-Math.LN2 * minutes / 760);
+  const factors = (S.warfarinFactors || 0) * Math.exp(-Math.LN2 * minutes / 105);
+  updateWarfarin(S, load, factors);
+}
+
+function applyRescueEffect(S, key, amount) {
+  if (!(amount > 0 && Number.isFinite(amount))) return;
+  // 按体重给药的救援效应用血浆浓度衡量，按体重折算已送入的总量。
+  const perKg = amount * 70 / (S.weight || 70);
+  switch (key) {
+    case 'vitaminK':
+      if (Number.isFinite(S.warfarinLoad)) {
+        updateWarfarin(S, Math.max(0, S.warfarinLoad - 2.35 * amount), S.warfarinFactors || 0);
+      } else {
+        changeCoagulation(S, amount);
+      }
+      break;
+    case 'warfarinFactors':
+      if (S.warfarinLoad > 0) updateWarfarin(S, S.warfarinLoad, Math.min(1, (S.warfarinFactors || 0) + perKg));
+      break;
+    case 'dabigatranBinding':
+      if (S.dabigatranLoad > 0) {
+        const bound = Math.min(S.dabigatranLoad, amount);
+        S.dabigatranLoad -= bound;
+        changeCoagulation(S, 0.63 * bound);
+      }
+      break;
+    case 'digoxinBinding':
+      if (S.digoxinLoad > 0) {
+        const bound = Math.min(S.digoxinLoad, amount);
+        S.digoxinLoad -= bound;
+        S.k = Math.max(1.2, S.k - 0.95 * bound);
+      }
+      break;
+    case 'mtxCleavage':
+      if (S.mtxLevel > 0 && S.renalFactor < 0.75) {
+        S.mtxLevel *= Math.exp(-perKg);
+        S.mtxFolinicReserve = 0;
+      }
+      break;
+    case 'mtxCellProtection':
+      if (S.mtxCellularStress > 0 && !S.given?.some(order => order.id === 'glucarpidase' && S.t - order.t < 2 * 3600)) {
+        S.mtxFolinicReserve = Math.min(1, (S.mtxFolinicReserve || 0) + amount);
+      }
+      break;
+    case 'fibrinogenReplacement':
+      if (Number.isFinite(S.fibrinogen) && S.fibrinogen < 2.6) {
+        const increment = Math.min(2.6 - S.fibrinogen, amount);
+        S.fibrinogen += increment;
+        changeCoagulation(S, 0.43 * increment);
+      }
+      break;
+  }
+}
+
 const API = { ALL, INTERACTIONS, ALIASES, DRUGS: ALL.filter(x => x.kind === 'drug'), FOODS: ALL.filter(x => x.kind === 'food'),
-              CODEX, byId, byClass, aliasesFor, search, searchUnlistedDrugs, CLS };
+              CODEX, byId, byClass, aliasesFor, search, searchUnlistedDrugs, CLS, applyRescueEffect,
+              isRescueInfusionEffect, warfarinEffect, advanceWarfarin };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 root.SUBSTANCES = API;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

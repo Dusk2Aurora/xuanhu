@@ -16,6 +16,8 @@
 (function (root) {
 'use strict';
 let IDENTITY = null;      /* 测试用：固定病人身份；生产环境使用病例所带资料 */
+const DIAGNOSTICS = root.LIFE_EXAMS || (typeof module !== 'undefined' && module.exports ? require('./exams.js') : null);
+const { EXAMS, EXAM_GROUPS, TESTS, TEST_GROUPS } = DIAGNOSTICS;
 const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
 const lerp  = (a, b, k) => a + (b - a) * k;
 const r1 = x => Math.round(x * 10) / 10;
@@ -684,16 +686,6 @@ const ACTIONS = {
   },
 };
 
-/* ---------------- 检验 ---------------- */
-const TESTS = {
-  abg:  { name: '动脉血气',   min: 8,  cost: 120, fields: ['ph','paco2','pao2','hco3','lac','k'] },
-  bmp:  { name: '电解质+肾功', min: 35, cost: 180, fields: ['k','na','cl','ca','cr','bun'] },
-  cbc:  { name: '血常规',     min: 25, cost: 60,  fields: ['hb','wbc','plt'] },
-  ecg:  { name: '12 导联心电图', min: 5, cost: 40, fields: ['ecg'] },
-  lac:  { name: '乳酸',       min: 10, cost: 50,  fields: ['lac'] },
-  cxr:  { name: '床旁胸片',   min: 15, cost: 90,  fields: [] },
-};
-
 /* ---------------- 状态默认值 ---------------- */
 function makeInsult() {
   return { hypox: 0, dysoxia: 0, acid: 0, hypercapnia: 0, shock: 0, hyperthermia: 0, hypogly: 0, icp: 0, coma: 0 };
@@ -711,6 +703,7 @@ function syncPatientFields(S) {
 function restorePatient(S) {
   syncPatientFields(S);
   if (S.traits && root.TRAITS) root.TRAITS.restore(S);
+  restoreDiagnosticReports(S);
 }
 
 function create(caseId, identity = IDENTITY) {
@@ -737,6 +730,7 @@ function create(caseId, identity = IDENTITY) {
     drugs: [], eff: { insulin: 0, norepi: 0, amio: 0, furo: 0, ppi: 0 },
     pk: [], pumps: {}, benzoPkVersion: 1, mod: makeMod(), modBase: makeMod(),
     log: [], tests: {}, labSnap: {}, labPrevious: {}, lungExam: { latest: null, previous: null }, xrayReports: [],
+    diagnosticReports: [],
     score: 100, death: null, discharged: false, dischargeOutcome: null,
     delivered: false, deliveryStartedAt: null, deliveryAt: null,
     caProtectUntil: -1, dialysisUntil: -1, o2: 0, fio2: ROOM_AIR_OXYGEN, oxygenFlow: 0, mapBoost: 0,
@@ -1451,6 +1445,7 @@ function tick(S, dtSec) {
   const thyroidDepression = clamp(S.myxedemaSeverity || 0, 0, 1);
   const previousTime = S.t;
   S.t += dtSec;
+  DIAGNOSTICS.advanceTroponin(S, dtMin);
 
   const env = S.env || {};
   const tox = S.tox || {};
@@ -2460,7 +2455,7 @@ function conditionReviewChange(S, baseline) {
 }
 
 /* --- 主动听诊、开检验 --- */
-function auscultate(S) {
+function lungFindings(S) {
   const sounds = [];
   const cholinergic = (1 - (S.acheActivity ?? 1)) * (1 - (S.muscarinicBlock ?? 0));
   const airway = S.airwayResistance || 0;
@@ -2475,14 +2470,33 @@ function auscultate(S) {
   const bilateral = sounds.length ? `${breathSound}，伴${sounds.join('、')}` : breathSound;
   /* 现有气胸病例设定为左侧，减压后残余气胸仍可使该侧呼吸音减弱。 */
   const left = S.tensionPTX >= 0.65 ? '呼吸音消失' : S.tensionPTX > 0 ? '呼吸音减弱' : bilateral;
-  const result = { t: S.t, left, right: bilateral };
+  return { t: S.t, left, right: bilateral };
+}
+
+function lungRows({ left, right }) {
+  const makeRow = (label, value) => ({ label, value, ...(value === '呼吸音可闻' ? {} : { flag: '异常' }) });
+  return [makeRow('左肺', left), makeRow('右肺', right)];
+}
+
+function auscultate(S) {
+  const result = lungFindings(S);
   S.lungExam = { latest: result, previous: S.lungExam?.latest ?? null };
-  S.log.push([fmt(S.t), `双肺听诊 · 左肺${left}；右肺${bilateral}`, 'info']);
+  const report = appendReport(S, { type: 'lungs', kind: 'exam', name: EXAMS.lungs.name,
+    rows: lungRows(result), sampledAt: S.t, reportedAt: S.t });
+  S.log.push([fmt(S.t), `双肺听诊 · 左肺${result.left}；右肺${result.right}`, 'info', S.t, report.id]);
   return result;
 }
 
-function isSerialBloodTest(id) {
-  return id === 'cbc' || id === 'abg';
+function examine(S, type) {
+  if (!Object.hasOwn(EXAMS, type)) return null;
+  if (type === 'lungs') {
+    auscultate(S);
+    return S.diagnosticReports.at(-1);
+  }
+  const report = appendReport(S, { type, kind: 'exam', name: EXAMS[type].name,
+    ...DIAGNOSTICS.bedside(S, type, { bp, convulsionSigns }), sampledAt: S.t, reportedAt: S.t });
+  S.log.push([fmt(S.t), `${report.name} · 已记录查体`, 'info', S.t, report.id]);
+  return report;
 }
 
 const CXR_RECEIPT = `${TESTS.cxr.name} 结果已出`;
@@ -2521,7 +2535,7 @@ function restoreChestXrayReports(S) {
   const legacyFindings = Number.isFinite(legacy?.s?.lungWater)
     ? '根据旧版回报时保存的肺水数据，' + lungWaterFindings(legacy.s.lungWater) + '旧版快照未记录胸腔积气征象。'
     : CXR_UNRECORDED;
-  const receipts = S.log.filter(row => row[1] === CXR_RECEIPT && !row[4]);
+  const receipts = (S.log || []).filter(row => row[1] === CXR_RECEIPT && !row[4]);
   let matching = [];
   if (reportedAt != null) {
     matching = receipts.filter(row => row[3] === reportedAt);
@@ -2547,60 +2561,149 @@ function testSample(S, id) {
     sample.wbc = Number.isFinite(S.wbc) ? r1(S.wbc) : null;
     sample.plt = Number.isFinite(S.plt) ? Math.round(S.plt) : null;
   }
+  if (id === 'ecg') {
+    Object.assign(sample, { stemi: S.stemi || 0, qrsWide: S.qrsWide || 0, tca: S.tca || 0 });
+  }
   const test = TESTS[id];
-  return { t: S.t, s: sample, name: test.name, fields: test.fields };
+  const rows = id === 'ecg' ? DIAGNOSTICS.ecgRows(sample) : test.group === 'imaging'
+    ? DIAGNOSTICS.imagingRows(S, id, sample) : DIAGNOSTICS.targetedSample(S, id, sample, { acetaminophenExposure });
+  return { t: S.t, s: sample, name: test.name, fields: test.fields, rows };
 }
 
-function orderTest(S, id) {
-  const T = TESTS[id]; if (!T) return null;
-  const serial = isSerialBloodTest(id);
-  const xray = id === 'cxr';
-  const current = S.tests[id];
-  if ((serial || xray) && current && !current.done) return current.readyAt;
-  const readyAt = S.t + T.min * 60;
-  const order = { readyAt, done: false };
-  if (xray) order.sample = Object.freeze({ sampledAt: S.t, findings: chestXrayFindings(S) });
-  else if (serial) order.sample = testSample(S, id);
-  S.cost += T.cost;
-  S.tests[id] = order;
-  S.log.push([fmt(S.t), `开出 ${T.name}（${T.min} 分钟后出结果）`, 'info']);
-  return readyAt;
+function freezeReport(report) {
+  if (report.values) Object.freeze(report.values);
+  for (const row of report.rows || []) Object.freeze(row);
+  Object.freeze(report.rows);
+  return Object.freeze(report);
 }
-function pollTests(S) {
-  for (const [id, t] of Object.entries(S.tests)) {
-    if (!t.done && S.t >= t.readyAt) {
-      if (id === 'cxr') {
-        if (!S.xrayReports?.length) restoreChestXrayReports(S);
-        const reports = S.xrayReports;
-        const sample = t.sample ?? { sampledAt: null, findings: CXR_UNRECORDED };
-        const report = Object.freeze({ id: `cxr-${reports.length + 1}`, ...sample, reportedAt: S.t });
-        reports.push(report);
-        S.log.push([fmt(S.t), CXR_RECEIPT, 'good', S.t, report.id]);
-        t.done = true;
-        delete t.sample;
-        S.lastLabAt = S.t;
-        continue;
-      }
-      t.done = true;
-      S.log.push([fmt(S.t), `${TESTS[id].name} 结果已出`, 'good']);
-      S.labSnap ??= {};
-      const report = t.sample ?? testSample(S, id);
-      if (isSerialBloodTest(id)) {
-        /* 旧存档中的待出报告只保留了预计回报时间。 */
-        if (!t.sample) report.sampledAtKnown = false;
-        report.reportedAt = S.t;
-        S.labPrevious ??= {};
-        if (S.labSnap[id]?.s) S.labPrevious[id] = S.labSnap[id];
-        delete t.sample;
-      }
-      S.labSnap[id] = report;
-      S.lastLabAt = S.t;
+
+function appendReport(S, data) {
+  const reports = S.diagnosticReports ??= [];
+  const report = freezeReport({ id: `report-${reports.length + 1}`, ...data });
+  reports.push(report);
+  return report;
+}
+
+function archiveXray(S, report) {
+  appendReport(S, { ...report, type: 'cxr', kind: 'imaging', name: TESTS.cxr.name,
+    rows: [{ label: '影像所见', value: report.findings }] });
+}
+
+function archiveTest(S, type, sample) {
+  const test = TESTS[type];
+  const kind = type === 'ecg' ? 'ecg' : test.group === 'imaging' ? 'imaging' : 'lab';
+  const fields = Array.isArray(sample.fields) ? sample.fields.filter(field => test.fields.includes(field)) : test.fields;
+  const rows = sample.rows ?? (type === 'ecg' ? DIAGNOSTICS.ecgRows(sample.s) : DIAGNOSTICS.labRows(type, sample.s, fields));
+  const values = {};
+  for (const field of fields) {
+    if (Number.isFinite(sample.s[field])) values[field] = sample.s[field];
+  }
+  if (type === 'hcg' || type === 'pelvicus') {
+    for (const field of ['pregnant', 'gestationalWeeks']) {
+      if (Number.isFinite(sample.s[field])) values[field] = sample.s[field];
+    }
+  }
+  const sampledAt = sample.sampledAtKnown !== false && Number.isFinite(sample.reportedAt) && Number.isFinite(sample.t) ? sample.t : null;
+  const reportedAt = sample.reportedAt ?? sample.t ?? null;
+  return appendReport(S, { type, kind, name: test.name, sampledAt, reportedAt, rows, values });
+}
+
+function restoreDiagnosticReports(S) {
+  const reports = S.diagnosticReports ??= [];
+  for (const report of reports) freezeReport(report);
+  restoreChestXrayReports(S);
+  const archivedFilms = new Set(reports.filter(report => report.type === 'cxr').map(report => report.id));
+  for (const report of S.xrayReports) {
+    if (!archivedFilms.has(report.id)) archiveXray(S, report);
+  }
+  const archivedTypes = new Set(reports.map(report => report.type));
+  if (!archivedTypes.has('lungs')) {
+    for (const sample of [S.lungExam?.previous, S.lungExam?.latest]) {
+      if (!sample) continue;
+      appendReport(S, { type: 'lungs', kind: 'exam', name: EXAMS.lungs.name,
+        rows: lungRows(sample), sampledAt: sample.t, reportedAt: sample.t });
+    }
+  }
+  for (const type of Object.keys(S.labSnap || {})) {
+    if (!Object.hasOwn(TESTS, type) || archivedTypes.has(type)) continue;
+    for (const sample of [S.labPrevious?.[type], S.labSnap[type]]) {
+      if (sample?.s) archiveTest(S, type, sample);
     }
   }
 }
+
+function reports(S, type) {
+  return (S.diagnosticReports || []).filter(report => !type || type === report.type)
+    .sort((a, b) => (a.reportedAt ?? -1) - (b.reportedAt ?? -1));
+}
+
+function getReport(S, id) {
+  return S.diagnosticReports?.find(report => report.id === id) ?? null;
+}
+
+function knownResults(S) {
+  const known = {};
+  for (const report of S.diagnosticReports || []) {
+    const { sampledAt, reportedAt, id: reportId } = report;
+    const observedAt = sampledAt ?? reportedAt ?? -1;
+    for (const [field, value] of Object.entries(report.values || {})) {
+      if (!Number.isFinite(value)) continue;
+      const previous = known[field];
+      const previousAt = previous?.sampledAt ?? previous?.reportedAt ?? -1;
+      if (observedAt < previousAt ||
+          (observedAt === previousAt && (reportedAt ?? -1) < (previous?.reportedAt ?? -1))) continue;
+      known[field] = { value, sampledAt, reportedAt, reportId };
+    }
+  }
+  return known;
+}
+
+function orderTest(S, id) {
+  if (!Object.hasOwn(TESTS, id)) return null;
+  const T = TESTS[id];
+  const current = S.tests[id];
+  if (current && !current.done) return current.readyAt;
+  const readyAt = S.t + T.min * 60;
+  const sample = id === 'cxr' ? Object.freeze({ sampledAt: S.t, findings: chestXrayFindings(S) }) : testSample(S, id);
+  S.cost += T.cost;
+  S.tests[id] = { readyAt, done: false, sample };
+  S.log.push([fmt(S.t), `开出 ${T.name}（${T.min} 分钟后出结果）`, 'info', S.t]);
+  return readyAt;
+}
+
+function pollTests(S) {
+  for (const [id, order] of Object.entries(S.tests)) {
+    if (order.done || S.t < order.readyAt || !Object.hasOwn(TESTS, id)) continue;
+    let reportId;
+    if (id === 'cxr') {
+      if (!S.xrayReports?.length) restoreChestXrayReports(S);
+      const films = S.xrayReports;
+      const sample = order.sample ?? { sampledAt: null, findings: CXR_UNRECORDED };
+      const report = Object.freeze({ id: `cxr-${films.length + 1}`, ...sample, reportedAt: S.t });
+      films.push(report);
+      archiveXray(S, report);
+      reportId = report.id;
+    } else {
+      S.labSnap ??= {};
+      S.labPrevious ??= {};
+      const sample = order.sample ?? testSample(S, id);
+      /* 旧存档中的待出报告只保留了预计回报时间。 */
+      if (!order.sample) sample.sampledAtKnown = false;
+      sample.reportedAt = S.t;
+      if (S.labSnap[id]?.s) S.labPrevious[id] = S.labSnap[id];
+      S.labSnap[id] = sample;
+      reportId = archiveTest(S, id, sample).id;
+    }
+    order.done = true;
+    delete order.sample;
+    S.lastLabAt = S.t;
+    S.log.push([fmt(S.t), `${TESTS[id].name} 结果已出`, 'good', S.t, reportId]);
+  }
+}
+
 function testValue(S, id) {
   if (id === 'cxr') return S.xrayReports?.at(-1) ?? null;
-  return TESTS[id] && (isSerialBloodTest(id) || S.tests[id]?.done) ? S.labSnap?.[id]?.s ?? null : null;
+  return Object.hasOwn(TESTS, id) ? S.labSnap?.[id]?.s ?? null : null;
 }
 
 function snapshot(S) {
@@ -2690,6 +2793,7 @@ const API = {
   setIdentity(p) { IDENTITY = p || null; }, CASES, DRUGS, ACTIONS, TESTS, DELIVERY_DURATION, create, restorePatient, tick, give, acetaminophenExposure, setEnv, finalScore, scoreBreakdown, bp, snapshot,
               ventilatorSettings, setVentilatorFlow, oxygenSettings, setOxygenFlow,
               dischargeCheck, signDischarge, glucoseDischargeTarget, glucoseReviewStatus, potassiumTarget, convulsionSigns, conditionReviewBaseline, conditionReviewChange,
+              EXAMS, EXAM_GROUPS, TEST_GROUPS, examine, reports, getReport, knownResults,
               auscultate, orderTest, pollTests, testValue, chestXrayReports, restoreChestXrayReports,
               computeMap, fmt, endCase, setBleedingRate, restoreBleeding,
               benzodiazepineExposure, restoreBenzodiazepines, temperatureStatus, restoreTemperature, infusionDetails, insulinActivity,

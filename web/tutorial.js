@@ -23,7 +23,7 @@ const PAGES = [
       <div class="tut-row"><b>人体视图</b><span>点选器官，与旁边的器官参数对照</span></div>
       <div class="tut-row"><b>临床状态</b><span>点击状态标签可查阅相关解释</span></div>
       <div class="tut-row"><b>器官参数</b><span>随选中的器官切换，选中心脏可查看心电图</span></div>
-      <div class="tut-row"><b>底部操作</b><span>在「检查」开单或办理出院，在「报告」查看结果，在「操作 → 体温处置」进行物理降温或被动保暖。</span></div>`,
+      <div class="tut-row"><b>底部操作</b><span>在「检查」问病史、查体或开单，在「报告」复阅结果。出院在「菜单」第一项，降温和保暖位于「操作 → 体温处置」。</span></div>`,
   },
   {
     id: 'vitals', title: '指标怎么看', html: `

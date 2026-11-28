@@ -71,10 +71,12 @@ async function advanceBedCost(page) {
 }
 
 async function openSigning(page, checkSheet = true) {
-  if (checkSheet) await page.locator('#btnBody').click();
+  if (checkSheet) await page.locator('#btnMenu').click();
   const checks = page.locator('#sheet.on #sheetList');
-  assert.doesNotMatch(await checks.innerText(), conditions);
-  await checks.getByText('办理出院', { exact: true }).click();
+  const discharge = checks.getByRole('button').first();
+  assert.doesNotMatch(await discharge.innerText(), conditions);
+  assert.equal(await checks.getByText('出院评估', { exact: true }).count(), 0);
+  await discharge.getByText('办理出院', { exact: true }).click();
   const prompt = page.locator('#sheet.on').filter({ hasText: /是否签字出院/ });
   await prompt.waitFor();
   assert.doesNotMatch(await prompt.innerText(), conditions);
@@ -118,7 +120,7 @@ async function testFailedDischarge(page) {
   await enterWard(page);
   assert.ok(await advanceBedCost(page) > 0);
   await page.evaluate(() => { window.__LIFE_GAME.S.k = 7.2; });
-  await page.locator('#btnBody').click();
+  await page.locator('#btnMenu').click();
   await page.locator('#sheet.on').getByText('出院评估', { exact: true }).click();
   assert.match(await page.locator('#detail.on #dWarn').innerText(), /血钾/);
   await page.locator('#detailX').click();

@@ -30,7 +30,7 @@ async function main() {
     assert.equal(assessment.ok, true, assessment.reasons.join('、'));
     const warning = page.locator('#sevOk');
     if (await warning.isVisible()) await warning.click();
-    await page.locator('#btnBody').click();
+    await page.locator('#btnMenu').click();
     await rows.filter({ hasText: '办理出院' }).click();
     await page.waitForFunction(() => window.__LIFE_GAME.beds.length === 0);
     await page.reload();

@@ -892,13 +892,45 @@ const MODULES = [
   },
 ];
 
-/* 保留模块摘要供百科、脚本等直接读取。 */
-/* 主诉按病历书写规范单独成句（症状 + 持续时间），现病史取 history 时间线。
-   complaint 保留为现病史全文，供百科与分享使用。 */
-const CHIEF_COMPLAINTS = {"highK": "少尿伴心悸、乏力2天", "dka": "多饮多尿3天，恶心呕吐1天", "bleed": "呕血、黑便1天", "sepsis": "发热3天，意识模糊6小时", "opioid": "被发现呼之不应、呼吸浅慢1小时", "edema": "气促1天，不能平卧6小时", "thyroid": "发热、心悸伴烦躁2天", "hypogly": "大汗、意识模糊2小时", "asthma": "喘息、胸闷1天，加重3小时", "organophosphate": "误服农药后呕吐、大汗2小时", "apap": "恶心、上腹不适4小时", "htnEmergency": "剧烈头痛、视物模糊6小时", "hyponatremia": "乏力、嗜睡2天，意识模糊6小时", "pe": "突发胸痛、气促2小时", "ptx": "外伤后左胸痛、气促1小时", "trauma": "车祸后右大腿疼痛、出血2小时", "pancreatitis": "上腹剧痛伴呕吐1天", "hhs": "乏力、嗜睡3天，意识模糊6小时", "co": "头晕、意识模糊2小时", "aki": "尿少伴恶心、水肿5天", "tamponade": "胸部外伤后胸闷、气促2小时", "heatstroke": "高温暴露后晕倒1小时", "myxedema": "反应迟钝、面部浮肿1天", "liverFailure": "皮肤黄染1周，嗜睡2天", "tca": "服药过量后口干、意识模糊2小时", "tbi": "头部外伤后嗜睡、呕吐2小时", "burn": "火灾后烧伤伴气促1小时", "stemi": "胸骨后压榨样疼痛3小时", "seizure": "持续抽搐30分钟", "spleen": "左上腹外伤后疼痛、面色苍白2小时", "ectopic": "停经7周，突发下腹痛伴晕厥2小时", "preeclampsia": "头痛、视物模糊1天", "bph": "排尿困难、下腹胀痛1天"};
+/* 主诉只记录促使患者来诊的症状。补充症状、暴露及诱因留给问诊。 */
+const CHIEF_COMPLAINTS = {
+  highK: ['心悸、乏力约 6 小时', 360],
+  dka: ['恶心、呕吐约 1 天', 1440],
+  bleed: ['到院前呕血', null],
+  sepsis: ['发热、咳嗽约 3 天', 4320],
+  opioid: ['被发现呼之不应、呼吸浅慢', null],
+  edema: ['突发气促', null],
+  thyroid: ['发热、心悸约 2 天', 2880],
+  hypogly: ['到院前大汗、反应变差', null],
+  asthma: ['喘息、胸闷约 6 小时', 360],
+  organophosphate: ['到院前大汗、呕吐', null],
+  apap: ['到院前出现恶心', null],
+  htnEmergency: ['剧烈头痛、视物模糊约 3 小时', 180],
+  hyponatremia: ['乏力、嗜睡约 2 天', 2880],
+  pe: ['突发胸痛、气促', null],
+  ptx: ['受伤后突发气促', null],
+  trauma: ['受伤后右大腿出血', null],
+  pancreatitis: ['上腹剧痛伴呕吐约 8 小时', 480],
+  hhs: ['到院前嗜睡、反应变差', null],
+  co: ['到院前反应变慢', null],
+  aki: ['尿量减少伴恶心约 3 天', 4320],
+  tamponade: ['胸部受伤后出现反应异常', null],
+  heatstroke: ['到院前晕倒', null],
+  myxedema: ['被发现反应迟钝', null],
+  liverFailure: ['近一周皮肤发黄，随后逐渐嗜睡', 10080],
+  tca: ['到院前被发现反应迟钝', null],
+  tbi: ['头部撞伤后逐渐嗜睡', null],
+  burn: ['烧伤后气促', null],
+  stemi: ['持续胸骨后疼痛约 1 小时', 60],
+  seizure: ['持续抽搐约 20 分钟', 20],
+  spleen: ['左上腹受伤后疼痛', null],
+  ectopic: ['突发下腹痛伴晕厥', null],
+  preeclampsia: ['头痛、视物模糊约 2 天', 2880],
+  bph: ['到院前无法自行排尿', null],
+};
 for (const m of MODULES) {
   m.complaint = m.history.map(([, , text]) => text).join('');
-  m.chief = CHIEF_COMPLAINTS[m.id] || m.complaint;
+  [m.chief, m.chiefMinutesBefore] = CHIEF_COMPLAINTS[m.id];
 }
 
 /* ---------- 组合 ---------- */
@@ -1024,7 +1056,7 @@ function makeAdmission(modules, patient, additionalHistory, diabetesType) {
     const text = ids.has('burn') ? '火灾现场同时发生外伤。'
       : trauma.length === 1 ? traumaScene[trauma[0].id] : '发生道路交通事故，身体多处受伤。';
     const minutesBefore = ids.has('tamponade') && !ids.has('tbi') ? 40 : null;
-    history.push({ minutesBefore, source: '现场人员转述', text });
+    history.push({ moduleId: trauma[0].id, minutesBefore, source: '现场人员转述', text });
   }
   for (const m of modules) {
     for (const [minutesBefore, source, description] of m.history) {
@@ -1040,23 +1072,25 @@ function makeAdmission(modules, patient, additionalHistory, diabetesType) {
       if (m.id === 'ectopic' && unclearPregnancy) text = text.replace('停经七周，', '');
       if (m.id === 'hhs' && ids.has('hyponatremia')) text = text.replace('近几天饮水少，', '近几天饮水量变化，');
       if (m.id === 'myxedema' && (unclearThyroid || ids.has('heatstroke'))) text = text.replace('、皮肤干冷', '');
-      history.push({ minutesBefore, source, text });
+      history.push({ moduleId: m.id, minutesBefore, source, text });
     }
   }
   history.sort((a, b) => (b.minutesBefore ?? 0) - (a.minutesBefore ?? 0));
-  const background = Array.from(new Set([
-    ...modules.flatMap(m => [...(m.comorbidities || []), ...(m.medicalHistory || []), ...(m.medicationHistory || [])]),
-    ...additionalHistory,
-    ...(diabetesType ? [diabetesType] : []),
-  ].filter(item => !injuryNames.has(item)).map(item => {
+  const normalized = item => {
     if (unclearPregnancy && (item === '早孕' || item === '妊娠 34 周')) return '旧版产科记录与患者资料或孕周记录存在冲突';
     if (unclearDiabetes && diabetesTypes.has(item)) return '糖尿病（旧版记录分型不一致）';
     if (diabetesType && item === '糖尿病') return diabetesType;
     if (unclearThyroid && item.startsWith('甲状腺功能')) return '甲状腺疾病（旧版记录分型不一致）';
     if (item === '一周前停用降压药' && ids.has('hyponatremia')) return '一周前停用其他降压药';
     return item;
-  })));
-  return { history, background };
+  };
+  const background = Array.from(new Set([
+    ...modules.flatMap(m => [...(m.comorbidities || []), ...(m.medicalHistory || []), ...(m.medicationHistory || [])]),
+    ...additionalHistory,
+    ...(diabetesType ? [diabetesType] : []),
+  ].filter(item => !injuryNames.has(item)).map(normalized)));
+  const medicationHistory = Array.from(new Set(modules.flatMap(m => m.medicationHistory || []).map(normalized)));
+  return { history, background, medicationHistory };
 }
 
 function historyTime(minutes) {
@@ -1092,7 +1126,8 @@ function generateVersion(difficulty, seed, version, only) {
 function generateCase(difficulty, seed, only, genVersion) {
   const legacy = genVersion === 1;
   const unified = genVersion >= 3;
-  const diff = clamp(difficulty || 2, 1, 5);
+  const intakeDifficulty = clamp(difficulty || 2, 1, 6);
+  const diff = Math.min(intakeDifficulty, 5);
   const actualSeed = seed == null ? (Date.now() & 0x7fffffff) : seed;
   const rnd = mulberry32(actualSeed);
 
@@ -1238,17 +1273,17 @@ function generateCase(difficulty, seed, only, genVersion) {
   };
 
   init.seed = actualSeed;
-  init.diff = diff;
+  init.diff = intakeDifficulty;
   init.genVersion = genVersion;
   /* 整体上调：病例推进速度随难度提高（原来所有难度都是 1.0） */
   init.hardScale = diff <= 2 ? (1.05 + diff * 0.10) : (1.30 + (diff - 2) * 0.22);   /* 1.15 / 1.25 / 1.52 / 1.74 / 1.96 */
 
   return {
-    id: 'gen', name: names, tags, diff, genVersion,
+    id: 'gen', name: names, tags, diff: intakeDifficulty, genVersion,
     age, sex, weight, patient, bloodType: ['A','B','O','AB'][Math.floor(rnd()*4)],
     complaint,
     /* 主诉 = 主要症状 + 持续时间；并发病史只进现病史 */
-    chief: primary.map(m => m.chief).filter(Boolean).join('；') || complaint,
+    chief: primary[0].chief,
     admission, traits,
     comorbidities,
     init,

@@ -42,6 +42,8 @@
   function make(S) {
     if (!S || !S.cas) return null;
     const isGen = S.cas.id === 'gen' || S.caseId === 'gen';
+    const difficulty = S.intake?.difficulty ?? S.diff ?? S.cas.diff ?? 3;
+    const ed = difficulty === 6;
     const p = S.patient || {};
     const actions = [];
     for (const g of (S.given || [])) {
@@ -55,7 +57,7 @@
       const m = String(t || '').match(/(\d+):(\d+)/);
       return m ? (+m[1]) * 60 + (+m[2]) : 0;
     };
-    for (const l of (S.log || [])) {
+    for (const l of (ed ? [] : S.log || [])) {
       if (String(l[1]).startsWith('操作')) actions.push(['a', toSec(l[0]), String(l[1]).replace(/^操作\s*/, '').slice(0, 36), 0]);
     }
     actions.sort((x, y) => x[1] - y[1]);
@@ -69,12 +71,12 @@
       c: isGen ? 'gen' : (S.caseId || S.cas.id),
       s: isGen ? (S.seed != null ? S.seed : (S.cas.seed || 0)) : 0,
       g: isGen ? (S.cas.genVersion || 1) : undefined,
-      d: S.diff || (S.cas.diff || 3),
+      d: difficulty,
       p: { n: p.name || '', x: p.sex || '男', a: p.age || 45, w: p.weight || 70, h: p.height || 170 },
       t: Math.round((S.t || 0) / 60),
       o: S.death ? 'death' : S.discharged ? 'discharge' : failed ? 'failed' : 'open',
-      r: String(reason || '').slice(0, 20),
-      sc: Math.round(score),
+      r: ed ? undefined : String(reason || '').slice(0, 20),
+      sc: ed ? undefined : Math.round(score),
       a: actions.slice(0, 120),
     };
     const body = b64.enc(JSON.stringify(payload));

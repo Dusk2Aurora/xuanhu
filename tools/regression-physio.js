@@ -37,6 +37,26 @@ const assert = require('node:assert/strict');
   assert.equal(treated.log.find(entry => entry[1].includes('血液透析已结束'))[3], 20);
 }
 
+// 同一稀释容积：纯水、混合负荷、等渗扩容，以及用于补足既有水缺失的清水。
+for (const [admissionNa, addedSodium, addedWater, expectedSaltVolume, expectFreeLoss] of [
+  [140, 0, 2, 0, true],
+  [140, 140, 2, null, true],
+  [140, 280, 2, 2, false],
+  [155, 0, 0.5, 0, false],
+]) {
+  const bed = E.create({ id: 'water-partition', init: { ...G.BASE, na: admissionNa } });
+  bed.freeWater = addedWater;
+  bed.naMass = admissionNa * bed.ecfVd + addedSodium;
+  const initialMass = bed.naMass;
+  const concentration = initialMass / (bed.ecfVd + addedWater);
+  const saltVolume = expectedSaltVolume ?? addedSodium / concentration;
+  E.tick(bed, 60);
+  const saltLoss = (initialMass - bed.naMass) / concentration;
+  assert.ok(Math.abs(saltLoss - saltVolume * -Math.expm1(-0.0025)) < 1e-9);
+  const freeLoss = addedWater - bed.freeWater - bed.uo * 0.00035 - saltLoss;
+  assert.ok(expectFreeLoss ? freeLoss > 1e-6 : Math.abs(freeLoss) < 1e-9);
+}
+
 const out = [];
 function check(name, ok, detail) { out.push({ name, ok, detail }); }
 

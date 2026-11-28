@@ -2761,13 +2761,17 @@ function advancePhysiology(S, dtSec) {
   const dNa = (S.na - naPrev) / dtMin;                     // mmol/L/min
   S.naRate = lerp(S.naRate || 0, dNa, clamp(0.4 * dtMin, 0, 1));
   /* 自由水：模块给的水负荷 − 肾脏排水（SIADH 时 waterClear 被下调） */
-  const fwClear = 0.0025 * (S.waterClear == null ? 1 : S.waterClear) * Math.max(0, S.freeWater || 0) * dtMin;
-  if (fwClear > 0) {
-    const denom = Math.max(6, S.ecfVd + (S.freeWater || 0));
-    S.naMass = clamp((S.naMass || 0) * (1 - fwClear / denom), 600, 3200);
-  }
-  S.freeWater = clamp((S.freeWater || 0)
-      + ((S.freeWaterRate || 0) - 0.0025 * (S.waterClear == null ? 1 : S.waterClear) * Math.max(0, S.freeWater)) * dtMin
+  const extraWater = Math.max(0, S.freeWater);
+  const clearedFraction = -Math.expm1(-0.0025 * (S.waterClear ?? 1) * dtMin);
+  // 同一稀释容积可同时含清水和晶体液，仅超出入院基线的钠可随扩容量排出。
+  const baselineMass = (S.na0 ?? 140) * S.ecfVd;
+  const salineVolume = clamp((S.naMass - baselineMass) / S.na, 0, extraWater);
+  const salineLoss = salineVolume * clearedFraction;
+  // 高钠时保留纠正水缺失所需的水，超出的无电解质水才参与额外清除。
+  const waterNeeded = Math.max(0, (S.naMass - salineVolume * S.na) / 140 - S.ecfVd);
+  const waterLoss = Math.max(0, extraWater - salineVolume - waterNeeded) * clearedFraction;
+  S.naMass = clamp(S.naMass - salineLoss * S.na, 600, 3200);
+  S.freeWater = clamp(S.freeWater + (S.freeWaterRate || 0) * dtMin - salineLoss - waterLoss
       - S.uo * dtMin / 1000 * 0.35, -3, 14);
   /* 脑水肿：绝对低渗 + 血钠下降速率（dICP/dt ∝ -dNa/dt） + 严重高血压
      —— 替代原来模块里直接给 S.gcs 设上限的做法 */

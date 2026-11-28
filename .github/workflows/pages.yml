@@ -1,0 +1,54 @@
+name: Publish GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      pages_enabled: ${{ steps.site.outputs.enabled }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Build game and offline edition
+        run: python3 tools/build_site.py
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: dist/部署包
+      - name: Check whether Pages is enabled
+        id: site
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          enabled=$(gh api "repos/$GITHUB_REPOSITORY" --jq '.has_pages')
+          echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
+          if [ "$enabled" != true ]; then
+            echo "发布包已构建。请在 Settings → Pages 中选择 GitHub Actions，然后从 main 再运行本工作流。" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  deploy:
+    needs: build
+    if: needs.build.outputs.pages_enabled == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy game
+        id: deployment
+        uses: actions/deploy-pages@v4

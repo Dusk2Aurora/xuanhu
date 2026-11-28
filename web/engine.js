@@ -1671,6 +1671,29 @@ function pumpActivity(pump, route, time) {
   return pump.activity * Math.exp(decay) + (pump.rate / route.d) * -Math.expm1(decay);
 }
 
+// 在开单时提示共同暴露。实际相互作用由 tick 根据浓度计算。
+function logInteractionWarnings(S, name) {
+  const catalog = root.SUBSTANCES;
+  for (const interaction of catalog.INTERACTIONS) {
+    const { a, b, note } = interaction;
+    if (name !== a && name !== b) continue;
+    const key = [a, b].sort().join('|');
+    if (S._ix?.[key]) continue;
+    const other = name === a ? b : a;
+    const inCourse = S.pk?.some(order => order.n === other && order.t <= S.t &&
+      (!order.infusionMinutes || infusionDeliveredMinutes(order) > 0) && S.t < drugCourseEndsAt(order));
+    const pumped = !inCourse && Object.entries(S.pumps || {}).some(([id, pump]) => {
+      const drug = catalog.byId(id);
+      if (drug?.n !== other) return false;
+      const route = drug.routes.find(item => item.pumpHalfLife);
+      return route && (pump.rate > 0 || pumpActivity(pump, route, S.t) > 0.02);
+    });
+    if (!inCourse && !pumped) continue;
+    (S._ix ||= {})[key] = 1;
+    S.log.push([fmt(S.t), '相互作用：' + a + ' + ' + b + ' —— ' + note, 'warn']);
+  }
+}
+
 function pumpEffectScale(activity) {
   return 4 / (3 / activity + 1);
 }
@@ -1766,7 +1789,7 @@ function coagulation(S) {
     if (order.id !== 'alteplase' && !(heparin > 0 && order.id === 'aspirin')) continue;
     const elapsed = (S.t - order.t) / 60;
     const lag = Math.max(0, order.onset || 0) * 0.35;
-    if (elapsed < lag || S.t > timedSupportEndsAt(order)) continue;
+    if (elapsed < lag || S.t > drugCourseEndsAt(order)) continue;
     if (order.id === 'alteplase' && order.infusionMinutes) {
       const activity = infusionResponse(order, S.t);
       thrombolysis += (order.eff?.coag ?? 0) * pumpEffectScale(order.scale * activity);
@@ -1827,11 +1850,11 @@ function activeCirculationSupport(S) {
   const running = Object.keys(S.pumps || {}).filter(id => CIRCULATORY_PUMPS.has(id) && pumpRate(S, id) > 0);
   // 旧版泵入医嘱仍走原有 PK 时程，维持和衰减直到该条 PK 记录移除。
   const timed = (S.pk || []).filter(p => p.scale > 0 && isTimedCirculatorySupport(p) &&
-    (!p.infusionMinutes || infusionDeliveredMinutes(p) > 0) && S.t + 1e-7 < timedSupportEndsAt(p));
+    (!p.infusionMinutes || infusionDeliveredMinutes(p) > 0) && S.t + 1e-7 < drugCourseEndsAt(p));
   return { running, timed };
 }
 
-function timedSupportEndsAt(order) {
+function drugCourseEndsAt(order) {
   return order.t + (order.dur * 1.8 + (order.infusionMinutes ? infusionDeliveredMinutes(order) : 0)) * 60;
 }
 
@@ -1995,6 +2018,7 @@ function changePump(S, sub, route, rate, pause = false) {
   const details = segment?.pumpSeconds > 0
     ? ` · 上段已泵入 ${Math.round(segment.pumpDose * 1000) / 1000} ${segment.pumpDoseUnit || sub.unit}，药费 ¥${r2(segment.cost).toFixed(2)}` : '';
   S.log.push([fmt(S.t), pumpOrder(sub.n, action, recordedRate, unit) + details, 'good', S.t, null, true]);
+  if (rate > 0) logInteractionWarnings(S, sub.n);
   return recordedRate;
 }
 
@@ -2125,26 +2149,7 @@ function give(S, drugId, dose, route, bill = true) {
       /* 性激素类药物：给药后进入体内激素库（12 h 半衰期），由 tick 里的激素段合并到 S.estrogen/testosterone */
       if (s.eff && s.eff.estrogen) S.estrogenExo = clamp((S.estrogenExo || 0) + s.eff.estrogen * scale, -1, 1.6);
       if (s.eff && s.eff.testosterone) S.testosteroneExo = clamp((S.testosteroneExo || 0) + s.eff.testosterone * scale, -1, 1.6);
-      /* 药物相互作用：这里只记日志。
-         效应改由每拍的 PK 浓度驱动（见 tick 内 interactions 段）——
-         一次性注入会让"两种药都代谢完了、副作用还在"，与真实时程不符。 */
-      try {
-        const TBL = SUB.INTERACTIONS || [];
-        const prev = (S.given || []).slice(0, -1).map(x => x && x.n).filter(Boolean);
-        for (const it of TBL) {
-          if (!(it.a === s.n && prev.includes(it.b)) && !(it.b === s.n && prev.includes(it.a))) continue;
-          /* 只有另一种药此刻仍在体内（未过 1.8 个疗程）才算真正的相互作用 */
-          const other = it.a === s.n ? it.b : it.a;
-          const alive = (S.pk || []).some(pp => pp.n === other &&
-            (S.t - pp.t) / 60 < (pp.infusionMinutes || 0) + pp.dur * 1.8);
-          if (!alive) continue;
-          S._ix = S._ix || {};
-          const key = [it.a, it.b].sort().join('|');
-          if (S._ix[key]) continue;
-          S._ix[key] = 1;
-          S.log.push([fmt(S.t), '相互作用：' + it.a + ' + ' + it.b + ' —— ' + it.note, 'warn']);
-        }
-      } catch (err) {}
+      logInteractionWarnings(S, s.n);
       /* —— 特殊机制 —— */
       if (s.cls === '阿片') { S.lastOpioidAt = S.t; S.addict = clamp((S.addict || 0) + d / 60, 0, 1); }
       if (s.id === 'paracetamol' || s.id === 'acetaminophen') S.tox.apap += d;
@@ -3421,7 +3426,7 @@ function assessCirculationObservation(S, pressure) {
   }
   if (timed.length) {
     const names = [...new Set(timed.map(p => p.n || p.id))].join('、');
-    const endsAt = Math.max(...timed.map(timedSupportEndsAt));
+    const endsAt = Math.max(...timed.map(drugCourseEndsAt));
     const remainingSeconds = Math.ceil(endsAt - S.t - 1e-7);
     return { phase: 'legacy', remainingSeconds, endsAt,
       reason: `${names}仍在起效，预计 ${observationTime(remainingSeconds)}后药效消退，再观察循环稳定 ${minutes} 分钟` };

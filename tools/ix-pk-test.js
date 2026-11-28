@@ -98,6 +98,24 @@ const ok = (name, cond, detail) => { if (cond) { pass++; } else { fail++; consol
   ok('同时给药 → 记一条相互作用', n === 1, `记录 ${n} 条`);
 }
 
+// 开泵和普通给药共用相互作用提示；未输入即停泵不会产生暴露。
+for (const [pump, other] of [['norepi', 'chlorpromazine'], ['heparin', 'aspirin']]) {
+  for (const pumpFirst of [true, false]) {
+    const S = E.create('hyperkalemia');
+    const start = () => E.give(S, pump, undefined, '持续静脉泵入');
+    if (pumpFirst) start();
+    E.give(S, other);
+    if (!pumpFirst) start();
+    E.give(S, other);
+    ok(pump + ' 两种开单顺序各提示一次', S.log.filter(l => l[1].includes('相互作用')).length === 1);
+  }
+  const S = E.create('hyperkalemia');
+  E.give(S, pump, undefined, '持续静脉泵入');
+  E.stopPump(S, pump);
+  E.give(S, other);
+  ok(pump + ' 未输入即停泵无提示', !S.log.some(l => l[1].includes('相互作用')));
+}
+
 /* 固定总量的胰岛素泵入：开始、逐步给药、存档续接与结束 */
 {
   const S = E.create('dka');

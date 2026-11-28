@@ -55,7 +55,7 @@ async function main() {
     await give.click();
     assert.equal(await page.evaluate(() => window.LIFE.pumpRate(window.__LIFE_GAME.S, 'nicardipine')), 7.5);
 
-    await page.locator('#btnDrug').click();
+    assert.ok(await catalog.locator('details[data-section="循环与心律"]').evaluate(section => section.open));
     await search.fill('左乙拉西坦');
     await catalog.locator('[data-id="levetiracetam"]').click();
     assert.match(await give.innerText(), /静滴.*2000\s*mg.*15\s*分钟/);
@@ -65,6 +65,8 @@ async function main() {
     assert.ok((await page.locator('#sheetList').innerText()).includes(expected));
     await give.click();
     assert.ok(await page.evaluate(() => window.__LIFE_GAME.S.given.some(g => g.id === 'levetiracetam' && g.infusionMinutes === 15)));
+    assert.equal(await search.inputValue(), '左乙拉西坦');
+    await page.locator('#sheetClose').click();
     await page.locator('#btnMenu').click();
     await page.getByText('费用与医保', { exact: true }).click();
     const bill = page.locator('#dKv');

@@ -11,10 +11,23 @@ const DEVICES = Object.freeze({
     description: '连续肾脏替代治疗，逐步清除溶质并纠正高钾、代谢性酸中毒和容量过多。' }),
   eeg: Object.freeze({ name: '持续脑电监测', startCost: 600, hourlyCost: 120, coverage: 'partial',
     description: '连续观察脑电背景和发作样活动，为复评意识障碍和识别隐匿发作提供线索。' }),
+  ttm: Object.freeze({ name: '亚低温治疗', startCost: 1800, hourlyCost: 250, coverage: 'partial',
+    description: '心脏骤停复苏后仍昏迷时，可进行设备控温。降温、维持和受控复温均由模拟时钟推进。' }),
+  aorticBypass: Object.freeze({ name: '手术室体外循环与控温准备', startCost: 2400, hourlyCost: 450, coverage: 'partial',
+    description: '用于需要处理主动脉弓的 A 型夹层。手术团队准备体外循环和脑保护，待模拟术前温度及灌注稳定后开始修复，术后受控复温。' }),
 });
 const DEVICE_IDS = Object.keys(DEVICES);
-const SUPPORT_IDS = ['vaEcmo', 'vvEcmo', 'crrt'];
+const SUPPORT_IDS = ['vaEcmo', 'vvEcmo', 'crrt', 'ttm', 'aorticBypass'];
 const EMPTY = Object.freeze({ active: false, startedAt: null, stoppedAt: null, seconds: 0, cost: 0 });
+const REWARM_TARGET = 36.5;
+const AORTIC_PREP_STABILITY = 2 * 60;
+// Rates and the aortic preoperative target use compressed game time. The aortic
+// circuit is readied for the OR team, which handles intraoperative cerebral protection.
+// AHA post-arrest guidance and EACTS/EACTAIC/EBCP 2024 CPB guidelines inform the two workflows.
+const TEMPERATURE_PROFILES = {
+  ttm: { target: 34, coolingRate: 0.24 / 60, warmingRate: 0.075 / 60 },
+  aorticBypass: { target: 33.5, coolingRate: 0.48 / 60, warmingRate: 0.30 / 60 },
+};
 const EEG_READINGS = Object.freeze({
   collecting: '正在采集，约 1 个模拟分钟后提供首个监测片段。',
   seizure: '捕捉到发作样脑电活动，请复评意识、查体和发作诱因。',
@@ -26,11 +39,18 @@ function active(S, id) {
   return S.advancedCare?.[id]?.active === true;
 }
 
+function temperatureDevice(S) {
+  return active(S, 'aorticBypass') ? 'aorticBypass' : active(S, 'ttm') ? 'ttm' : null;
+}
+
 function status(S, id) {
   const session = Object.hasOwn(DEVICES, id) && S.advancedCare?.[id];
-  if (!session) return EMPTY;
+  if (!session) {
+    return Object.hasOwn(TEMPERATURE_PROFILES, id) ? { ...EMPTY, phase: null, target: TEMPERATURE_PROFILES[id].target } : EMPTY;
+  }
   const { active, startedAt, stoppedAt, seconds, cost } = session;
-  return { active, startedAt, stoppedAt, seconds, cost };
+  return { active, startedAt, stoppedAt, seconds, cost,
+    ...(Object.hasOwn(TEMPERATURE_PROFILES, id) ? { phase: session.phase, target: session.target } : {}) };
 }
 
 function elapsedValue(value) {
@@ -43,12 +63,14 @@ function restore(S) {
   for (const id of DEVICE_IDS) {
     const previous = saved?.[id];
     if (!previous || typeof previous !== 'object') continue;
+    const temperature = TEMPERATURE_PROFILES[id];
     const startedAt = Number.isFinite(previous.startedAt) && previous.startedAt >= 0 && previous.startedAt <= S.t
       ? previous.startedAt : null;
     if (startedAt == null) continue;
     const wasActive = previous.active === true;
     const inUse = wasActive && !(S.death || S.discharged || S.dischargeOutcome)
-      && !(id === 'vvEcmo' && active(S, 'vaEcmo')) && !(id === 'crrt' && S.dialysisUntil > S.t);
+      && !(id === 'vvEcmo' && active(S, 'vaEcmo')) && !(id === 'crrt' && S.dialysisUntil > S.t)
+      && !(temperature && temperatureDevice(S));
     const stoppedAt = inUse ? null : Number.isFinite(previous.stoppedAt) && previous.stoppedAt >= startedAt
       ? Math.min(S.t, previous.stoppedAt) : S.t;
     const session = { active: inUse, startedAt, stoppedAt, seconds: elapsedValue(previous.seconds), cost: elapsedValue(previous.cost) };
@@ -56,6 +78,16 @@ function restore(S) {
       session.reading = Object.hasOwn(EEG_READINGS, previous.reading) ? previous.reading : 'collecting';
       if (Number.isFinite(previous.lastSeizureAt) && previous.lastSeizureAt >= startedAt && previous.lastSeizureAt <= S.t) {
         session.lastSeizureAt = previous.lastSeizureAt;
+      }
+    }
+    if (temperature) {
+      session.phase = inUse ? ['cooling', 'maintaining', 'rewarming'].find(phase => phase === previous.phase) || 'cooling'
+        : previous.phase === 'complete' ? 'complete' : 'stopped';
+      session.target = session.phase === 'rewarming' || session.phase === 'complete' ? REWARM_TARGET
+        : id === 'ttm' && Number.isFinite(previous.target) ? Math.min(temperature.target, Math.max(32, previous.target)) : temperature.target;
+      if (id === 'aorticBypass') {
+        session.stableSince = session.phase === 'maintaining' && Number.isFinite(previous.stableSince)
+          && previous.stableSince >= startedAt && previous.stableSince <= S.t ? previous.stableSince : null;
       }
     }
     S.advancedCare[id] = session;
@@ -75,8 +107,25 @@ function action(S, id, enable, fmt) {
   const otherEcmo = { vaEcmo: 'vvEcmo', vvEcmo: 'vaEcmo' }[id];
   if (enable && otherEcmo && active(S, otherEcmo)) return { ok: false, reason: `请先停止 ${DEVICES[otherEcmo].name}` };
   if (enable && id === 'crrt' && S.dialysisUntil > S.t) return { ok: false, reason: '本床血液透析仍在进行' };
+  const temperature = TEMPERATURE_PROFILES[id];
+  if (enable && temperature && temperatureDevice(S)) return { ok: false, reason: '本床已有设备控温或正在复温' };
 
   const session = (S.advancedCare ??= {})[id] ??= { ...EMPTY };
+  if (temperature && !enable) {
+    if (session.phase === 'rewarming') return { ok: false, reason: '正在受控复温' };
+    session.target = REWARM_TARGET;
+    if (id === 'aorticBypass') session.stableSince = null;
+    if (S.temp >= REWARM_TARGET) {
+      session.active = false;
+      session.phase = 'complete';
+      session.stoppedAt = S.t;
+      S.log.push([fmt(S.t), `${name}已结束，继续观察体温`, 'info', S.t, null, true]);
+      return { ok: true };
+    }
+    session.phase = 'rewarming';
+    S.log.push([fmt(S.t), `${name} → 开始受控复温`, 'info', S.t, null, true]);
+    return { ok: true };
+  }
   session.active = enable;
   if (enable) {
     session.startedAt = S.t;
@@ -84,6 +133,13 @@ function action(S, id, enable, fmt) {
     if (id === 'eeg') {
       session.reading = 'collecting';
       session.lastSeizureAt = null;
+    }
+    if (temperature) {
+      session.target = id === 'ttm' ? Math.min(temperature.target, Math.max(32, S.temp)) : temperature.target;
+      session.phase = S.temp > session.target || (id === 'aorticBypass' && S.temp !== session.target) ? 'cooling' : 'maintaining';
+      if (id === 'aorticBypass') session.stableSince = null;
+      S.env.cooling = 0;
+      S.env.warming = 0;
     }
     charge(S, id, startCost, 'setup');
   } else {
@@ -114,10 +170,49 @@ function eegReading(S) {
 function advance(S, seconds) {
   if (!(seconds > 0)) return;
   for (const id of DEVICE_IDS) {
-    if (!active(S, id)) continue;
+    if (Object.hasOwn(TEMPERATURE_PROFILES, id) || !active(S, id)) continue;
     S.advancedCare[id].seconds += seconds;
     charge(S, id, DEVICES[id].hourlyCost * seconds / 3600, 'running');
   }
+}
+
+function regulateTemperature(S, id, seconds, fmt) {
+  if (!(seconds > 0)) return;
+  const session = S.advancedCare[id];
+  const { coolingRate, warmingRate } = TEMPERATURE_PROFILES[id];
+  const difference = session.target - S.temp;
+  const rate = difference < 0 ? coolingRate : warmingRate;
+  const needed = Math.abs(difference) / rate;
+  const elapsed = session.phase === 'rewarming' ? Math.min(seconds, needed) : seconds;
+  S.temp += Math.sign(difference) * Math.min(Math.abs(difference), rate * elapsed);
+  session.seconds += elapsed;
+  charge(S, id, DEVICES[id].hourlyCost * elapsed / 3600, 'running');
+  if (seconds + 1e-7 < needed) return;
+  S.temp = session.target;
+  if (session.phase === 'cooling') {
+    session.phase = 'maintaining';
+    S.log.push([fmt(S.t), `${DEVICES[id].name} → 已达控温目标，进入维持阶段`, 'good', S.t, null, true]);
+  } else if (session.phase === 'rewarming') {
+    const stoppedAt = S.t - (seconds - elapsed);
+    session.active = false;
+    session.phase = 'complete';
+    session.stoppedAt = stoppedAt;
+    S.log.push([fmt(stoppedAt), '受控复温完成，继续观察体温', 'good', stoppedAt, null, true]);
+  }
+}
+
+function trackAorticStability(S, perfusionStable) {
+  if (!active(S, 'aorticBypass')) return;
+  const session = S.advancedCare.aorticBypass;
+  if (session.phase === 'maintaining' && S.temp === session.target && perfusionStable) session.stableSince ??= S.t;
+  else session.stableSince = null;
+}
+
+function aorticStableSeconds(S, perfusionStable) {
+  const session = S.advancedCare?.aorticBypass;
+  if (!session?.active || session.phase !== 'maintaining' || S.temp !== session.target || !perfusionStable ||
+      session.stableSince == null) return 0;
+  return Math.min(AORTIC_PREP_STABILITY, Math.max(0, S.t - session.stableSince));
 }
 
 function finish(S) {
@@ -125,6 +220,8 @@ function finish(S) {
     if (!active(S, id)) continue;
     const session = S.advancedCare[id];
     if (id === 'eeg') updateEeg(S, session);
+    if (Object.hasOwn(TEMPERATURE_PROFILES, id)) session.phase = 'stopped';
+    if (id === 'aorticBypass') session.stableSince = null;
     session.active = false;
     session.stoppedAt = S.t;
   }
@@ -148,7 +245,8 @@ function ecmoFlow(S) {
   return 3.8 * drainage;
 }
 
-const API = { DEVICES, active, status, restore, action, advance, finish, dischargeBlockers, hadEcmo, hasEcmo, ecmoFlow,
+const API = { DEVICES, active, status, restore, action, advance, temperatureDevice, regulateTemperature,
+  AORTIC_PREP_STABILITY, trackAorticStability, aorticStableSeconds, finish, dischargeBlockers, hadEcmo, hasEcmo, ecmoFlow,
   eegReading, monitor(S) {
     if (active(S, 'eeg')) updateEeg(S, S.advancedCare.eeg);
   } };

@@ -44,6 +44,7 @@ async function main() {
     const give = async (name, id) => {
       await selectDrug(name, id);
       await page.locator('#dGo').click();
+      await closeSheet();
     };
 
     await page.goto(gameUrl);
@@ -51,7 +52,7 @@ async function main() {
     // This seed has a hidden QT trait and no acute coronary occlusion.
     const [source, topic, lung, testGroup, glucose, procedure] = await page.evaluate(() => {
       const game = window.__LIFE_GAME;
-      game.startCase(window.CASEGEN.generate(6, 11), true);
+      game.startCase(window.CASEGEN.generateVersion(6, 11, 5), true);
       const { S, E } = game;
       const chart = window.INTAKE.view(S);
       for (const source of chart.sources.filter(item => item.available)) {
@@ -75,6 +76,7 @@ async function main() {
     await give('胺碘酮', 'amiodarone');
     await page.locator('#btnOps').click();
     await choose(procedure);
+    await closeSheet();
     await page.locator('#btnBody').click();
     await choose('床旁查体');
     await choose(lung);
@@ -82,6 +84,7 @@ async function main() {
     await page.locator('#btnBody').click();
     await choose(testGroup);
     await choose(glucose);
+    await closeSheet();
 
     await openLog();
     assert.ok((await contents.innerText()).includes(`开出 ${glucose}`));
@@ -97,9 +100,9 @@ async function main() {
     assert.ok(positions.every((index, i) => index >= 0 && (i === 0 || index > positions[i - 1])), log);
     assert.deepEqual(await page.evaluate(() => {
       const { S } = window.__LIFE_GAME;
-      return ['长 QT 体质', '无急性缺血证据'].map(text => S.log.some(entry => entry[1].includes(text)));
+      return ['长 QT 体质', '无急性冠脉闭塞证据'].map(text => S.log.some(entry => entry[1].includes(text)));
     }), [true, true]);
-    assert.doesNotMatch(log, /血钾|\bpH\b|长 QT|无急性缺血证据|带教点评/);
+    assert.doesNotMatch(log, /血钾|\bpH\b|长 QT|无急性冠脉闭塞证据|带教点评/);
     await closeDetail();
 
     await give('左乙拉西坦', 'levetiracetam');

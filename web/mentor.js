@@ -6,6 +6,8 @@
 (function (root) {
 'use strict';
 
+const EMERGENCY_CASES = root.EMERGENCY_CASES || (typeof module !== 'undefined' && module.exports ? require('./emergency-cases.js') : null);
+
 /* 体内是否还有某物质的药效（与 generator.js 的 active() 保持一致） */
 const active = (S, id) => !!(S && S.pk && S.pk.some(p => p.id === id));
 const insulinActivity = S => root.LIFE?.insulinActivity?.(S) ?? S.eff.insulin;
@@ -20,6 +22,9 @@ const LEVELS = {
   attending: { name:'主治',   detail: 1, auto: false, note:'只给结论' },
   expert:    { name:'专家',   detail: 0, auto: false, note:'无提示，正常值隐藏' },
 };
+
+const aorticImpulseHigh = S => S.aorticDissectionLoad > 0 && S.map >= 65 &&
+  (root.LIFE.bp(S).sys > EMERGENCY_CASES.AORTIC_PRESSURE_LIMIT || S.hr > EMERGENCY_CASES.AORTIC_HR_LIMIT);
 
 /* ---------- 各病例的规则 ---------- */
 const RULES = {
@@ -393,21 +398,69 @@ const RULES = {
       d:'停止追加高渗盐水并复查',
       s:'评估游离水与近期血钠升幅，监测神经症状' },
   ],
+  aorticDissection: [
+    { id:'compareArms', when: S => !S.diagnosticReports?.some(r => r.type === 'bilateral_bp') && S.aorticSurgeryStartedAt == null,
+      c:'突然达到高峰的胸背痛需警惕急性主动脉病变', d:'比较双臂血压，尽快明确主动脉病变',
+      s:'在循环床旁检查中测双臂血压，急诊开主动脉 CTA' },
+    { id:'aortaImaging', when: S => EMERGENCY_CASES.aorticSurgeryStatus(S) === 'unconfirmed' && (!S.tests.aorta_cta || S.tests.aorta_cta.done),
+      c:'急性胸痛需要排查主动脉病变', d:'尽快明确受累范围', s:'影像与超声中开主动脉 CTA' },
+    { id:'aortaPreparation', when: S => EMERGENCY_CASES.aorticSurgeryStatus(S) === 'preparation',
+      c:'CTA 支持升主动脉和弓部受累', d:'联系心外科团队，建立控温与灌注准备',
+      s:'在高级设备与介入中启动手术室体外循环与控温准备，观察体温和循环连续达标' },
+    { id:'aortaSurgery', when: S => EMERGENCY_CASES.aorticSurgeryStatus(S) === 'ready',
+      c:'已具备置换术准备条件', d:'及时开展心外科急诊手术', s:'启动升主动脉置换并持续监测灌注' },
+    { id:'aortaImpulse', when: aorticImpulseHigh,
+      c:'控制术前心率与主动脉压力', d:'维持灌注，按反应评估静脉 β 阻滞剂',
+      s:'复测心率和血压，必要时由团队追加滴定的控压药' },
+  ],
+  aorticDissectionB: [
+    { id:'checkLegPerfusion', when: S => S.aorticLegMalperfusion >= 0.25 && !S.diagnosticReports?.some(r => r.type === 'legs'),
+      c:'突发背痛伴一侧腿发凉', d:'比较双侧足部末梢灌注',
+      s:'从循环查体进入双下肢比较，并考虑主动脉 CTA' },
+    { id:'descendingImaging', when: S => EMERGENCY_CASES.tevarStatus(S) === 'unconfirmed' && (!S.tests.aorta_cta || S.tests.aorta_cta.done),
+      c:'急性背痛伴远端灌注异常', d:'确定夹层部位和分支受累',
+      s:'开主动脉 CTA，复查血压、心率和肢体灌注' },
+    { id:'tevarStabilization', when: S => EMERGENCY_CASES.tevarStatus(S) === 'stabilizing',
+      c:'CTA 支持降主动脉受累伴远端低灌注', d:'维持循环、降低主动脉压力并连续复评',
+      s:'有介入指征。按监测结果稳定循环后，请血管团队行 TEVAR' },
+    { id:'tevarReady', when: S => EMERGENCY_CASES.tevarStatus(S) === 'ready',
+      c:'复杂 B 型夹层，循环已达本例介入条件', d:'明确灌注不良是否需要紧急纠正',
+      s:'本例 CTA 与循环支持 TEVAR。介入后复查末梢灌注' },
+    { id:'tevarImpulse', when: aorticImpulseHigh,
+      c:'控制心率与主动脉压力', d:'维持有效灌注并复评药物反应',
+      s:'评估静脉 β 阻滞剂，监测血压、心率和双下肢灌注' },
+  ],
+  fallTrauma: [
+    { id:'fallBreathing', when: S => S.tensionPTX > 0.2,
+      c:'创伤后单侧呼吸音弱，关注呼吸和循环恶化', d:'若有张力性气胸表现，优先胸部减压',
+      s:'支持氧合，必要时先减压，再行胸腔闭式引流' },
+    { id:'fallSpine', when: S => S.fallTraumaSpineProtectedAt == null,
+      c:'多发伤并有颈背痛', d:'复苏和搬移过程保护脊柱', s:'记录脊柱运动限制，稳定后做创伤 CT' },
+    { id:'fallBleeding', when: S => S.bleedingSites?.fallTrauma > 0,
+      c:'创伤后出现腹痛及低灌注', d:'并行复苏及寻找腹腔出血来源',
+      s:'复查循环、血红蛋白和创伤超声，及时创伤外科止血，必要时输血' },
+    { id:'fallImaging', when: S => S.chestTubePlaced && !S.tests.trauma_ct,
+      c:'复苏后评估其余损伤', d:'确认转运安全再完成多部位影像', s:'评估当前灌注与血氧，检查创伤评估 CT（多部位）' },
+  ],
   warfarinBleed: [
     { id:'history', when: S => !S.tests.coag?.done, c:'出血伴抗凝用药史', d:'核实抗凝药种类，查凝血功能', s:'查用药记录和凝血报告，复评血压与血红蛋白' },
-    { id:'reversal', when: S => !S.given?.some(x => x.id === 'pcc4'), c:'华法林相关重大出血', d:'及时逆转抗凝并处理出血源', s:'评估四因子凝血酶原复合物及维生素 K₁，稳定后内镜止血' },
+    { id:'support', when: S => S.standardRescueCare && S.admissionMedicationHeldAt == null, c:'抗凝用药期间出现少量消化道出血', d:'暂停院前用药，评估 INR 并处理出血源', s:'复查 INR、评估维生素 K₁，时机合适时内镜止血' },
+    { id:'reversal', when: S => !S.standardRescueCare && !S.given?.some(x => x.id === 'pcc4'), c:'华法林相关重大出血', d:'及时逆转抗凝并处理出血源', s:'评估四因子凝血酶原复合物及维生素 K₁，稳定后内镜止血' },
   ],
   dabigatranBleed: [
     { id:'history', when: S => !S.tests.coag?.done, c:'出血伴抗凝用药史', d:'核实最后一次服药和肾功能', s:'查用药记录和凝血报告' },
-    { id:'reversal', when: S => !S.given?.some(x => x.id === 'idarucizumab'), c:'达比加群相关重大出血', d:'评估特异性逆转', s:'依达赛珠单抗逆转达比加群，同时评估内镜止血' },
+    { id:'support', when: S => S.standardRescueCare && S.admissionMedicationHeldAt == null, c:'抗凝用药期间出现少量消化道出血', d:'暂停院前用药并处理出血源', s:'复查凝血酶时间和肾功能，观察抗凝效应回落' },
+    { id:'reversal', when: S => (!S.standardRescueCare || S.map < 65) && !S.given?.some(x => x.id === 'idarucizumab'), c:'达比加群相关重大出血', d:'评估特异性逆转', s:'依达赛珠单抗逆转达比加群，同时评估内镜止血' },
   ],
   digoxinTox: [
     { id:'toxin', when: S => !S.tests.digoxin_level?.done, c:'缓慢心律伴用药线索', d:'确认暴露与严重程度', s:'复核心电图、血钾、肾功及地高辛浓度' },
-    { id:'fab', when: S => !S.given?.some(x => x.id === 'digoxinFab'), c:'严重地高辛毒性可累及心律', d:'结合病史评估特异性抗体', s:'评估地高辛免疫 Fab，治疗后随访心律及血钾' },
+    { id:'support', when: S => S.standardRescueCare && S.admissionMedicationHeldAt == null, c:'有地高辛用药与轻型毒性线索', d:'暂停院前地高辛并观察', s:'复查血药浓度、血钾、肾功能和心电图' },
+    { id:'fab', when: S => (!S.standardRescueCare || S.hr < 45 || S.k > 6) && !S.given?.some(x => x.id === 'digoxinFab'), c:'严重地高辛毒性可累及心律', d:'结合病史评估特异性抗体', s:'评估地高辛免疫 Fab，治疗后随访心律及血钾' },
   ],
   mtxDelayed: [
     { id:'level', when: S => !S.tests.methotrexate_level?.done, c:'近期有大剂量甲氨蝶呤治疗史', d:'对照给药时间、血药浓度和肌酐', s:'查看交接记录，复查甲氨蝶呤浓度和肾功' },
-    { id:'rescue', when: S => !S.given?.some(x => x.id === 'glucarpidase'), c:'甲氨蝶呤清除延迟', d:'结合暴露评估酶解救援与后续支持', s:'评估 Glucarpidase，并核对亚叶酸钙救援时序' },
+    { id:'support', when: S => S.standardRescueCare && !S.given?.some(x => x.id === 'leucovorin'), c:'血药浓度轻度延迟回落', d:'按浓度和肾功继续支持', s:'继续补液、评估碱化并给予亚叶酸钙，复查浓度和肾功' },
+    { id:'rescue', when: S => (!S.standardRescueCare || S.mtxLevel >= 5) && !S.given?.some(x => x.id === 'glucarpidase'), c:'甲氨蝶呤清除延迟', d:'结合暴露评估酶解救援与后续支持', s:'评估 Glucarpidase，并核对亚叶酸钙救援时序' },
   ],
   fibrinogenBleed: [
     { id:'coag', when: S => !S.tests.coag?.done, c:'持续失血伴凝血异常', d:'判断是否消耗了纤维蛋白原', s:'复查凝血报告和血红蛋白' },
@@ -469,13 +522,37 @@ function evaluate(S, kind, id, payload) {
 
   if (kind === 'drug') {
     switch (id) {
+      case 'heparin':
+      case 'alteplase':
+      case 'aspirin':
+      case 'clopidogrel':
+        if (s.aorticDissectionLoad > 0) return say(false, '胸痛伴主动脉病变线索，请先复核主动脉 CTA，警惕加重出血');
+        return say(true, '已执行');
+      case 'labetalol':
+        if (s.aorticDissectionLoad > 0) {
+          return s.map >= 65 && s.hr >= 65 ? say(true, '复查双臂血压和心率，保持器官灌注')
+            : say(false, '血压或心率偏低，评估灌注后再调整');
+        }
+        return say(true, '已执行');
       case 'pcc4':
+        if (s.standardRescueCare && hasTag(s, 'warfarinBleed') && s.map >= 65 && s.hb >= 90) {
+          return say(false, '出血程度目前较轻，可先暂停华法林、控制出血源并复查 INR');
+        }
         return s.warfarinLoad > 0.15 ? say(true, '复查 INR、失血与凝血因子恢复情况') : say(false, '缺少需紧急逆转的华法林作用，复核药史及凝血结果');
       case 'idarucizumab':
+        if (s.standardRescueCare && hasTag(s, 'dabigatranBleed') && s.map >= 65 && s.hb >= 90) {
+          return say(false, '出血程度目前较轻，先暂停用药、处理出血源并观察');
+        }
         return s.dabigatranLoad > 0.15 ? say(true, '已安排针对性逆转，继续处理出血源') : say(false, '缺少明显达比加群作用，请复核抗凝药种类');
       case 'digoxinFab':
+        if (s.standardRescueCare && hasTag(s, 'digoxinTox') && s.hr >= 45 && s.k <= 6 && s.map >= 65) {
+          return say(false, '心律与循环尚稳定，可先暂停地高辛并复查心电图和血药浓度');
+        }
         return s.digoxinLoad > 0.18 ? say(true, '监测地高辛毒性消退后的心律与血钾') : say(false, '缺少严重地高辛毒性证据，请复核心电图与用药史');
       case 'glucarpidase':
+        if (s.standardRescueCare && hasTag(s, 'mtxDelayed') && s.mtxLevel < 5) {
+          return say(false, '当前浓度对应常规支持路径，继续亚叶酸钙，复查血药浓度和肾功能');
+        }
         return s.mtxLevel > 1 ? say(true, '随访血浆甲氨蝶呤浓度及细胞保护情况') : say(false, '缺少甲氨蝶呤清除延迟证据，请复核暴露和浓度');
       case 'fibrinogenConcentrate':
       case 'cryoprecipitate':
@@ -507,6 +584,14 @@ function evaluate(S, kind, id, payload) {
         if (s.vol < 4.0) return say(false, '容量没补足就上升压药，会掩盖问题');
         return say(true, '血管活性药使用合理');
       case 'nicardipine':
+        if (s.aorticDissectionLoad > 0) {
+          const pressure = root.LIFE.bp(s);
+          if (pressure.map < 65 || pressure.sys <= EMERGENCY_CASES.AORTIC_PRESSURE_LIMIT) return say(false, '确认器官灌注，当前血压下先复评');
+          if (s.hr > EMERGENCY_CASES.AORTIC_HR_LIMIT && !s.given?.some(order => order.id === 'labetalol')) {
+            return say(false, '先评估降低心率和脉搏冲击的治疗，再调整静脉降压药');
+          }
+          return say(true, '继续监测心率、血压和末梢灌注');
+        }
         if (!hasTag(s, 'htn') || root.LIFE.bp(s).sys <= 160) return say(false, '请先确认持续高血压及急性靶器官受损，再考虑静脉降压');
         return say(true, '可用尼卡地平平稳降压，连续监测血压和心率');
       case 'levetiracetam':
@@ -519,6 +604,18 @@ function evaluate(S, kind, id, payload) {
   }
 
   if (kind === 'action') {
+    if (id === EMERGENCY_CASES.AORTIC_SURGERY) {
+      return EMERGENCY_CASES.aorticSurgeryStatus(s) === 'ready' ? say(true, 'CTA 及准备状态支持急诊置换')
+        : say(false, '请核实主动脉 CTA、团队控温和连续灌注状态');
+    }
+    if (id === EMERGENCY_CASES.TEVAR) {
+      return EMERGENCY_CASES.tevarStatus(s) === 'ready' ? say(true, 'CTA 和循环状态支持本例介入，之后复查远端灌注')
+        : say(false, '请核实复杂 B 型夹层的 CTA 证据并持续稳定循环');
+    }
+    if (id === EMERGENCY_CASES.TRAUMA_HEMOSTASIS) {
+      return s.bleedingSites?.fallTrauma > 0 ? say(true, '控制腹腔出血后复查灌注和血红蛋白')
+        : say(false, '需确认创伤性出血证据');
+    }
     if (id === 'defib') {
       if (s.rhythm === 'vf') return say(true, '室颤，除颤时机正确');
       if (s.rhythm === 'asystole') return say(false, '心静止无需除颤，请继续按压、静推肾上腺素并处理可逆病因');

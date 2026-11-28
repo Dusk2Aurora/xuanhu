@@ -13,7 +13,8 @@
 (function (root) {
 'use strict';
 const clamp = (x,a,b)=>Math.min(b,Math.max(a,x));
-const VERSION = 5;
+const VERSION = 6;
+const EMERGENCY_CASES = root.EMERGENCY_CASES || (typeof module !== 'undefined' && module.exports ? require('./emergency-cases.js') : null);
 const traitsApi = root.TRAITS || (typeof module !== 'undefined' && module.exports ? require('./traits.js') : null);
 const substances = root.SUBSTANCES || (typeof module !== 'undefined' && module.exports ? require('./substances.js') : null);
 
@@ -1080,6 +1081,7 @@ const MODULES = [
     }),
     hint:'穿刺点持续渗血时复查凝血和纤维蛋白原。浓缩物可较快补充，也可输注冷沉淀，仍需处理出血点。',
   },
+  ...EMERGENCY_CASES.modules,
 ];
 
 /* 主诉只记录促使患者来诊的症状。补充症状、暴露及诱因留给问诊。 */
@@ -1122,6 +1124,9 @@ const CHIEF_COMPLAINTS = {
   digoxinTox: ['恶心、头晕约 12 小时', 720],
   mtxDelayed: ['尿量减少、恶心约 12 小时', 720],
   fibrinogenBleed: ['黑便约 8 小时，伴呕血', 480],
+  aorticDissection: ['突发剧烈胸痛约 45 分钟', 45],
+  aorticDissectionB: ['突发背痛、右腿发凉约 1 小时', 60],
+  fallTrauma: ['坠落后胸腹痛、气促约 35 分钟', 35],
 };
 for (const m of MODULES) {
   m.complaint = m.history.map(([, , text]) => text).join('');
@@ -1164,6 +1169,7 @@ const incompatible = [
 ];
 
 function fitsEpisode(module, selected) {
+  if (selected.length && (module.standalone || selected.some(m => m.standalone))) return false;
   const site = module.bleedingSite || module.id;
   if (selected.some(m => (m.bleedingSite || m.id) === site)) return false;
   const ids = new Set(selected.map(m => m.id));
@@ -1171,11 +1177,23 @@ function fitsEpisode(module, selected) {
     (a === module.id && ids.has(b)) || (b === module.id && ids.has(a)));
 }
 
+/* 有活动性出血或颅内血肿时，肺栓塞更常需要评估导管介入。 */
+const peBleedingCompanions = new Set(['bleed', 'trauma', 'tbi', 'spleen', 'ectopic']);
+const standalone = m => m.standalone || EMERGENCY_CASES.rescueCase(m.id);
+
 /* 按权重抽病理：weight 越大越常见 */
-function weightedIndex(rnd, pool) {
-  const total = pool.reduce((s, m) => s + (m.weight || 1), 0);
+function weightedIndex(rnd, pool, genVersion, selected) {
+  const weight = m => {
+    const base = m.weight || 1;
+    if (genVersion < 6) return base;
+    if (EMERGENCY_CASES.rescueCase(m.id)) return 0.28;
+    const complicatedPe = m.id === 'pe' ? selected.some(p => peBleedingCompanions.has(p.id))
+      : peBleedingCompanions.has(m.id) && selected.some(p => p.id === 'pe');
+    return complicatedPe ? base * 0.25 : base;
+  };
+  const total = pool.reduce((s, m) => s + weight(m), 0);
   let r = rnd() * total, k = 0;
-  for (; k < pool.length; k++) { r -= (pool[k].weight || 1); if (r <= 0) break; }
+  for (; k < pool.length; k++) { r -= weight(pool[k]); if (r <= 0) break; }
   return Math.min(k, pool.length - 1);
 }
 
@@ -1183,18 +1201,20 @@ function pickWeighted(rnd, arr, n, genVersion) {
   const pool = arr.slice();
   const out = [];
   for (let i = 0; i < n && pool.length; i++) {
-    let index = weightedIndex(rnd, pool);
+    const candidates = genVersion >= 6 && out.length ? pool.filter(m => !standalone(m)) : pool;
+    let index = pool.indexOf(candidates[weightedIndex(rnd, candidates, genVersion, out)]);
     if (genVersion >= 2) {
       const demographics = demographicsFor(out);
       const eligibleModule = m => fitsDemographics(m, demographics)
         && (genVersion < 3 || fitsEpisode(m, out));
       if (!eligibleModule(pool[index])) {
-        const eligible = pool.filter(eligibleModule);
+        const eligible = candidates.filter(eligibleModule);
         if (!eligible.length) throw new RangeError('没有符合当前病例背景的病理模块');
-        index = pool.indexOf(eligible[weightedIndex(rnd, eligible)]);
+        index = pool.indexOf(eligible[weightedIndex(rnd, eligible, genVersion, out)]);
       }
     }
     out.push(pool.splice(index, 1)[0]);
+    if (genVersion >= 6 && standalone(out[0])) break;
   }
   return out;
 }
@@ -1346,7 +1366,10 @@ function generateCase(difficulty, seed, only, genVersion) {
   const eligible = MODULES.filter(m => (m.since ?? 1) <= genVersion);
   const primary = (only && only.length)
     ? only.map(id => eligible.find(m => m.id === id)).filter(Boolean).slice(0, nMods)
-    : pickWeighted(rnd, eligible, nMods, genVersion);
+    : pickWeighted(rnd, eligible.filter(m => intakeDifficulty >= (m.minDifficulty ?? 1)), nMods, genVersion);
+  if (genVersion >= 6 && !only && primary.length === 1 && EMERGENCY_CASES.rescueCase(primary[0].id) && rnd() < 0.78) {
+    primary[0] = EMERGENCY_CASES.standardCareVariant(primary[0]) || primary[0];
+  }
 
   if (!primary.length) throw new RangeError('缺少有效的病理模块');
   const demographics = demographicsFor(primary);
@@ -1413,6 +1436,7 @@ function generateCase(difficulty, seed, only, genVersion) {
   init.temp = +(init.temp + (rnd() - 0.5) * 0.4).toFixed(1);
   init.hr = Math.round(init.hr + (rnd() - 0.5) * 10);
   init.k = +(init.k + (rnd() - 0.5) * 0.2).toFixed(1);
+  for (const m of primary) m.personalize?.(init, rnd);
 
   /* 难度=5 时加基础病 */
   const additionalHistory = [];

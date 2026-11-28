@@ -132,7 +132,7 @@ function logText(l) {
 }
 
 /* ---------------- 从一局状态提取「实际发生过的事」 ---------------- */
-const ACTION_RE = /胸外按压|电除颤|除颤|透析|吸氧|内镜|气管插管|机械通气|补液|洗胃|导尿|止血|电复律|起搏|手术|心肺复苏|CPR|ECMO|CRRT|脑电监测|肺动脉导管取栓/;
+const ACTION_RE = /胸外按压|电除颤|除颤|透析|吸氧|内镜|气管插管|机械通气|补液|洗胃|导尿|止血|电复律|起搏|手术|心肺复苏|CPR|ECMO|CRRT|脑电监测|肺动脉导管取栓|开始升主动脉置换|升主动脉置换完成|开始 TEVAR|TEVAR 完成|脊柱运动限制|已暂缓相关院前用药/;
 function extractActions(log) {
   const out = [];
   for (const l of (Array.isArray(log) ? log : [])) {

@@ -6,7 +6,7 @@
 'use strict';
 const E = window.LIFE;
 const FINANCE = window.LIFE_FINANCE;
-function isEDIntake(patient) { return (patient?.intake?.difficulty ?? patient?.diff ?? patient?.cas?.diff) === 6; }
+function isEDIntake(patient) { return (patient?.intake?.difficulty ?? patient?.diff ?? patient?.cas?.diff) >= 6; }
 const $ = s => document.querySelector(s);
 const r1 = x => Math.round(x * 10) / 10;
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, ch =>
@@ -480,7 +480,13 @@ function isCurrentPatient(st) {
 function openSheet(title, sub, rows, patient) {
   stopObservation();
   const list = $('#sheetList');
-  $('#sheetTitle').innerHTML = `${escapeHtml(title)} <small>${escapeHtml(sub)}</small>`;
+  const header = $('#sheetTitle');
+  const sameMenu = $('#sheet').classList.contains('on') && header.dataset.title === title && header.dataset.subtitle === sub;
+  const position = sameMenu ? list.scrollTop : 0;
+  const focus = sameMenu && list.contains(document.activeElement) ? document.activeElement : null;
+  header.dataset.title = title;
+  header.dataset.subtitle = sub;
+  header.innerHTML = `${escapeHtml(title)} <small>${escapeHtml(sub)}</small>`;
   delete $('#sheetTitle').dataset.view;
   delete $('#sheetTitle').dataset.testGroup;
   delete $('#sheetTitle').dataset.eligible;
@@ -498,11 +504,13 @@ function openSheet(title, sub, rows, patient) {
       if (patient && !isCurrentPatient(patient)) return;
       const row = rows[+el.dataset.i];
       if (el.classList.contains('related-action')) row.related.run();
-      else row.run();
+      else row.run?.();
     });
   });
   $('#sheet').classList.add('on');
   $('#mask').classList.add('on');
+  if (focus?.dataset.i) list.querySelector(`button.${focus.className.split(' ')[0]}[data-i="${focus.dataset.i}"]`)?.focus({ preventScroll: true });
+  list.scrollTop = position;
 }
 let returnToLobby = false;
 function closeSheet() {
@@ -554,8 +562,8 @@ const PIN_DRUGS = {
 
 const DRUG_SECTIONS = {
   '补液、电解质与血糖': ['扩容', '高渗液', '电解质', '碱性药', '酸化药', '升糖', '降糖'],
-  '循环与心律': ['血管活性', '强心', '强心苷', '抗心律失常', '钙拮抗剂', 'β阻滞剂', 'ACEI', 'ARB', '硝酸酯'],
-  '呼吸与过敏': ['祛痰', '平喘', '支气管扩张', '呼吸兴奋', '抗组胺'],
+  '循环与心律': ['血管活性', '血管扩张', '强心', '强心苷', '抗心律失常', '钙拮抗剂', 'β阻滞剂', 'ACEI', 'ARB', '硝酸酯'],
+  '呼吸与过敏': ['祛痰', '镇咳', '平喘', '支气管扩张', '呼吸兴奋', '抗组胺'],
   '镇痛、镇静与麻醉': ['解热镇痛', 'NSAID', '阿片类', '阿片', '镇静', '肌松', '催眠药'],
   '止血与抗栓': ['止血药', '抗凝', '抗血小板', '溶栓'],
   '解毒与拮抗': ['阿片拮抗', '解毒', '解毒与拮抗'],
@@ -563,8 +571,8 @@ const DRUG_SECTIONS = {
   '利尿与脱水': ['袢利尿', '保钾利尿', '利尿', '利尿脱水'],
   '消化系统': ['止吐', '止泻', '抑酸'],
   '内分泌与激素': ['糖皮质激素', '甲状腺素', '抗甲状腺', '性激素', '激素拮抗'],
-  '神经与精神': ['抗癫痫', '抗精神病', '抗精神病2', '心境稳定剂', '抗抑郁药', '抗帕金森', '抗胆碱能'],
-  '其他精神活性物质': ['兴奋剂', '致幻剂'],
+  '神经与精神': ['抗癫痫', '抗精神病', '抗精神病2', '心境稳定剂', '抗抑郁药', '抗帕金森', '抗胆碱能', '胆碱酯酶抑制剂'],
+  '其他精神活性物质': ['兴奋剂', '致幻剂', '大麻类'],
 };
 const drugSectionFor = new Map(Object.entries(DRUG_SECTIONS).flatMap(([section, classes]) =>
   classes.map(cls => [cls, section])));
@@ -663,7 +671,7 @@ function openDrugSheet({ tab = 'all', query = '', expanded = new Set(), scrollTo
     rememberGroups();
     const focusRow = { id: button.dataset.id, section: button.closest('details')?.dataset.section };
     const state = { tab, expanded, query: input.value, scrollTop: list.scrollTop, focusRow };
-    openGiveConfig(SUB.byId(button.dataset.id), patient, () => openDrugSheet(state));
+    openGiveConfig(SUB.byId(button.dataset.id), patient, () => openDrugSheet(state), { returnAfterApply: true });
   };
   input.value = query;
   input.oninput = draw;
@@ -677,10 +685,10 @@ function openDrugSheet({ tab = 'all', query = '', expanded = new Set(), scrollTo
 }
 
 const EFF_NAME = { k:'血钾', na:'血钠', cl:'血氯', ca:'血钙', hco3:'HCO₃⁻', glu:'血糖', lac:'乳酸',
-                   vol:'血容量', freeWater:'自由水', hb:'血红蛋白', hr:'心率', svr:'血管张力', sv:'心肌收缩力',
-                   rr:'呼吸频率', spo2:'血氧', temp:'体温', gcs:'意识', uo:'尿量', infection:'感染负荷',
+                   vol:'血容量', freeWater:'自由水', hb:'血红蛋白', plt:'血小板', wbc:'白细胞', hr:'心率', svr:'血管张力', sv:'心肌收缩力',
+                   rr:'呼吸频率', spo2:'血氧', temp:'体温', gcs:'意识', uo:'尿量', infection:'感染负荷', infectionExposure:'模拟感染暴露', cr:'肌酐',
                    coag:'凝血能力', halfSaline:'低渗补液量', icp:'颅内压', estrogen:'雌激素',
-                   testosterone:'睾酮', pao2:'动脉氧分压', seizure:'抽搐',
+                   testosterone:'睾酮', pao2:'动脉氧分压', seizure:'抽搐', tca:'三环类心脏毒性', arrhythmiaRisk:'心律失常风险',
                    warfarinFactors:'凝血因子补充', dabigatranBinding:'达比加群中和', digoxinBinding:'地高辛中和',
                    fibrinogenReplacement:'纤维蛋白原补充', mtxCleavage:'血浆甲氨蝶呤清除', mtxCellProtection:'细胞保护' };
 function describeEff(eff) {
@@ -995,7 +1003,9 @@ function openGiveConfig(it, patient, back, { backLabel = '返回药物列表', r
           ${infusion ? `${rt.r} · 输注时长 ${infusion} 分钟<br>` : ''}
           ${pump ? `持续至手动停泵 · 模拟血药浓度半衰期约 ${pump} 分钟`
             : `起效 ${rt.on} min · ${infusion ? '药效' : ''}维持 ${rt.du} min`} · 效应 ${describeEff(it.eff) || '—'}
-          ${it.note ? '<br>' + it.note : ''}
+          ${it.adverse ? '<br>较大暴露时可能出现：' + describeEff(it.adverse.eff) : ''}
+          ${it.note ? '<br>' + escapeHtml(it.note) : ''}
+          ${it.clinicalNote ? '<br>临床提示（当前模拟未覆盖） · ' + escapeHtml(it.clinicalNote) : ''}
         </div>
         <button id="dGo" class="pill" ${sameRate ? 'disabled' : ''} style="width:100%;padding:14px;font-size:16px;font-weight:700;cursor:${sameRate ? 'default' : 'pointer'};background:${over ? '#f7e6e6' : '#fff'}">
           ${order}
@@ -1075,11 +1085,6 @@ function openEnvControls(patient, title, controls, allowReset = false) {
   }
   $('#sheetTitle').dataset.view = 'env';
   syncEnvSheet();
-  if ($('#sheet').classList.contains('on')) {
-    const panel = $('#sheetTitle').dataset;
-    if (panel.view === 'device') refreshDeviceOrder(S);
-    if (panel.view === 'thrombectomy' && panel.active !== String(PE_INTERVENTION.active(S))) openThrombectomy(S);
-  }
 }
 
 function openTemperatureSheet(patient) {
@@ -1189,18 +1194,75 @@ function openRespiratoryFlow(patient) {
 
 function openAdvancedCare(patient) {
   if (!isCurrentPatient(patient)) return;
-  const rows = Object.entries(E.ADVANCED_DEVICES).map(([id, device]) => ({
-    n: device.name, tag: E.advancedDevice(patient, id).active ? '本床运行中' : '可启用',
-    amt: '查看', run: () => openDeviceOrder(patient, id),
-  }));
+  const rows = [];
+  for (const [id, device] of Object.entries(E.ADVANCED_DEVICES)) {
+    const state = E.advancedDevice(patient, id);
+    if (id === 'aorticBypass' && !E.aorticBypassIndicated(patient) && state.startedAt == null) continue;
+    rows.push({ n: device.name, tag: state.active ? '本床运行中' : '可启用',
+      amt: '查看', run: () => openDeviceOrder(patient, id) });
+  }
+  for (const id of ['aortic_replacement', 'tevar']) {
+    const surgery = E.ACTIONS[id];
+    rows.push({ n: surgery.name, tag: id === 'tevar' ? '血管腔内介入' : '心外科',
+      amt: money(surgery.cost), run: () => openAorticOrder(patient, id) });
+  }
   rows.push({ n: PE_INTERVENTION.name, tag: PE_INTERVENTION.status(patient), amt: money(PE_INTERVENTION.cost),
     run: () => openThrombectomy(patient) });
   openSheet('高级设备与介入', `床位 ${activeIdx + 1} · ${patient.patient.name}`, rows, patient);
+  Object.assign($('#sheetTitle').dataset, { view: 'advanced-care', bypass: String(E.aorticBypassIndicated(patient)) });
+}
+
+function openAorticOrder(patient, id) {
+  const open = id === 'aortic_replacement';
+  const surgery = E.ACTIONS[id];
+  const status = open ? EMERGENCY_CASES.aorticSurgeryStatus(patient) : EMERGENCY_CASES.tevarStatus(patient);
+  const report = E.reports(patient, 'aorta_cta').at(-1);
+  const rows = [{ sec: escapeHtml(surgery.desc) }];
+  if (report) rows.push({ n: '复阅本床主动脉 CTA', tag: caseTime(report.reportedAt), amt: '报告',
+    run: () => openReportType(patient, 'aorta_cta') });
+  if (!report || status === 'irrelevant' || status === 'unconfirmed') {
+    rows.push({ sec: report ? '本床 CTA 尚未证实这项术式的适应证。' : '尚缺本床主动脉 CTA 报告。' });
+  } else if (status === 'running' || status === 'complete') {
+    const time = status === 'running' ? (open ? patient.aorticSurgeryStartedAt : patient.tevarStartedAt)
+      : (open ? patient.aorticSurgeryCompletedAt : patient.tevarCompletedAt);
+    rows.push({ sec: (status === 'running' ? '手术进行中 · 开始于 ' : '手术完成于 ') + caseTime(time) });
+  } else {
+    rows.push({ sec: escapeHtml(EMERGENCY_CASES.AORTIC_PERFUSION_GUIDE) });
+    if (open) rows.push({ n: '手术室控温与灌注', tag: '查看准备进度', amt: '查看', run: () => openDeviceOrder(patient, 'aorticBypass') });
+    rows.push({ sec: '<span id="aorticProgress"></span>' });
+    rows.push({ n: '申请' + surgery.name, tag: status === 'ready' ? '准备就绪' : '准备中',
+      amt: money(surgery.cost), run: () => performAction(id, surgery) });
+  }
+  rows.push({ n: '返回高级设备与介入', tag: '', amt: '返回', run: () => openAdvancedCare(patient) });
+  openSheet(surgery.name, patient.patient.name, rows, patient);
+  Object.assign($('#sheetTitle').dataset, { view: 'aortic-order', surgery: id, stage: status, report: report?.id || '' });
+  refreshAorticOrder(patient);
+}
+
+function refreshAorticOrder(patient) {
+  const { surgery, stage, report } = $('#sheetTitle').dataset;
+  const open = surgery === 'aortic_replacement';
+  const status = open ? EMERGENCY_CASES.aorticSurgeryStatus(patient) : EMERGENCY_CASES.tevarStatus(patient);
+  if (stage !== status || report !== (E.reports(patient, 'aorta_cta').at(-1)?.id || '')) {
+    openAorticOrder(patient, surgery); return;
+  }
+  const el = $('#aorticProgress');
+  if (!el) return;
+  const state = open ? E.advancedDevice(patient, 'aorticBypass') : EMERGENCY_CASES.tevarCirculation(patient);
+  const elapsed = caseTime(state.stableSeconds || 0);
+  const time = state.stableSecondsRequired;
+  const { sys, dia, map, hr, spo2 } = E.snapshot(patient);
+  const monitor = `血压 ${sys}/${dia}（MAP ${Math.round(map)}） · 心率 ${hr} · SpO₂ ${spo2 ?? '—'}%`;
+  const progress = open && !state.active ? '待心外科团队启动手术室控温与灌注'
+    : (open ? '体温与循环' : '循环与氧合') + '已连续达标 ' + elapsed + ' / ' + caseTime(time) + '（模拟时间）';
+  el.textContent = monitor + ' · ' + progress;
 }
 
 function openDeviceOrder(patient, id) {
   const device = E.ADVANCED_DEVICES[id];
-  const { active } = E.advancedDevice(patient, id);
+  const { active, phase } = E.advancedDevice(patient, id);
+  const thermal = id === 'ttm' || id === 'aorticBypass';
+  const intraoperative = id === 'aorticBypass' && patient.aorticSurgeryStartedAt != null && patient.aorticSurgeryCompletedAt == null;
   const firstHour = device.startCost + device.hourlyCost;
   const estimate = estimateSelfPay(patient, active ? device.hourlyCost : firstHour, device.coverage);
   const rows = [
@@ -1210,7 +1272,8 @@ function openDeviceOrder(patient, id) {
       (active ? '继续运行一小时 ' + money(device.hourlyCost) : '开机并运行一小时 ' + money(firstHour)) +
       (estimate == null ? '' : '，预计新增自付 ' + money(estimate)) },
     { sec: '<span id="deviceProgress"></span>' },
-    { n: active ? '确认停止本床设备' : '确认在本床启用', tag: device.name, amt: active ? '停机' : '开机', run: () => {
+    intraoperative ? { sec: '手术进行中，团队将在置换完成后自动启动复温。' }
+      : { n: active && thermal ? (phase === 'rewarming' ? '受控复温中' : '开始受控复温') : active ? '确认停止本床设备' : '确认在本床启用', tag: device.name, amt: active && thermal ? '复温' : active ? '停机' : '开机', run: () => {
       if (!hasCurrentWard()) return;
       const result = E.advancedDeviceAction(patient, id, !active);
       if (!result.ok) { toast(result.reason || '请复核当前设备状态', true); return; }
@@ -1221,9 +1284,13 @@ function openDeviceOrder(patient, id) {
     } },
     { n: '返回高级设备与介入', tag: '', amt: '返回', run: () => openAdvancedCare(patient) },
   ];
+  if (id === 'aorticBypass') rows.splice(-1, 0, { n: '查看主动脉置换准备', tag: '心外科', amt: '查看',
+    run: () => openAorticOrder(patient, 'aortic_replacement') });
   openSheet(device.name, `床位 ${activeIdx + 1} · ${patient.patient.name}`, rows, patient);
   $('#sheetTitle').dataset.view = 'device';
   $('#deviceProgress').dataset.device = id;
+  $('#deviceProgress').dataset.active = String(active);
+  $('#deviceProgress').dataset.phase = phase || '';
   refreshDeviceOrder(patient);
 }
 
@@ -1232,8 +1299,19 @@ function refreshDeviceOrder(patient) {
   if (!el || !patient) return;
   const id = el.dataset.device;
   const state = E.advancedDevice(patient, id);
+  if (el.dataset.active !== String(state.active) || el.dataset.phase !== (state.phase || '')) {
+    openDeviceOrder(patient, id); return;
+  }
   const status = state.active ? '运行中' : state.startedAt == null ? '尚未启用' : '已停机';
   const lines = [status, '累计运行 ' + caseTime(state.seconds), '本设备累计 ' + money(state.cost)];
+  if ((id === 'ttm' || id === 'aorticBypass') && state.phase) {
+    lines.push(({ cooling: '降温中', maintaining: '维持目标体温', rewarming: '受控复温', complete: '复温完成' })[state.phase] || '已停机');
+    if (state.active) lines.push(`核心温度 ${patient.temp.toFixed(1)} ℃，目标 ${state.target} ℃`);
+  }
+  if (id === 'aorticBypass' && state.active && state.phase !== 'rewarming') {
+    lines.push(`温度与灌注达标 ${caseTime(state.stableSeconds)} / ${caseTime(state.stableSecondsRequired)}`);
+    if (state.ready) lines.push('手术准备就绪');
+  }
   if (id === 'eeg' && state.startedAt != null) {
     const reading = E.eegReading(patient);
     lines.push(reading.text);
@@ -1250,7 +1328,7 @@ function openThrombectomy(patient) {
     { sec: '一次性费用 ' + money(procedure.cost) + (realismRules.insurance ?
       ' · 预计新增自付 ' + money(estimateSelfPay(patient, procedure.cost)) : '') },
   ];
-  if (!patient.peIntervention) rows.push({ n: '确认申请肺动脉导管取栓', tag: '本床介入会诊', amt: '申请', run: () => {
+  if (procedure.canRequest(patient)) rows.push({ n: patient.peIntervention ? '申请再次介入会诊' : '确认申请肺动脉导管取栓', tag: '本床介入会诊', amt: '申请', run: () => {
     if (!hasCurrentWard()) return;
     const result = procedure.start(patient);
     if (!result.ok) { toast(result.reason, true); return; }
@@ -1258,19 +1336,20 @@ function openThrombectomy(patient) {
     saveGame();
     openThrombectomy(patient);
   } });
-  else rows.push({ sec: procedure.status(patient) + ' · ' + (procedure.active(patient) ?
+  if (patient.peIntervention) rows.push({ sec: procedure.status(patient) + ' · ' + (procedure.active(patient) ?
     '预计完成于 ' + caseTime(patient.peIntervention.dueAt) : '完成于 ' + caseTime(patient.peIntervention.completedAt)) });
   rows.push({ n: '返回高级设备与介入', tag: '', amt: '返回', run: () => openAdvancedCare(patient) });
   openSheet(procedure.name, patient.patient.name, rows, patient);
   $('#sheetTitle').dataset.view = 'thrombectomy';
   $('#sheetTitle').dataset.active = String(procedure.active(patient));
+  $('#sheetTitle').dataset.canRequest = String(procedure.canRequest(patient));
 }
 
 function actionRows() {
   const patient = S;
   const ed = isEDIntake(patient);
   const canRequestObstetrics = ed ? patient.patient.sex === '女' : patient.tags.includes('preeclampsia');
-  const actions = Object.entries(E.ACTIONS).filter(([id]) => id !== 'delivery' || canRequestObstetrics).map(([id, a]) => {
+  const actions = Object.entries(E.ACTIONS).filter(([id]) => !['aortic_replacement', 'tevar'].includes(id) && (id !== 'delivery' || canRequestObstetrics)).map(([id, a]) => {
     if (ed && id === 'delivery') return {
       n: '产科会诊', tag: '', amt: '评估', run: () => {
         const weeks = E.knownResults(patient).gestationalWeeks?.value;
@@ -1294,28 +1373,33 @@ function actionRows() {
       id === 'oxygen' && S.vent ? '将呼吸机 FiO₂ 调至 100%' : a.name;
     return { n: name, tag: '', amt: a.cost ? '¥' + a.cost : '—', run: () => performAction(id, a) };
   });
-  return [{ n: '高级设备与介入', tag: 'ECMO · CRRT · 脑电 · 导管取栓', amt: '查看', run: () => openAdvancedCare(patient) },
+  return [{ n: '高级设备与介入', tag: '生命支持 · 亚低温 · 血管手术', amt: '查看', run: () => openAdvancedCare(patient) },
     { n: '体温处置', tag: '物理降温 · 被动保暖', amt: '查看', run: () => openTemperatureSheet(patient) }, ...actions];
 }
 
 function performAction(id, a) {
   const assessment = MENTOR.evaluate(S, 'action', id);
   const last = S.log.length;
+  const costBefore = S.cost;
   a.apply(S);
   const result = S.log.length > last ? S.log[S.log.length - 1] : null;
   if (!result) { toast('当前处置状态没有变化'); return; }
-  if (a.cost && result[2] === 'good') S.cost += a.cost;
+  if (a.cost && result[2] === 'good' && S.cost === costBefore) S.cost += a.cost;
   checkBudget();
   if (window.SOUND) SOUND.click();
   const feedback = result[2] === 'good' ? { ...assessment, msg: assessment.msg || result[1] } : {
     ok: (id === 'defib' && assessment.ok) || result[2] === 'info',
     msg: result[1],
   };
-  closeSheet();
+  if (isCurrentPatient(S)) {
+    if (id === 'aortic_replacement' || id === 'tevar') openAorticOrder(S, id);
+    else openSheet('操作', S.patient.name + ' · 急救与介入', actionRows(), S);
+  }
   judge('action', id, feedback, result);
   if (isEDIntake(S)) {
     const visibleResult = ['defib', 'cpr', 'oxygen', 'oxygen_off', 'intubate', 'extubate', 'pace', 'catheter'].includes(id);
-    const message = visibleResult || result[2] === 'good' ? result[1] : `${a.name} · 处置未执行，请复评`;
+    const documented = result[4] && E.getReport(S, result[4])?.kind === 'procedure';
+    const message = visibleResult || documented || result[2] === 'good' ? result[1] : `${a.name} · 处置回执请结合床旁情况复评`;
     result[5] = message; // 保留首诊当时实际展示的处置回执。
     toast(message, result[2] === 'bad');
   } else if (level === 'expert') toast(result[1], result[2] === 'warn' || result[2] === 'bad');
@@ -1420,6 +1504,18 @@ function openTestGroup(patient, id) {
 
 function dischargeMenuRows(patient) {
   if (!isCurrentPatient(patient)) return [];
+  if (patient.cas.exploration) return [
+    { n: '结束本床探索', tag: '查看练习记录', amt: '结束', run: () => {
+      openSheet('结束本床探索', patient.patient.name, [
+        { n: '结束并查看本次记录', tag: '释放探索床位', amt: '确认', run: () => {
+          if (!hasCurrentWard()) return;
+          patient.running = false;
+          settleBeds();
+        } },
+        { n: '继续探索', tag: '', amt: '返回', run: openBedsideMenu },
+      ], patient);
+    } },
+  ];
   if (realismRules.signedDischarge) {
     return [{ n: '办理出院', tag: '', amt: '签字', run: () => confirmSignedDischarge(patient) }];
   }
@@ -1506,10 +1602,10 @@ function testRows(patient, group) {
         toast(t.name + '已开单，预计 ' + caseTime(order.readyAt) + ' 出报告');
         return;
       }
-      E.orderTest(patient, id);
+      if (E.orderTest(patient, id) == null) { toast(t.unavailable || '当前无法开出这项检查', true); return; }
       checkBudget();
       saveGame();
-      closeSheet();
+      openTestGroup(patient, group);
       toast(`已开 ${t.name}，${t.min} 分钟后出结果`);
       renderAll();
     },
@@ -1618,7 +1714,7 @@ function judge(kind, id, assessment, entry) {
     const last = entry || S.log?.[S.log.length - 1];
     if (last) markEvent(last);
   } catch (e) {}
-  if (!MENTOR || level === 'expert') return;
+  if (S.cas.exploration || !MENTOR || level === 'expert') return;
   const r = assessment || MENTOR.evaluate(S, kind, id);
   if (!r || !r.msg) return;
   if (!r.ok) {
@@ -2083,6 +2179,14 @@ function renderHUD() {
   renderVitals();
   renderStates();
   syncEnvSheet();
+  if ($('#sheet').classList.contains('on')) {
+    const panel = $('#sheetTitle').dataset;
+    if (panel.view === 'device') refreshDeviceOrder(S);
+    if (panel.view === 'aortic-order') refreshAorticOrder(S);
+    if (panel.view === 'advanced-care' && panel.bypass !== String(E.aorticBypassIndicated(S))) openAdvancedCare(S);
+    if (panel.view === 'thrombectomy' && (panel.active !== String(PE_INTERVENTION.active(S)) ||
+        panel.canRequest !== String(PE_INTERVENTION.canRequest(S)))) openThrombectomy(S);
+  }
   if ($('#detail').classList.contains('on')) {
     if ($('#detail').dataset.view === 'operation-log') refreshOperationLog(S);
     if ($('#detail').dataset.view === 'infusions') refreshInfusions(S);
@@ -2456,7 +2560,7 @@ function settleBeds() {
   for (const b of finished) {
     const st = b.S;
     window.SOUND?.stopMonitorAlarm(st);
-    const recap = archiveCase(st, wardCount);
+    const recap = st.cas.exploration ? {} : archiveCase(st, wardCount);
     if (st === S) {
       review = { st, ...recap };
     } else {
@@ -2475,7 +2579,13 @@ function settleBeds() {
       showLobby();
     } else {
       lastCaseReview = !beds.length;
-      showCaseReview(review.st, review);
+      if (review.st.cas.exploration) {
+        const st = review.st;
+        openDetail('本床探索结束', st.patient.name,
+          [['模拟时间', caseTime(st.t)], ['结束情况', escapeHtml(st.death?.reason || '主动结束')],
+           ['花费', money(st.cost + (st.bedCost || 0))],
+           ['操作记录', buildTimeline(st).map(([time, message]) => escapeHtml(time + ' · ' + message)).join('<br>') || '无操作记录']], '');
+      } else showCaseReview(review.st, review);
     }
   } else {
     activeIdx = beds.findIndex(b => b.S === S);
@@ -2633,6 +2743,7 @@ function renderBedBar() {
 }
 
 function bedSeverity(patient) {
+  if (patient?.cas.exploration) return ' · 无病探索';
   if (!patient?.running) return '';
   if (isEDIntake(patient)) return edAttentionReason(patient) ? ' · 监护告警' : '';
   return isSevere(patient) ? ' · 重症' : '';
@@ -2659,11 +2770,13 @@ function openBeds() {
   rows.push({ sec: '操作' });
   rows.push({ n: '开一个新病例（占用空床）', tag: `${beds.length}/${MAX_BEDS}`, amt: '新建',
               run: () => { closeSheet(); startCase(window.CASEGEN.generate(diffFromLevel())); } });
+  rows.push({ n: '无病探索', tag: '从健康状态开始', amt: '新建', run: () => startCase('exploration') });
   openSheet('病房床位', `${beds.length} / ${MAX_BEDS} 张在用`, rows);
   $('#sheetTitle').dataset.view = 'beds';
 }
 
 function recordDiagnosis(st, dx, suffix = '', outcome) {
+  if (st.cas.exploration) return;
   const rec = window.HANDBOOK.fromCase(st, dx);
   if (!rec) return;
   rec.sessionId = wardRecordId(st) + suffix;
@@ -2676,6 +2789,7 @@ function recordDiagnosis(st, dx, suffix = '', outcome) {
 }
 
 function caseOutcomeLabel(st) {
+  if (st.cas.exploration) return st.running ? '探索中' : '探索结束';
   if (st.dischargeOutcome?.status === 'failed') return '出院判定失败';
   if (st.discharged) return '出院';
   return st.death ? '死亡' : '进行中';
@@ -2760,6 +2874,7 @@ function archiveCase(st, wardCount) {
     } : null,
     评分: breakdown.score,
     计分明细: breakdown,
+    病史复盘: INTAKE.debrief(st),
     检查报告: E.reports(st),
     入院记录: { chief: chart.chief, topics: chart.topics, known: chart.known, inquiries: chart.inquiries, vitals: st.admissionVitals },
     操作日志: buildTimeline(st),
@@ -2826,6 +2941,7 @@ function openCaseRecord(r) {
   if (r.死因) summary.push(['死因', r.死因]);
   if (r.终末血钾 != null) summary.push(['终末血钾', r.终末血钾 + ' mmol/L'], ['终末 pH', r.终末pH]);
   summary.push(...caseSettingsRows(r.设置));
+  for (const note of r.病史复盘 || []) summary.push(['病史复盘', note]);
   const signing = r.签字评估;
   if (signing) {
     const labels = { normal: '符合全部出院条件', penalized: '未完全达标，扣分出院', failed: '仍有重大问题，本例失败' };
@@ -2940,8 +3056,7 @@ function isAllNormal(S) {
 }
 
 function ensurePresentation(S) {
-  if (!S || !S.cas) return S;
-  if (!isAllNormal(S)) return S;
+  if (!S?.cas || S.cas.exploration || !isAllNormal(S)) return S;
   /* 最多推进 45 分钟，每步 1 分钟；不致死（若会死就回退到能撑住的那一刻） */
   let guard = 0;
   const start = JSON.parse(JSON.stringify({
@@ -3742,7 +3857,7 @@ const CASE_DIFFICULTIES = [
   ['危重', '双病理叠加 + 基础病'],
   ['极危', '三病理叠加 + 特殊体质'],
   ['噩梦', '三病理 + 双体质，交接线索有限'],
-  ['急诊首诊', '沿用 5 级病情，主动问诊、查体和检查取证'],
+  ['急诊首诊', '自主取证；患者可能漏述，误操作和手术失败会影响病程'],
 ];
 function caseDiffRows() {
   return CASE_DIFFICULTIES.map(([name, desc], i) => ({
@@ -3972,6 +4087,7 @@ function pickCase() {
   ];
   let idx = 0;
   for (const c of Object.values(E.CASES)) {
+    if (c.exploration) continue;
     idx += 1;
     /* 病名会剧透，这里只给年龄性别 */
     rows.push({ n: '教学病例 ' + idx, tag: c.age + '岁 ' + c.sex, amt: '',
@@ -4168,6 +4284,9 @@ function renderAll() {
 /* 更新公告：每次发版在这里加一条（新的放最前面） */
 const RELEASES = [
   { v: '1.57', notes: [
+    '大厅新增独立的无病探索床位。急诊首诊开放可执行的误操作、手术风险与病史复盘，可连续开检查和给药。',
+    '新增高处坠落伤、主动脉 CTA 和两条夹层路径：A 型弓部受累在手术室控温及灌注达标后置换，复杂 B 型稳定后行 TEVAR。另增床旁亚低温设备。',
+    '降低贵药相关病例频率，增加可走支持治疗路径的变体。',
     '术语表扩到 450+ 条：新增疾病 37、体征 82、查体与检查 36，药物覆盖全部 190 种',
     '术语表可按分类筛选、支持中文名与英文 id 搜索（如 meropenem）',
     '教程扩到 14 页：完整接诊流程、十个新手坑、一局高钾实例',
@@ -4322,7 +4441,7 @@ function bindLobby() {
   lobby.querySelector('.lobby-release summary').textContent = '更新记录 · v' + release.v;
   lobby.querySelector('.lobby-release ul').innerHTML = release.notes.map(n => `<li>${escapeHtml(n)}</li>`).join('');
   lobby.querySelector('[data-act="download"]').hidden = !IS_WEB && !releaseBase;
-  const actions = {
+    const actions = {
     handbook: openHandbook, records: openRecords, stats: openStats, chart: openChart, consult: openConsult,
     ach: openAchievements, about: openAbout, download: openGetLatest, sound: openSoundSettings,
     diff: () => openSheet('难度设置', '病例与指导', difficultyRows()),
@@ -4335,6 +4454,8 @@ function bindLobby() {
     if (!button || button.disabled || !hasCurrentSaveEpoch()) return;
     if (button.hasAttribute('data-new')) {
       startCase(CASEGEN.generate(diffFromLevel()));
+    } else if (button.hasAttribute('data-explore')) {
+      startCase('exploration');
     } else if (button.dataset.mode) {
       if (button.dataset.mode === 'night') toggleNight(); else openRealismSettings();
       if ($('#sheet').classList.contains('on')) {
@@ -4369,6 +4490,9 @@ function showLobby() {
     <button type="button" class="bed empty" data-new="${full ? 0 : 1}" ${full ? 'disabled' : ''}>
       <span class="no">${full ? '满' : '+'}</span>
       <span class="nm">${full ? '床位已满' : '接诊新患者'}<span class="meta">${beds.length} / ${MAX_BEDS} 张床在用</span></span>
+    </button>
+    <button type="button" class="bed empty" data-explore ${full ? 'disabled' : ''}>
+      <span class="no">＋</span><span class="nm">无病探索<span class="meta">从健康状态开始 · 自由处置 · 单独练习</span></span>
     </button>`;
   list.querySelectorAll('[data-bed]').forEach(row => {
     const patient = beds[+row.dataset.bed].S;

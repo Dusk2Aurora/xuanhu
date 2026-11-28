@@ -13,6 +13,7 @@ const SOURCES = [
 const TOPICS = [
   { id: 'present', label: '现病史' },
   { id: 'history', label: '既往史' },
+  { id: 'personal', label: '个人史' },
   { id: 'medications', label: '用药与暴露' },
   { id: 'allergies', label: '药物过敏' },
   { id: 'prehospital', label: '院前情况' },
@@ -21,7 +22,7 @@ const chiefSources = {
   opioid: 'ems', hypogly: 'family', organophosphate: 'witness',
   ptx: 'ems', trauma: 'ems', hhs: 'family', co: 'witness', tamponade: 'ems',
   heatstroke: 'witness', myxedema: 'ems', liverFailure: 'family', tca: 'ems',
-  tbi: 'witness', burn: 'ems', seizure: 'witness',
+  tbi: 'witness', burn: 'ems', seizure: 'witness', fallTrauma: 'ems',
 };
 const criticalChiefs = new Set(['opioid', 'hypogly', 'seizure']);
 const arrestRhythms = new Set(['vf', 'pea', 'asystole']);
@@ -215,7 +216,7 @@ function subject(S) {
   const ids = C.cases || [];
   const primary = moduleById(ids[0]);
   return {
-    ids, chief: primary?.chief ?? '已送至急诊，来诊经过待核实。', chiefMinutes: primary?.chiefMinutesBefore ?? null,
+    ids, chief: C.chief ?? primary?.chief ?? '已送至急诊，来诊经过待核实。', chiefMinutes: primary?.chiefMinutesBefore ?? null,
     history: C.admission?.history || [], background: C.admission?.background || [],
     medications: C.admission?.medicationHistory || [],
   };
@@ -308,6 +309,33 @@ function sourceOptions(fact) {
   return [fact.source];
 }
 
+function chooseSelfReportLimits(S, difficulty, facts, contacts) {
+  if (difficulty < 6 || S.cas?.exploration) return [];
+  const available = facts.filter(f => ['history', 'personal', 'medications'].includes(f.section) && sourceOptions(f).includes('patient'));
+  const sensitive = /吸烟|饮酒|酗酒|毒品|吞服|擅自|自行|停用|漏服|用过吗啡/;
+  const key = S.cas?.seed ?? S.seed ?? [S.caseId, S.patient?.name, S.patient?.age].join(':');
+  const conceal = hashText(key + ':conceal') % 100 < 12;
+  const recall = S.patient?.age >= 70 && hashText(key + ':recall') % 100 < 25;
+  const candidates = available.filter(f => conceal && sensitive.test(f.text));
+  const reason = candidates.length ? '隐瞒' : recall ? '回忆遗漏' : null;
+  const pool = candidates.length ? candidates : available;
+  if (!reason || !pool.length) return [];
+  const fact = pool[hashText(key + ':history-item') % pool.length];
+  const alternatives = sourceOptions(fact).filter(s => s !== 'patient' && contacts[s]);
+  if (!alternatives.length && contacts.family) alternatives.push('family');
+  return [{ factId: fact.id, section: fact.section, text: fact.text, reason, alternatives, asked: false }];
+}
+
+// 仅供结算复盘。就诊过程中只显示已问到的证据。
+function debrief(S) {
+  const intake = init(S);
+  return (intake.selfReportLimits || []).map(limit => {
+    const learned = intake.known.find(note => note.id === limit.factId);
+    const status = limit.asked ? '患者自述时' + limit.reason : '未向患者核实，此项设定为' + limit.reason;
+    return status + '：' + limit.text + (learned ? '（由' + learned.sourceLabel + '补录）' : '（本次未补录）');
+  });
+}
+
 function evidence(fact, source, obtainedAt) {
   const label = SOURCES.find(item => item.id === source).label;
   return {
@@ -328,7 +356,14 @@ function atAdmission(S) {
 function planFor(S, admissionCanSpeak = !patientUnavailable(atAdmission(S))) {
   const subjectData = subject(S);
   const traits = S.traits || S.cas?.traits || [];
-  return { ...subjectData, facts: historyFacts(subjectData, traits, admissionCanSpeak) };
+  const facts = historyFacts(subjectData, traits, admissionCanSpeak);
+  // 已归档的老病历继续沿用原分栏；新病历将生活习惯单列为个人史。
+  if (!S.intake || S.intake.personalHistory) {
+    for (const fact of facts) {
+      if (fact.section === 'history' && /吸烟|饮酒|酗酒/.test(fact.text)) fact.section = 'personal';
+    }
+  }
+  return { ...subjectData, facts };
 }
 
 function upgradeIntake(S, saved) {
@@ -401,7 +436,8 @@ function init(S, fixedDifficulty = 1) {
   const visibleFraction = [1, 0.75, 0.50, 0.30, 0.15, 0][difficulty - 1];
   const count = difficulty < 6 && ranked.length ? Math.max(1, Math.round(ranked.length * visibleFraction)) : 0;
   const known = ranked.slice(0, count).map(({ fact, source }) => evidence(fact, source, 0));
-  S.intake = { version: VERSION, difficulty, contacts, chief, known, admissionCanSpeak };
+  const selfReportLimits = chooseSelfReportLimits(S, difficulty, plan.facts, contacts);
+  S.intake = { version: VERSION, difficulty, contacts, chief, known, admissionCanSpeak, selfReportLimits, personalHistory: true };
   return S.intake;
 }
 
@@ -425,7 +461,14 @@ function ask(S, sourceId, topicId) {
   const source = availableSources(S, intake.contacts).find(item => item.id === sourceId);
   if (!source?.available) return { status: 'unavailable', evidence: [], message: source?.reason || '当前信息来源不可用。' };
   if (!TOPICS.some(topic => topic.id === topicId)) return { status: 'unavailable', evidence: [], message: '没有这项问诊主题。' };
-  const facts = planFor(S, intake.admissionCanSpeak).facts.filter(fact => fact.section === topicId && sourceOptions(fact).includes(sourceId));
+  const limits = intake.selfReportLimits || [];
+  const facts = planFor(S, intake.admissionCanSpeak).facts.filter(fact => {
+    if (fact.section !== topicId) return false;
+    const limit = limits.find(item => item.factId === fact.id);
+    if (!limit) return sourceOptions(fact).includes(sourceId);
+    if (sourceId === 'patient') limit.asked = true;
+    return limit.alternatives.includes(sourceId);
+  });
   const obtainedAt = Number.isFinite(S.t) ? S.t : 0;
   if (!facts.length) {
     intake.inquiries ??= [];
@@ -448,7 +491,7 @@ function ask(S, sourceId, topicId) {
   return { status: 'known', evidence: known, message: '这些信息已记入病历。' };
 }
 
-const API = { init, view, ask, formatTime };
+const API = { init, view, ask, debrief, formatTime };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 root.INTAKE = API;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

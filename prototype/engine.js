@@ -20,6 +20,7 @@ const DIAGNOSTICS = root.LIFE_EXAMS || (typeof module !== 'undefined' && module.
 const FINANCE = root.LIFE_FINANCE || (typeof module !== 'undefined' && module.exports ? require('./finance.js') : null);
 const ADVANCED = root.LIFE_ADVANCED_CARE || (typeof module !== 'undefined' && module.exports ? require('./advanced-care.js') : null);
 const PE_INTERVENTION = root.PE_INTERVENTION || (typeof module !== 'undefined' && module.exports ? require('./pe-intervention.js') : null);
+const EMERGENCY_CASES = root.EMERGENCY_CASES || (typeof module !== 'undefined' && module.exports ? require('./emergency-cases.js') : null);
 const { EXAMS, EXAM_GROUPS, TESTS, TEST_GROUPS } = DIAGNOSTICS;
 const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
 const lerp  = (a, b, k) => a + (b - a) * k;
@@ -138,6 +139,13 @@ function temperatureStatus(temp) {
 
 /* ---------------- 病例定义（旧版手工病例，保留兼容） ---------------- */
 const CASES = {
+  exploration: {
+    id: 'exploration', name: '无病探索', exploration: true, diff: 1, cases: [], traits: [], tags: [], comorbidities: [],
+    chief: '目前无不适。', complaint: '目前无不适，无已知急性疾病。',
+    description: '从健康基线开始，观察检查和处置后的变化。',
+    hint: '可观察健康基线及处置后的变化。', goals: [],
+    get init() { return { ...(root.CASEGEN || require('./generator.js')).BASE }; },
+  },
   hyperkalemia: {
     id: 'hyperkalemia',
     name: '高钾血症',
@@ -340,6 +348,90 @@ const DRUGS = {
 
 /* ---------------- 操作 ---------------- */
 const DELIVERY_DURATION = 10 * 60;
+const CPR_ROUND_SECONDS = 120;
+const ECPR_FLOW = 3;
+const PROCEDURE_REVIEW_SECONDS = 10 * 60;
+
+function caseDifficulty(S) {
+  return S.diff ?? S.cas?.diff ?? S.intake?.difficulty ?? 1;
+}
+
+function allowsRiskyActions(S) {
+  return S.cas?.exploration === true || caseDifficulty(S) >= 6;
+}
+
+function procedureRisk(S, baseRisk) {
+  if (caseDifficulty(S) < 6) return 0;
+  // ACS NSQIP motivates case- and procedure-specific risk. These coefficients model immediate
+  // technical/physiologic failure in the game, not a clinical risk of complications or death.
+  const circulatory = 0.22 * clamp((75 - S.map) / 45, 0, 1)
+    + (S.rhythm === 'sinus' ? 0 : 0.12);
+  const oxygenation = 0.13 * clamp((94 - S.spo2) / 25, 0, 1);
+  const metabolic = 0.13 * clamp((7.30 - S.ph) / 0.45, 0, 1);
+  const bleeding = 0.11 * clamp((0.85 - S.coag) / 0.65, 0, 1)
+    + 0.08 * clamp((100 - S.hb) / 65, 0, 1);
+  return clamp(baseRisk + circulatory + oxygenation + metabolic + bleeding, 0, 0.85);
+}
+
+function procedureRoll(S, id, attemptNumber) {
+  const patient = S.patient;
+  const key = JSON.stringify([S.seed ?? S.cas?.seed ?? S.caseId, id, patient.name, patient.age, patient.weight, attemptNumber]);
+  let hash = 2166136261;
+  for (let i = 0; i < key.length; i++) hash = Math.imul(hash ^ key.charCodeAt(i), 16777619);
+  hash = Math.imul(hash ^ (hash >>> 16), 0x85ebca6b);
+  return ((hash ^ (hash >>> 13)) >>> 0) / 2 ** 32;
+}
+
+function procedureRetryBlock(S, id, baseRisk) {
+  const last = S.procedures?.[id]?.at(-1);
+  if (last?.outcome !== 'failed') return null;
+  const elapsed = S.t - last.t;
+  if (elapsed >= PROCEDURE_REVIEW_SECONDS - 1e-7 || (elapsed > 1e-7 && procedureRisk(S, baseRisk) < last.risk - 0.01)) return null;
+  return { reportId: last.reportId, reason: '先纠正上次失败时的风险因素，或间隔 10 个模拟分钟后复评再试' };
+}
+
+function chargeProcedure(S, amount, essential) {
+  S.cost += amount;
+  if (essential) S.essentialProcedureCost = (S.essentialProcedureCost || 0) + amount;
+}
+
+function resolveProcedure(S, id, name, cost, baseRisk, { alreadyCharged = false, essential = false } = {}) {
+  if (!S.running || S.death || S.discharged || S.dischargeOutcome) {
+    S.log.push(['操作', '当前病例已结束', 'warn']);
+    return { ok: false, executed: false };
+  }
+  const risk = procedureRisk(S, baseRisk);
+  if (risk === 0) {
+    if (essential && !alreadyCharged) chargeProcedure(S, cost, essential);
+    return { ok: true };
+  }
+  const blocked = alreadyCharged ? null : procedureRetryBlock(S, id, baseRisk);
+  if (blocked) {
+    S.log.push([fmt(S.t), `${name}暂缓重试，${blocked.reason}`, 'warn', S.t, blocked.reportId ?? null, true]);
+    return { ok: false, executed: false, reportId: blocked.reportId };
+  }
+  // Each eligible attempt gets a fixed draw derived from its persisted sequence number.
+  // Unfinished operations bill a simplified exploration/materials fee using game prices.
+  const attempts = (S.procedures ??= {})[id] ??= [];
+  const attemptNumber = attempts.length + 1;
+  const roll = procedureRoll(S, id, attemptNumber);
+  const success = roll >= risk;
+  const charge = success || alreadyCharged ? cost : Math.round(cost * 0.45);
+  const attempt = { t: S.t, attemptNumber, risk, roll, cost: charge, outcome: success ? 'completed' : 'failed' };
+  attempts.push(attempt);
+  if (!alreadyCharged) chargeProcedure(S, charge, essential);
+  if (success) return { ok: true };
+
+  const report = appendReport(S, { type: id, kind: 'procedure', name,
+    sampledAt: S.t, reportedAt: S.t, rows: [
+      { label: '术中结局', value: '本次操作失败，原治疗目标未达成', flag: '异常' },
+      { label: '后续处置', value: '继续复苏并复评循环、氧合、酸碱和凝血状态' },
+      { label: '本次计费', value: `¥${charge}${alreadyCharged ? '（介入已执行）' : '（探查与已用耗材）'}` },
+    ] });
+  attempt.reportId = report.id;
+  S.log.push([fmt(S.t), `${name} → 术中失败，需继续复苏并复评`, 'bad', S.t, report.id, true]);
+  return { ok: false, executed: true, reportId: report.id };
+}
 
 function setBleedingRate(S, site, rate) {
   S.bleedingSites[site] = rate;
@@ -358,6 +450,7 @@ function restoreBleeding(S, saved) {
 }
 
 const ACTIONS = {
+  ...EMERGENCY_CASES?.actions({ setBleedingRate, resolveProcedure }),
   delivery: {
     name: '启动分娩流程', cost: 1600,
     desc: '启动重度子痫前期的产科处置。模拟流程耗时 10 分钟，胎盘娩出后母体血管痉挛才开始缓解。',
@@ -393,12 +486,13 @@ const ACTIONS = {
     desc: '急性 ST 段抬高心梗的确定性治疗：开通罪犯血管、挽救濒死心肌。时间就是心肌。',
     apply: (S) => {
       if ((S.stemi || 0) > 0.1) {
+        if (!resolveProcedure(S, 'pci', ACTIONS.pci.name, ACTIONS.pci.cost, 0.07).ok) return;
         S.stemi = Math.max(0, (S.stemi || 0) * 0.15);
         S.reperfused = true;
         S.reperfusionAt = S.t;
         S.log.push(['操作', '急诊 PCI → 罪犯血管开通，ST 段回落', 'good']);
       } else {
-        S.log.push(['操作', '急诊 PCI → 无急性缺血证据', 'warn']);
+        S.log.push(['操作', '急诊 PCI 未启动：无急性冠脉闭塞证据', 'warn']);
         S.score -= 4;
       }
     },
@@ -409,13 +503,14 @@ const ACTIONS = {
     desc: '硬膜外/硬膜下血肿的确定性处理：清除血肿、解除脑压迫。内科降颅压只是争取时间。',
     apply: (S) => {
       if ((S.hematoma || 0) > 0.08) {
+        if (!resolveProcedure(S, 'craniotomy', ACTIONS.craniotomy.name, ACTIONS.craniotomy.cost, 0.09).ok) return;
         S.hematoma = Math.max(0, (S.hematoma || 0) - 0.9);
         S.cranied = true;
         S.craniotomyAt = S.t;
         S.icp = Math.max(0, (S.icp || 0) - 0.5);
         S.log.push(['操作', '开颅血肿清除 → 脑压迫解除', 'good']);
       } else {
-        S.log.push(['操作', '开颅 → 未见需清除的血肿', 'warn']);
+        S.log.push(['操作', '开颅手术未启动：未见需清除的血肿', 'warn']);
         S.score -= 5;
       }
     },
@@ -457,10 +552,12 @@ const ACTIONS = {
     desc: '穿刺只能救急；留置引流管持续引流，才能防止凝血性积血再次压塞。',
     apply: (S) => {
       if ((S.tamponade || 0) > 0.05 || S.pericDrain) {
+        if (S.pericDrain) { S.log.push(['操作', '心包引流管已在位', 'info']); return; }
+        if (!resolveProcedure(S, 'pericardialDrain', ACTIONS.pericardialDrain.name, ACTIONS.pericardialDrain.cost, 0.04).ok) return;
         S.pericDrain = 1;
         S.log.push(['操作', '心包引流管留置 → 持续引流，防止再填塞', 'good']);
       } else {
-        S.log.push(['操作', '心包引流管 → 无填塞证据', 'warn']);
+        S.log.push(['操作', '未留置心包引流管：无填塞证据', 'warn']);
         S.score -= 3;
       }
     },
@@ -471,10 +568,11 @@ const ACTIONS = {
     desc: '心包填塞的救命操作：抽出积血后心室才能舒张。超声引导下剑突下穿刺。',
     apply: (S) => {
       if ((S.tamponade || 0) > 0.05) {
-        S.tamponade = Math.max(0.20, (S.tamponade || 0) - 0.60);   /* 一针救命，但不根治 */
+        if (!resolveProcedure(S, 'pericardio', ACTIONS.pericardio.name, ACTIONS.pericardio.cost, 0.04).ok) return;
+        S.tamponade = Math.min(S.tamponade, Math.max(0.20, S.tamponade - 0.60));
         S.log.push(['操作', '心包穿刺 → 抽出不凝血，心包内压下降', 'good']);
       } else {
-        S.log.push(['操作', '心包穿刺 → 未见心包积液', 'warn']);
+        S.log.push(['操作', '未启动心包穿刺：未见心包积液', 'warn']);
         S.score -= 3;
       }
     },
@@ -485,7 +583,7 @@ const ACTIONS = {
     desc: '意识≤8 分或呼吸衰竭时接管气道：固定呼吸频率、消除呼吸肌疲劳、给氧更可靠。',
     apply: (S) => {
       if (S.vent) { S.log.push(['操作', '已在机械通气中', 'warn']); return; }
-      if (S.gcs <= 8 || S.rr < 8 || S.spo2 < 88 || (S.airwayResistance || 0) > 0.55) {   // 气道水肿临近阻塞也是插管指征
+      if (allowsRiskyActions(S) || S.gcs <= 8 || S.rr < 8 || S.spo2 < 88 || (S.airwayResistance || 0) > 0.55) {
         S.vent = 1;
         S.oxygenFlow = 0;
         S.rr = VENT_RATE;
@@ -507,13 +605,14 @@ const ACTIONS = {
       if (!S.vent) { S.log.push(['操作', '当前未使用机械通气', 'info']); return; }
       const rr = S.spontaneousRr;
       const assessmentAge = S.t - S.respiratoryAssessmentAt;
-      if (S.gcs < 13 || S.rhythm !== 'sinus' || S.map < 65 || !(assessmentAge >= 0 && assessmentAge <= 10) ||
+      if (!allowsRiskyActions(S) && (S.gcs < 13 || S.rhythm !== 'sinus' || S.map < 65 || !(assessmentAge >= 0 && assessmentAge <= 10) ||
           !(rr >= 10 && rr <= 25) || (S.airwayResistance || 0) > 0.25 || !(S.spontaneousCO2 <= 55) ||
-          roomAirSaturation(S, S.spontaneousCO2) < 92) {
+          roomAirSaturation(S, S.spontaneousCO2) < 92)) {
         S.log.push(['操作', '撤机评估：气道、自主通气、氧合或循环尚未恢复，继续支持', 'warn']);
         return;
       }
       S.vent = 0;
+      S.rr = S.rhythm === 'sinus' ? S.spontaneousRr ?? S.rr : 0;
       S.oxygenFlow = oxygenFlowForFraction(S, S.fio2);
       updateOxygenSupply(S);
       S.hadOxygenSupport = true;
@@ -527,7 +626,7 @@ const ACTIONS = {
     desc: '症状性心动过缓（心率 < 45 或伴低血压）时的确定性处理；阿托品只是过渡。',
     apply: (S) => {
       if (S.paced) { S.log.push(['操作', '起搏器工作中', 'warn']); return; }
-      if (S.rhythm === 'sinus' && (S.hr < 48 || (S.hr < 60 && S.map < 65))) {
+      if (S.rhythm === 'sinus' && (allowsRiskyActions(S) || S.hr < 48 || (S.hr < 60 && S.map < 65))) {
         S.paced = 1;
         S.log.push(['操作', '临时起搏器置入 → 心率托底 62 次/分', 'good']);
       } else {
@@ -555,11 +654,12 @@ const ACTIONS = {
     desc: '张力性气胸的确定性处理；减压后仍需引流，否则会复发。',
     apply: (S) => {
       if ((S.tensionPTX || 0) > 0) {
+        if (!resolveProcedure(S, 'chestTube', ACTIONS.chestTube.name, ACTIONS.chestTube.cost, 0.04).ok) return;
         S.tensionPTX = 0;
         S.chestTubePlaced = true;
         S.log.push(['操作', '胸腔闭式引流完成 → 气胸解除', 'good']);
       } else {
-        S.log.push(['操作', '胸腔闭式引流 → 无气胸证据', 'warn']);
+        S.log.push(['操作', '胸腔闭式引流未启动：无气胸证据', 'warn']);
         S.score -= 2;
       }
     },
@@ -587,11 +687,12 @@ const ACTIONS = {
     apply: (S) => {
       const sites = ['trauma', 'ectopic', 'spleen'].filter(site => S.bleedingSites[site] > 0);
       if (sites.length) {
+        if (!resolveProcedure(S, 'surgery', ACTIONS.surgery.name, ACTIONS.surgery.cost, 0.08).ok) return;
         for (const site of sites) setBleedingRate(S, site, 0);
         S.surgicalHemostasisAt = S.t;
         S.log.push(['操作', '急诊手术 → 出血点已控制', 'good']);
       } else {
-        S.log.push(['操作', '急诊手术 → 无活动性出血，探查阴性', 'warn']);
+        S.log.push(['操作', '未发现需要手术的活动性出血，急诊手术未启动', 'warn']);
         S.score -= 4;
       }
     },
@@ -601,6 +702,15 @@ const ACTIONS = {
     name: '电除颤', cost: 0,
     desc: '室颤 / 无脉性室速适用，双相 150–200 J。对心静止无效。',
     apply: (S) => {
+      if (!S.running) { S.log.push(['操作', '当前病例已结束', 'warn']); return; }
+      const manualOverride = allowsRiskyActions(S);
+      if (S.rhythm === 'vf' || manualOverride) {
+        if (S.t - (S.lastDefibrillationAt ?? -Infinity) < 10) {
+          S.log.push(['操作', '除颤仪正在重新充电', 'warn']);
+          return;
+        }
+        S.lastDefibrillationAt = S.t;
+      }
       if (S.rhythm === 'vf') {
         const early = Math.max(0, 1 - ((S._vfMin || 0) / 3.5));
         const pressorActivity = Math.max(S.eff.norepi || 0, pumpEffect(S, 'norepi'));
@@ -610,9 +720,20 @@ const ACTIONS = {
           restoreSinusRhythm(S, S.preArrestSv || 55);
           S.log.push(['操作', '电除颤 200 J → 恢复窦性心律', 'good']);
         } else {
-          S._vfMin = (S._vfMin || 0) + 0.6;
           S.log.push(['操作', '电除颤 200 J → 未成功，继续按压', 'warn']);
         }
+      } else if (manualOverride) {
+        S.score -= 5;
+        if (S.rhythm === 'asystole') {
+          S.log.push(['操作', '已释放非适应证电击 → 心静止持续', 'bad']);
+          return;
+        }
+        S.inappropriateShockUntil = S.t + 120;
+        S.sv = Math.max(8, S.sv * 0.82);
+        S._vfRisk = (S._vfRisk || 0) + 0.42;
+        if (S._vfRisk > 1.15) triggerVf(S);
+        else updateCirculation(S);
+        S.log.push(['操作', S.rhythm === 'vf' ? '已误用非同步电击 → 诱发室颤' : '已误用非同步电击 → 心肌收缩暂时减弱', 'bad']);
       } else if (S.rhythm === 'asystole') {
         S.log.push(['操作', '电除颤 → 无效（心静止不能除颤）', 'bad']);
         S.score -= 5;
@@ -626,14 +747,25 @@ const ACTIONS = {
     name: '胸外按压', cost: 0,
     desc: '提供一轮两分钟的按压灌注支持。保持气道通畅并评估通气。',
     apply: (S) => {
-      if (S.rhythm === 'sinus') {
-        S.log.push(['操作', '当前有自主循环，无胸外按压指征', 'warn']);
+      if (!S.running) { S.log.push(['操作', '当前病例已结束', 'warn']); return; }
+      const unnecessary = S.rhythm === 'sinus' || circuitFlowVA(S) >= ECPR_FLOW;
+      if (unnecessary && !allowsRiskyActions(S)) {
+        S.log.push(['操作', S.rhythm === 'sinus' ? '当前有自主循环，无胸外按压指征' : 'VA-ECMO 已建立足够流量，停止胸外按压', 'warn']);
+        return;
+      }
+      if (S.cprUntil > S.t) {
+        S.log.push(['操作', '当前胸外按压轮次仍在进行', 'info']);
         return;
       }
       S.cppProgress = (S.cppProgress || 0) + 1;
       S.mapBoost = 25;
-      applyArrestPhysiology(S);
-      S.log.push(['操作', '开始胸外按压', 'good']);
+      S.cprUntil = S.t + CPR_ROUND_SECONDS;
+      S.cprUnnecessary = unnecessary;
+      if (S.rhythm !== 'sinus') applyArrestPhysiology(S);
+      if (unnecessary) {
+        S.score -= 5;
+        S.log.push(['操作', '已开始无指征按压，有胸壁损伤风险', 'bad']);
+      } else S.log.push(['操作', '开始胸外按压', 'good']);
     },
   },
   dialysis: {
@@ -694,7 +826,8 @@ const ACTIONS = {
     desc: '明确出血点并止血。需血流动力学相对稳定。',
     apply: (S) => {
       if (!(S.bleedingSites.bleed > 0)) { S.log.push(['操作', '内镜暂缓：无活动性消化道出血', 'warn']); return; }
-      if (S.map < 65) { S.log.push(['操作', '内镜 → 血压过低，风险过高，暂缓', 'bad']); S.score -= 4; return; }
+      if (!allowsRiskyActions(S) && S.map < 65) { S.log.push(['操作', '内镜 → 血压过低，风险过高，暂缓', 'bad']); S.score -= 4; return; }
+      if (!resolveProcedure(S, 'endoscopy', ACTIONS.endoscopy.name, ACTIONS.endoscopy.cost, 0.05).ok) return;
       setBleedingRate(S, 'bleed', 0);
       const report = appendReport(S, { type: 'endoscopy', kind: 'procedure', name: '上消化道内镜',
         sampledAt: S.t, reportedAt: S.t, rows: [
@@ -909,6 +1042,11 @@ function applyDelta(S, key, d) {
       S.diuresis = clamp((S.diuresis || 0) + d, 0, 9);
       break;
     case 'infection': S.infection = clamp((S.infection || 0) + d, 0, 1); break;
+    case 'infectionExposure': S.infectionExposure = clamp((S.infectionExposure || 0) + d, 0, 1); break;
+    case 'tca': S.tca = clamp((S.tca || 0) + d, 0, 1); break;
+    case 'arrhythmiaRisk': S._vfRisk = Math.max(0, (S._vfRisk || 0) + d); break;
+    case 'wbc': S.wbc = clamp((S.wbc ?? 7) + d, 0.2, 120); break;
+    case 'plt': S.plt = clamp((S.plt ?? 240) + d, 1, 1500); break;
     case 'seizure': S.seizure = clamp((S.seizure || 0) + d, 0, 1); break;
     case 'estrogen': S.estrogenExo = clamp((S.estrogenExo || 0) + d, -1, 1.5); break;
     case 'testosterone': S.testosteroneExo = clamp((S.testosteroneExo || 0) + d, -1, 1.5); break;
@@ -1048,8 +1186,8 @@ function updateOxygenation(S, initialVenousSaturation = null) {
     : oxygenContent(inverseHill(clamp(initialVenousSaturation, 0.15, 0.85)), capacity);
   S.svo2 = hill(oxygenPressure(venousContent, capacity, MAX_VENOUS_PO2));
   S.pao2 = arterialOxygenPressure(S.shunt, capillaryPressure, capillaryContent, venousContent, capacity);
-  if (ADVANCED.hasEcmo(S)) {
-    const fraction = ecmoGasExchangeFraction(S);
+  const fraction = ADVANCED.hasEcmo(S) ? ecmoGasExchangeFraction(S) : 0;
+  if (fraction > 0) {
     const oxygenatorPressure = 160;
     const arterial = oxygenContent(S.pao2, capacity);
     const circuit = oxygenContent(oxygenatorPressure, capacity);
@@ -1139,6 +1277,7 @@ function restoreDischargeObservation(S, saved) {
 function setEnv(S, key, on) {
   S.env = S.env || {};
   if (key === 'reset') { S.env = makeEnv(); return S.env; }
+  if (on && (key === 'warming' || key === 'cooling') && ADVANCED.temperatureDevice(S)) return S.env;
   if (on && (key === 'heat' || key === 'cold')) { S.env.heat = 0; S.env.cold = 0; }
   if (on && key === 'cooling') {
     if (!(S.temp > COOLING_TARGET)) return S.env;
@@ -1367,11 +1506,51 @@ function trackCirculationObservation(S) {
   } else S.circulationStableSince ??= S.t;
 }
 
+function aorticBypassIndicated(S) {
+  return EMERGENCY_CASES?.aorticBypassIndicated?.(S) === true;
+}
+
+function aorticPerfusionStable(S) {
+  const pressure = bp(S);
+  return circulationStable(S, pressure) && pressure.sys <= 160 && S.hr >= 50 && S.hr <= 110 && S.spo2 >= 92;
+}
+
+function aorticBypassReady(S) {
+  return aorticBypassIndicated(S) &&
+    ADVANCED.aorticStableSeconds(S, aorticPerfusionStable(S)) >= ADVANCED.AORTIC_PREP_STABILITY - 1e-7;
+}
+
+function advancedDevice(S, id) {
+  const status = ADVANCED.status(S, id);
+  if (id !== 'aorticBypass') return status;
+  return { ...status,
+    stableSeconds: ADVANCED.aorticStableSeconds(S, aorticPerfusionStable(S)),
+    stableSecondsRequired: ADVANCED.AORTIC_PREP_STABILITY,
+    ready: aorticBypassReady(S),
+  };
+}
+
 function advancedDeviceAction(S, id, enable) {
+  if (id === 'ttm' && enable && !ADVANCED.active(S, 'ttm')) {
+    if (!Number.isFinite(S.temp)) return { ok: false, reason: '需先取得核心体温读数' };
+    const indicated = S.rhythm === 'sinus' && (S.roscAt != null || S.arrests > 0) && S.gcs <= 8;
+    if (!indicated && !allowsRiskyActions(S)) return { ok: false, reason: '适用于心脏骤停复苏后仍昏迷的患者' };
+  }
+  if (id === 'aorticBypass') {
+    if (enable && !ADVANCED.active(S, id)) {
+      if (!Number.isFinite(S.temp)) return { ok: false, reason: '需先取得核心体温读数' };
+      if (!aorticBypassIndicated(S)) return { ok: false, reason: '需先由主动脉 CTA 证实 A 型夹层累及主动脉弓' };
+    } else if (enable === false && S.aorticSurgeryStartedAt != null && S.aorticSurgeryCompletedAt == null) {
+      return { ok: false, reason: '主动脉弓修复正在进行，完成后由手术团队开始受控复温' };
+    }
+  }
   const result = ADVANCED.action(S, id, enable, fmt);
   if (!result.ok) return result;
   if (id === 'vaEcmo' || id === 'vvEcmo') {
-    if (id === 'vaEcmo') markCirculatorySupport(S);
+    if (id === 'vaEcmo') {
+      markCirculatorySupport(S);
+      if (enable && circuitFlowVA(S) >= ECPR_FLOW) stopCompressions(S);
+    }
     S.hadOxygenSupport = true;
     S.roomAirStableSince = null;
     updateCirculation(S);
@@ -1426,6 +1605,26 @@ function insulinActivity(S) {
     }
   }
   return Math.min(3.5, activity);
+}
+
+function recordAdverseExposure(exposures, substance, activity) {
+  if (!substance?.adverse || !(activity > 0)) return;
+  exposures.set(substance, (exposures.get(substance) || 0) + activity);
+}
+
+function applyAdverseEffects(S, exposures, changes, minutes) {
+  const absorbed = 1 - Math.exp(-minutes / 8);
+  for (const [substance, activity] of exposures) {
+    const { threshold, eff } = substance.adverse;
+    const excess = Math.max(0, activity - threshold);
+    if (!excess) continue;
+    const response = pumpEffectScale(excess);
+    for (const [key, amount] of Object.entries(eff)) {
+      const effect = amount * response;
+      if (MOD_KEYS.includes(key)) changes[key] += effect;
+      else applyDelta(S, key, effect * absorbed);
+    }
+  }
 }
 
 function ketoneProduction(S, insulinEffect) {
@@ -1634,10 +1833,12 @@ function finishDelivery(S) {
 
 function tick(S, dtSec) {
   if (!S.running) return S;
+  const temperatureDevice = ADVANCED.temperatureDevice(S);
+  if (temperatureDevice === 'aorticBypass' && S.aorticSurgeryCompletedAt != null &&
+      S.advancedCare.aorticBypass.phase !== 'rewarming') ADVANCED.action(S, 'aorticBypass', false, fmt);
   if (S.circulationStableSince != null && !circulationStable(S, bp(S))) S.circulationStableSince = null;
   const dtMin = Math.max(1e-5, dtSec / 60);
-  /* 一次按压操作代表一轮 CPR，灌注支持在两分钟内消退。 */
-  S.mapBoost = Math.max(0, (S.mapBoost || 0) - 12.5 * dtMin);
+  advanceCompressions(S, dtSec);
   const inArrest = S.rhythm !== 'sinus';
   const inAsystole = S.rhythm === 'asystole';
   if (inArrest) applyArrestPhysiology(S);
@@ -1650,6 +1851,8 @@ function tick(S, dtSec) {
 
   const env = S.env || {};
   const tox = S.tox || {};
+  const coolingDepth = temperatureDevice ? clamp(36.5 - S.temp, 0, 4.5) : 0;
+  const metabolicRate = 1 - 0.055 * coolingDepth;
 
   /* ---------- 0. 体质 / 中毒（沿用旧钩子，只作为驱动） ---------- */
   /* 病例原有的苯二氮卓负荷沿用 60 min 衰减时间常数，病房给药由下方 PK 单独推进。 */
@@ -1680,6 +1883,7 @@ function tick(S, dtSec) {
   let arrestEpinephrine = 0;
   const opioidAntagonized = S.t < (S.naloxoneUntil || -1);
   const concOf = {};   /* 药名 → 当前有效浓度，供相互作用按 PK 时程缩放 */
+  const adverseExposures = new Map();
   S.thyroidReplacement = 0;
   S.thyroidTherapyActivity = {};
   for (const [id, pump] of Object.entries(S.pumps || {})) {
@@ -1691,6 +1895,7 @@ function tick(S, dtSec) {
     const effectScale = pumpEffectScale(activity);
     for (const key of MOD_KEYS) drugMod[key] += (sub.eff[key] || 0) * effectScale;
     concOf[sub.n] = activity;
+    recordAdverseExposure(adverseExposures, sub, activity);
   }
   S.pk = S.pk || [];
   for (let i = S.pk.length - 1; i >= 0; i--) {
@@ -1699,6 +1904,7 @@ function tick(S, dtSec) {
     const hl = Math.max(1, p.dur / 4.5);            // 疗程 ≈ 4.5 个半衰期
     const ke = Math.LN2 / hl;
     const lag = Math.max(0, p.onset || 0) * 0.35;   // 起效延迟
+    const sub = root.SUBSTANCES?.byId(p.id);
     const infusion = p.infusionMinutes;
     if (infusion) {
       const previousElapsed = (previousTime - p.t) / 60;
@@ -1723,6 +1929,7 @@ function tick(S, dtSec) {
         }
       }
       concOf[p.n] = Math.max(concOf[p.n] || 0, p.scale * active);
+      recordAdverseExposure(adverseExposures, sub, p.scale * active);
       if (el > deliveredMinutes + p.dur * 1.8) S.pk.splice(i, 1);
       continue;
     }
@@ -1746,11 +1953,11 @@ function tick(S, dtSec) {
       arrestEpinephrine = Math.max(arrestEpinephrine, clamp(p.scale, 0, 1) * cMod);
     }
     /* 阿片类：记录当前最大的效应浓度（用于呼吸抑制深度） */
-    const sub = root.SUBSTANCES?.byId(p.id);
     if (sub?.cls === '阿片') {
       if (opioidAntagonized) continue;
       opioidTone = Math.max(opioidTone, p.scale * c);
     }
+    recordAdverseExposure(adverseExposures, sub, p.scale * cMod);
     for (const key in p.eff) {
       if (MOD_KEYS.includes(key)) {
         /* Emax 饱和：E = Emax·D/(EC50+D)，取 EC50=3 使 D=1 时等于原有效应。
@@ -1772,10 +1979,13 @@ function tick(S, dtSec) {
         /* 外源激素：按平台浓度在 30 分钟内累积到设定强度，之后维持（不是一次性注入） */
         applyDelta(S, key, p.eff[key] * p.scale * cMod * dtMin / 30);
       } else {
-        applyDelta(S, key, p.eff[key] * p.scale * rate * dtMin);
+        const response = key === 'coag' && p.id === 'clopidogrel' && S.clopidogrelResist ? 0.5 : 1;
+        applyDelta(S, key, p.eff[key] * p.scale * rate * dtMin * response);
       }
     }
   }
+  if (S.tca > 0 && !S.tags.includes('tca')) S.tca *= Math.exp(-dtMin / 30);
+  applyAdverseEffects(S, adverseExposures, drugMod, dtMin);
   /* —— 药物相互作用（PK 驱动）：两种药同时在体内才有效应，浓度降下来效应随之消退 ——
      w = min(浓度A, 浓度B)；体征类叠加到 drugMod，电解质/凝血类按 30 min 时间常数累积，
      使"两药同时处于有效浓度"期间的总增量≈原来的单次量。 */
@@ -1835,12 +2045,13 @@ function tick(S, dtSec) {
   /* 尿量带走血管内水 */
   /* 利尿：60% 来自组织间液、40% 来自血浆——这是肺水肿"脱水救命但不塌血压"的机制 */
   /* 动脉性出血受血压调制：MAP 越高出得越快（这是"允许性低血压"的生理依据） */
-  const pressF = 1 + (S.bleedPressDep || 0) * clamp(((S.map || 80) - 70) / 60, -0.45, 0.9);
+  const pressF = 1 + (S.bleedPressDep || 0) * clamp(((S.map ?? 80) - 70) / 60, -0.45, 0.9);
   const uoVol = S.uo * dtMin / 1000;
   S.vol = clamp(S.vol - uoVol * 0.40, 1.5, 7.8);
   S.interstitium = clamp((S.interstitium || 11) - uoVol * 0.60, 8.5, 24);
   /* 维持水摄入：不喝水的人 7 h 也会浓缩；补上后 Hb/血钾不再漂 */
-  const maintenanceIntake = 0.0017 * clamp((5.4 - S.vol) / 0.9, 0, 1);
+  const maintenanceReference = S.cas?.exploration === true ? 4.75 : 5.4;
+  const maintenanceIntake = 0.0017 * clamp((maintenanceReference - S.vol) / 0.9, 0, 1);
   S.vol = clamp(S.vol + maintenanceIntake * dtMin, 1.5, 7.8);
 
   const crrtActive = ADVANCED.active(S, 'crrt');
@@ -1952,11 +2163,12 @@ function tick(S, dtSec) {
   S.shuntSrc.ptx = 0.31 * pleuralLoad;   // 塌陷肺仍有部分血流通过
   let shuntSum = 0;
   for (const k in S.shuntSrc) shuntSum += S.shuntSrc[k];
-  S.shunt = clamp(shuntSum, 0, 0.35);
+  const oxygenationModifier = clamp(-(S.mod.spo2 || 0) * 0.018, -0.12, 0.25);
+  S.shunt = clamp(shuntSum + oxygenationModifier, 0, 0.35);
   /* 肺水肿本身会抬高死腔（肺泡被水淹）——取模块设定值与肺水推算值的较大者 */
   const vdvtEff = clamp(Math.max(S.vdvt || 0.33, 0.33 + 0.18 * Math.max(0, S.lungWater - 0.25)), 0.33, 0.80);
   S.vdvt = vdvtEff;
-  S.vco2 = 200 * (1 + 0.22 * (S.infection || 0)) + 9 * Math.max(0, S.temp - 37);
+  S.vco2 = (200 * (1 + 0.22 * (S.infection || 0)) + 9 * Math.max(0, S.temp - 37)) * metabolicRate;
   if (S.vent) S.rr = VENT_RATE;
   /* 设备送气量由吸气流量决定，保留气道阻力对有效肺通气的影响。 */
   const airwayVolumeFactor = 1 - 0.38 * (S.airwayResistance || 0);
@@ -1964,7 +2176,7 @@ function tick(S, dtSec) {
   const va = Math.max(0.35, tidalVolume * (1 - 0.40 * pleuralLoad) * (1 - vdvtEff) * S.rr / 1000);   // L/min
   /* PaCO₂ = 0.863 × VCO₂(mL/min) / VA(L/min) —— 肺泡通气方程 */
   const nativePaco2 = 0.863 * S.vco2 / va;
-  const sweep = ADVANCED.hasEcmo(S) ? 4 * ecmoGasExchangeFraction(S) : 0;
+  const sweep = ADVANCED.hasEcmo(S) ? 10 * ecmoGasExchangeFraction(S) * Math.min(S.co / 3, 1) : 0;
   const co2Exchange = sweep * Math.max(0, nativePaco2 - 38) / (va + sweep);
   const paco2T = clamp(nativePaco2 - co2Exchange, 10, 135);
   S.paco2 = lerp(S.paco2, paco2T, clamp(0.5 * dtMin, 0, 1));
@@ -1979,7 +2191,8 @@ function tick(S, dtSec) {
      —— 替代旧模块里直接给 rr 设"下限"的写法 */
   const workLoad = clamp((S.airwayResistance || 0) + 0.8 * (S.cholinergic || 0)
                          + 0.5 * Math.max(0, vdvtEff - 0.33)
-                         + 0.6 * Math.max(0, S.lungWater - 0.30) + 0.55 * pleuralLoad, 0, 1.6);
+                          + 0.6 * Math.max(0, S.lungWater - 0.30) + 0.55 * pleuralLoad
+                          + 0.50 * (S.cprTrauma || 0), 0, 1.6);
   S.workOfBreathing = workLoad;
   if (workLoad > 0.25) S.fatigue = clamp(S.fatigue + (0.005 + 0.020 * workLoad) * dtMin, 0, 1);
   else S.fatigue = Math.max(0, S.fatigue - 0.010 * dtMin);
@@ -2031,7 +2244,8 @@ function tick(S, dtSec) {
       * (1 - Math.max(0, S.k - 4.6) * 0.045)            // 高钾抑制心肌
       * (1 - 0.35 * Math.max(0, (70 - S.hb) / 70))       // 贫血 → 心肌缺氧
       * (1 - 0.30 * (S.hepatotox || 0))
-      * (1 - 0.62 * (S.stemi || 0)), 0.10, 1.15);   // 心梗：坏死心肌不收缩
+       * (1 - 0.62 * (S.stemi || 0))                 // 心梗：坏死心肌不收缩
+       * (1 - 0.18 * clamp(((S.inappropriateShockUntil || 0) - S.t) / 120, 0, 1)), 0.10, 1.15);
   /* 衰竭心肌对后负荷敏感：降低后负荷能提高每搏量（肺水肿"扩血管改善 CO"的机制） */
   const failing = clamp((0.85 - (S.contractility == null ? 0.92 : S.contractility)) / 0.45, 0, 1);
   const afterloadF = clamp(1 - 0.025 * failing * Math.max(0, S.svr - 15), 0.30, 1.08);
@@ -2056,7 +2270,7 @@ function tick(S, dtSec) {
   S.prLong  = S.k > 6.0 ? clamp((S.k - 6.0) / 3.0, 0, 1) : 0;
   const hrTarget = clamp(78 + symp * 32 + (S.hrDrive || 0) - 47 * (S.digoxinLoad || 0) + (S.mod.hr || 0) + toxHr + envHr + wdHr
                          - 55 * (S.cholinergic || 0) + clamp((S.temp - 37) * 8, 0, 26) + kHr - 32 * thyroidDepression
-                         - clamp(((S.icp || 0) - 0.60) * 70, 0, 40) + (S.flushHr || 0), 28, 200);   // Cushing：颅压高 → 心率慢
+                          - 5 * coolingDepth - clamp(((S.icp || 0) - 0.60) * 70, 0, 40) + (S.flushHr || 0), 28, 200);
   if (!inArrest) {
     const hrGo = S.paced ? Math.max(hrTarget, 62) : hrTarget;
     S.hr = lerp(S.hr, hrGo, clamp(0.55 * dtMin, 0, 1));
@@ -2086,7 +2300,8 @@ function tick(S, dtSec) {
     /* 失血丢的是"全血"：红细胞质量与容量同比例下降 → Hb 不立刻掉，补液后才稀释
        （替代原来 S.hb -= bleedRate*22*dtMin 的即时贫血） */
     /* 出血受血压调制：MAP 越高出得越快 */
-    const lost = S.bleedRate * pressF * dtMin / Math.min(2.5, Math.max(0.15, S.coag || 1));  // L
+     const coagulation = (S.coag ?? 1) * (1 - 0.045 * coolingDepth);
+     const lost = S.bleedRate * pressF * dtMin / clamp(coagulation, 0.15, 2.5);  // L
     const conc = S.rbcMass / Math.max(0.5, S.vol);        // g/L
     S.rbcMass = Math.max(20, S.rbcMass - lost * conc);
     S.vol = clamp(S.vol - lost, 1.5, 7.8);
@@ -2139,10 +2354,16 @@ function tick(S, dtSec) {
   }
 
   /* ---------- 13. 感染 / 体温 ---------- */
+  const exposure = S.infectionExposure || 0;
+  if (exposure > 1e-5) {
+    const absorbed = exposure * (1 - Math.exp(-dtMin / 75));
+    S.infectionExposure -= absorbed;
+    S.infection = clamp(S.infection + absorbed, 0, 1);
+  }
   if (S.infection > 0) {
-  
-  S.infection = clamp(S.infection + (S.infection > 0.2 ? 0.0030 : -0.004) * dtMin
-                       * (S.infection > 0.2 ? (2 - (S.immunity || 1)) : 1), 0, 1);
+    const recovery = exposure > 1e-5 ? -S.infection / 140 : -0.004;
+    const progression = S.infection > 0.2 ? 0.0030 * (2 - (S.immunity || 1)) : recovery;
+    S.infection = clamp(S.infection + progression * dtMin, 0, 1);
   }
   if (S.tags.includes('sepsis')) {
     /* 肺实质影像的变化慢于感染和生命体征的变化。 */
@@ -2171,7 +2392,8 @@ function tick(S, dtSec) {
   }
   if (env.cooling && S.temp > COOLING_TARGET) tempT -= 3;
   const prevTemp = S.temp;
-  S.temp = lerp(S.temp, tempT, 1 - Math.exp(-0.05 * dtMin));
+  if (temperatureDevice && ADVANCED.active(S, temperatureDevice)) ADVANCED.regulateTemperature(S, temperatureDevice, dtSec, fmt);
+  else S.temp = lerp(S.temp, tempT, 1 - Math.exp(-0.05 * dtMin));
   if (env.cooling && S.temp <= COOLING_TARGET) {
     if (prevTemp > COOLING_TARGET) S.temp = COOLING_TARGET;
     env.cooling = 0;
@@ -2196,8 +2418,8 @@ function tick(S, dtSec) {
     const kCo = ((S.fio2 || 0.21) > 0.9) ? Math.LN2 / 45 : Math.LN2 / 360;   // 室气 6 h / 纯氧 90 min
     S.coHb = Math.max(0, S.coHb * Math.exp(-kCo * dtMin));
   }
-  S.vo2 = 250 * (1 + 0.20 * (S.infection || 0)) + 12 * Math.max(0, S.temp - 37)
-        + (env.exercise ? 150 : 0);
+  S.vo2 = (250 * (1 + 0.20 * (S.infection || 0)) + 12 * Math.max(0, S.temp - 37)
+        + (env.exercise ? 150 : 0)) * metabolicRate;
   S.do2Crit = 300 * (S.vo2 / 250);
   const o2debt = clamp(1 - S.do2 / Math.max(120, S.do2Crit), 0, 1.8);
 
@@ -2250,7 +2472,7 @@ function tick(S, dtSec) {
       - clamp((S.temp - 40) * 4, 0, 6)
       - (S.hco3 < 10 ? 2 : 0)), 3, 15);
   if (S.odsDamage) S.gcs = Math.min(S.gcs, 8);
-  PE_INTERVENTION.advance(S);
+  PE_INTERVENTION.advance(S, resolveProcedure);
 
   /* ---------- 17. 心律 ---------- */
   evaluateRhythm(S, dtMin);
@@ -2258,6 +2480,7 @@ function tick(S, dtSec) {
   /* 所有致心律失常的来源都在累积损伤前同步为骤停状态。 */
   if (S.rhythm === 'sinus' && (S._vfRisk || 0) > 1.15) triggerVf(S);
   ADVANCED.monitor(S);
+  if (temperatureDevice === 'aorticBypass') ADVANCED.trackAorticStability(S, aorticPerfusionStable(S));
 
   /* ---------- 18. 累积损伤（剂量×时间积分，替代"某指标超阈值 N 分钟"计时器） ---------- */
   const ins = S.insult;
@@ -2326,28 +2549,55 @@ function tick(S, dtSec) {
   return S;
 }
 
-function nativeCardiacOutput(S) {
-  if (S.rhythm === 'sinus') return S.hr * S.sv / 1000;
-  return 1.8 * clamp((S.mapBoost || 0) / 25, 0, 1);
+function stopCompressions(S) {
+  S.cprUntil = null;
+  S.cprUnnecessary = false;
+  S.mapBoost = 0;
 }
 
-function vaEcmoOutput(S, nativeFlow) {
-  return ADVANCED.ecmoFlow(S) * Math.max(0.12, 1 - nativeFlow / 7);
+function advanceCompressions(S, seconds) {
+  const adequateCircuit = circuitFlowVA(S) >= ECPR_FLOW;
+  if (!S.cprUnnecessary && (S.rhythm === 'sinus' || adequateCircuit) && S.cprUntil != null) {
+    stopCompressions(S);
+  } else if (S.cprUntil != null) {
+    const activeSeconds = clamp(S.cprUntil - S.t, 0, seconds);
+    if (S.cprUnnecessary && (S.rhythm === 'sinus' || adequateCircuit)) {
+      S.cprTrauma = clamp((S.cprTrauma || 0) + activeSeconds * 0.0025, 0, 1);
+    }
+    if (S.cprUntil <= S.t + seconds + 1e-7) stopCompressions(S);
+  } else {
+    // Legacy saves encoded two minutes of fading support rather than an exact round end.
+    S.mapBoost = Math.max(0, (S.mapBoost || 0) - 12.5 * seconds / 60);
+  }
+}
+
+function nativeCardiacOutput(S) {
+  return S.rhythm === 'sinus' ? S.hr * S.sv / 1000 : 0;
+}
+
+function circuitFlowVA(S) {
+  return ADVANCED.active(S, 'vaEcmo') ? ADVANCED.ecmoFlow(S) * Math.max(0.12, 1 - nativeCardiacOutput(S) / 7) : 0;
+}
+
+function pulmonaryFlow(S, vaFlow) {
+  if (S.rhythm === 'sinus') return nativeCardiacOutput(S);
+  // Once VA-ECMO supplies adequate flow, chest compressions no longer add effective flow.
+  const compressionQuality = clamp((S.mapBoost || 0) / 25, 0, 1);
+  const preload = clamp((S.vol - 1.5) / 2.5, 0.15, 1);
+  return 1.8 * compressionQuality * preload * clamp(1 - vaFlow / ECPR_FLOW, 0, 1);
 }
 
 function cardiacOutput(S) {
-  const nativeFlow = nativeCardiacOutput(S);
-  return ADVANCED.active(S, 'vaEcmo') ? nativeFlow + vaEcmoOutput(S, nativeFlow) : nativeFlow;
+  const vaFlow = circuitFlowVA(S);
+  return pulmonaryFlow(S, vaFlow) + vaFlow;
 }
 
 function ecmoGasExchangeFraction(S) {
-  const nativeFlow = nativeCardiacOutput(S);
-  if (ADVANCED.active(S, 'vaEcmo')) {
-    const circuitFlow = vaEcmoOutput(S, nativeFlow);
-    return circuitFlow / (nativeFlow + circuitFlow);
-  }
+  const vaFlow = circuitFlowVA(S);
+  const lungFlow = pulmonaryFlow(S, vaFlow);
+  if (ADVANCED.active(S, 'vaEcmo')) return vaFlow / Math.max(0.01, lungFlow + vaFlow);
   // VV 回流经右心进入肺循环；考虑再循环，估计参与气体交换的有效比例。
-  return nativeFlow > 0 ? Math.min(0.82, 0.78 * ADVANCED.ecmoFlow(S) / nativeFlow) : 0;
+  return lungFlow > 0 ? Math.min(0.82, 0.78 * ADVANCED.ecmoFlow(S) / lungFlow) : 0;
 }
 
 function computeMap(S) {
@@ -2379,17 +2629,19 @@ function restoreSinusRhythm(S, sv) {
   S.rhythm = 'sinus';
   S.hr = 96;
   S.sv = sv;
+  S.roscAt = S.t;
   S._vfRisk = 0;
-  S.mapBoost = 0;
+  stopCompressions(S);
   updateCirculation(S);
 }
 
 function evaluateAsystole(S, dtMin, nativeSv, epinephrine) {
   /* 游戏复苏模型：按压延缓损伤，充分氧输送和静推肾上腺素生效后，
      可逆因素缓解才能恢复自主循环。阈值与时间尺度属于模拟规则。 */
-  const supported = S.co >= 0.8 && S.do2 >= 0.30 * S.do2Crit;
+  const supported = S.co >= 0.8 && S.map >= 20 && S.do2 >= 0.30 * S.do2Crit;
+  const adequateEcpr = circuitFlowVA(S) >= ECPR_FLOW && S.map >= 45 && S.do2 >= 0.80 * S.do2Crit;
   const prior = S.asystoleInsult ?? Math.max(0, (S.t - S.asystoleAt) / 60 - dtMin);
-  S.asystoleInsult = prior + dtMin * (supported ? 0.25 : 1);
+  S.asystoleInsult = prior + dtMin * (adequateEcpr ? 0 : supported ? 0.25 : 1);
   const potassiumStable = S.k >= 2.6 && (S.k <= 7.4 || S.t < S.caProtectUntil);
   const reversibleFactorsControlled = potassiumStable && nativeSv >= 20 && S.sao2 >= 0.85
       && S.ph >= 6.9 && S.temp >= 32 && (S.tensionPTX || 0) <= 0.20
@@ -2466,7 +2718,8 @@ function evaluateRhythm(S, dtMin) {
       if (S._vfRisk > 1.15) triggerVf(S);
     }
   } else if (S.rhythm === 'vf') {
-    S._vfMin = S._vfMin || 0; S._vfMin += dtMin;
+    const perfusion = clamp(S.map / 60, 0, 1) * clamp(S.do2 / S.do2Crit, 0, 1);
+    S._vfMin = (S._vfMin || 0) + dtMin * (1 - 0.90 * perfusion);
     if (S._vfMin > 3.5) {
       S.rhythm = 'asystole'; S.asystoleAt = S.t;
       S.asystoleInsult = 0; S.roscMin = 0;
@@ -2478,7 +2731,7 @@ function evaluateRhythm(S, dtMin) {
 function triggerVf(S) {
   if (S.rhythm === 'vf') return;
   S.rhythm = 'vf'; S._vfMin = 0; S._vfRisk = 0; S.arrests = (S.arrests || 0) + 1;
-  S.mapBoost = 0;
+  if (!S.cprUnnecessary) stopCompressions(S);
   applyArrestPhysiology(S);
   note(S, 'vf', '室颤！立即除颤', 'crit');
   S.score -= 20;
@@ -3002,6 +3255,7 @@ function orderTest(S, id) {
   const T = TESTS[id];
   const current = S.tests[id];
   if (current && !current.done) return current.readyAt;
+  if (T.canOrder && !T.canOrder(S)) return null;
   const readyAt = S.t + T.min * 60;
   const sample = id === 'cxr' ? Object.freeze({ sampledAt: S.t, findings: chestXrayFindings(S) }) : testSample(S, id);
   S.cost += T.cost;
@@ -3085,7 +3339,8 @@ function scoreBreakdown(S) {
   if (dischargeStatus === 'penalized') add('出院条件未达标', -30);
   if (dischargeStatus === 'failed') add('出院存在重大问题', -base);
   if (S.death) add('死亡结局', -45);
-  const routineCost = S.cost - (S.deviceCost || 0) - (S.rescueDrugCost || 0) - (S.peIntervention?.cost || 0);
+  const interventionCost = PE_INTERVENTION.billedCost(S) + (S.essentialProcedureCost || 0);
+  const routineCost = S.cost - (S.deviceCost || 0) - (S.rescueDrugCost || 0) - interventionCost;
   add('诊疗费用', -Math.min(15, Math.max(0, (routineCost - 800) / 120)));
 
   const penalties = +(S.penalties || 0);
@@ -3132,13 +3387,13 @@ function finalScore(S) {
 const API = {
   setIdentity(p) { IDENTITY = p || null; }, CASES, DRUGS, ACTIONS, TESTS, DELIVERY_DURATION, create, restorePatient, tick, give, acetaminophenExposure, setEnv, finalScore, scoreBreakdown, bp, snapshot,
               ventilatorSettings, setVentilatorFlow, oxygenSettings, setOxygenFlow,
-              ADVANCED_DEVICES: ADVANCED.DEVICES, advancedDevice: ADVANCED.status, advancedDeviceAction,
+              ADVANCED_DEVICES: ADVANCED.DEVICES, advancedDevice, advancedDeviceAction,
               advancedDeviceCost: S => S.deviceCost || 0, advancedDischargeBlockers: ADVANCED.dischargeBlockers,
-              eegReading: ADVANCED.eegReading,
+              eegReading: ADVANCED.eegReading, aorticBypassIndicated, aorticBypassReady, aorticPerfusionStable,
               dischargeCheck, signDischarge, glucoseDischargeTarget, glucoseReviewStatus, potassiumTarget, convulsionSigns, conditionReviewBaseline, conditionReviewChange,
               EXAMS, EXAM_GROUPS, TEST_GROUPS, examine, reports, getReport, knownResults,
               auscultate, orderTest, pollTests, testValue, chestXrayReports, restoreChestXrayReports,
-              computeMap, fmt, endCase, setBleedingRate, restoreBleeding,
+              computeMap, fmt, endCase, setBleedingRate, restoreBleeding, caseDifficulty, allowsRiskyActions, procedureRisk, procedureRetryBlock, resolveProcedure,
               benzodiazepineExposure, restoreBenzodiazepines, temperatureStatus, restoreTemperature, infusionDetails, infusionProgress,
               stopInfusion, insulinActivity,
               pumpRate, pumpOrder, pumpEffect, stopPump, drugPrice, restoreDrugCost,

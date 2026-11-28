@@ -18,16 +18,16 @@ async function main() {
     const assessment = await page.evaluate(() => {
       const { S, E } = window.__LIFE_GAME;
       if (S.caseId !== 'hyperkalemia') throw Error('未能切换至固定病例');
-      E.orderMedication(S, 'calcium', 10);
-      const { attempt } = E.startAccess(S, 'piv', 'left');
+      const { attempt } = E.startAccess(S, 'piv');
       E.tick(S, attempt.seconds);
+      E.orderMedication(S, 'calcium', 10);
       E.orderMedication(S, 'insulin', 10);
       E.orderMedication(S, 'dextrose50', 25);
       for (let i = 0; i < 480 && S.running && !E.dischargeCheck(S).ok; i++) {
         if (S.k > 5.5 && S.t > 300) E.ACTIONS.dialysis.apply(S);
         E.tick(S, 30);
       }
-      if (!E.accessState(S).lines.length) throw Error('出院评估时应仍留有外周通路');
+      if (!E.accessState(S).available) throw Error('出院评估时应仍留有外周通路');
       return E.dischargeCheck(S);
     });
     assert.equal(assessment.ok, true, assessment.reasons.join('、'));

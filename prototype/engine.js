@@ -956,7 +956,7 @@ function create(caseId, identity = IDENTITY) {
   syncPatientFields(S);
   S.caseId = C.id;
   S.cas = C;
-  S.vascularAccess = { ...VASCULAR.createState(accessOrigin(S)), pending: null, lastReceipt: null };
+  S.vascularAccess = VASCULAR.createState(accessOrigin(S));
   if (root.TRAITS && C.traits) root.TRAITS.applyInit(S, C.traits, C.genVersion > 0 && C.genVersion < 4);
   S.tags = C.tags || ({ hyperkalemia: ['highK'], dka: ['dka'], bleed: ['bleed'],
                         sepsis: ['sepsis'], opioid: ['opioid'] }[C.id] || []);
@@ -1459,7 +1459,6 @@ function stopInfusion(S, order) {
   }
   order.stoppedAt = S.t;
   if (given) given.stoppedAt = S.t;
-  if (order.accessPumpId) VASCULAR.releasePump(S.vascularAccess, order.accessPumpId);
   const amount = Number(progress.deliveredDose.toPrecision(6));
   const sequence = given ? `医嘱 #${S.given.indexOf(given) + 1}，` : '';
   const label = `停止${order.route} ${order.n}（${sequence}已输 ${amount} / ${progress.totalDose} ${order.unit}）`;
@@ -1848,9 +1847,7 @@ function changePump(S, sub, route, rate, pause = false) {
 function stopPump(S, drugId) {
   const sub = root.SUBSTANCES?.byId(drugId);
   const route = sub?.routes?.find(rt => rt.pumpHalfLife);
-  const stopped = route ? changePump(S, sub, route, 0) : null;
-  if (stopped != null && S.vascularAccess) VASCULAR.releasePump(S.vascularAccess, drugId);
-  return stopped;
+  return route ? changePump(S, sub, route, 0) : null;
 }
 
 function pausePump(S, drugId) {
@@ -2026,9 +2023,6 @@ function give(S, drugId, dose, route, bill = true) {
   return d;
 }
 
-const CENTRAL_ONLY = ['cvc'];
-const FIXED_PUMP_PREFIX = 'infusion:';
-
 function accessOrigin(S) {
   return { seed: S.seed ?? S.cas?.seed, prehospitalAccess: S.cas?.prehospitalAccess };
 }
@@ -2041,57 +2035,26 @@ function accessContext(S) {
   return { patient: S.cas, actual: S, difficulty: caseDifficulty(S), now: S.t, sedated: benzodiazepineExposure(S).sedated };
 }
 
-function isFixedPump(route) {
-  return route?.includes('泵入');
-}
-
 function restoreVascularAccess(S, saved) {
   const state = VASCULAR.restoreState(saved, accessOrigin(S));
   S.vascularAccess = state;
-  const order = saved?.pending;
-  state.pending = order ? medicationOrder(S, order.id, order.dose, order.route, order.orderedAt) : null;
-  state.lastReceipt = saved?.lastReceipt || null;
   if (!accessOpen(S)) {
     state.attempt = null;
-    state.pending = null;
-    state.pumps = Object.create(null);
     return;
   }
-  if (saved?.lines) {
-    releaseFinishedAccessInfusions(S);
-    return;
-  }
-  // A pump that was already running before access was tracked keeps its original delivery.
-  const pumpIds = Object.keys(S.pumps || {}).filter(id => S.pumps[id].rate > 0 || S.pumps[id].pausedRate > 0);
-  for (const [index, infusion] of (S.pk || []).entries()) {
-    if (!isFixedPump(infusion.route) || !infusionProgress(S, infusion)?.running) continue;
-    infusion.accessPumpId = FIXED_PUMP_PREFIX + (infusion.givenIndex ?? `legacy-${index}`);
-    pumpIds.push(infusion.accessPumpId);
-  }
-  for (const id of pumpIds) {
-    const line = VASCULAR.getAvailablePumpLine(state, id) || VASCULAR.addLegacyLine(state);
-    VASCULAR.assignPump(state, id, line.id);
-  }
+  if (Array.isArray(saved?.lines) || VASCULAR.hasAccess(state)) return;
+  // Older saves may already be delivering medication when no access state was recorded.
+  const continuousPump = Object.values(S.pumps || {}).some(pump => pump.rate > 0 || pump.pausedRate > 0);
+  const timedPump = (S.pk || []).some(order => order.route?.includes('泵入') && infusionProgress(S, order)?.running);
+  if (continuousPump || timedPump) VASCULAR.addLegacyLine(state);
 }
 
 function accessState(S) {
-  const state = S.vascularAccess;
-  const notices = [];
-  const ioInUse = state.lines.some(line => line.type === 'io' &&
-    (line.id === state.activeId || Object.values(state.pumps).includes(line.id)));
-  if (ioInUse && S.rhythm === 'sinus' && S.map >= 65 && S.do2 >= S.do2Crit) {
-    notices.push('骨内通路用于临时救治，灌注恢复后可改用外周或中心静脉通路。');
-  }
-  if ([...CIRCULATORY_PUMPS].some(id => {
-    const line = VASCULAR.getPumpLine(state, id);
-    return line && line.type !== 'cvc' && pumpRate(S, id) > 0;
-  })) {
-    notices.push('当前有升压或循环支持药经临时通路泵入；需要持续治疗时可建立中心静脉通路，再迁移药泵。');
-  }
-  return { ...state, notice: notices.join(' ') };
+  const { lines, attempt } = S.vascularAccess;
+  return { lines, attempt, available: VASCULAR.hasAccess(S.vascularAccess) };
 }
 
-function medicationOrder(S, id, dose, route, orderedAt = S.t) {
+function medicationOrder(id, dose, route) {
   const drug = root.SUBSTANCES?.byId(id);
   const legacy = Object.hasOwn(DRUGS, id) ? DRUGS[id] : null;
   const routeName = route || drug?.route || legacy?.routes[0];
@@ -2102,91 +2065,37 @@ function medicationOrder(S, id, dose, route, orderedAt = S.t) {
   const amount = dose ?? selected?.d ?? legacy?.defaultDose;
   if (!(Number.isFinite(amount) && amount > 0) || amount > (selected?.maxDose ?? Infinity)) return null;
   const actualRoute = selected?.r ?? routeName;
-  return { id: drug?.id ?? id, dose: amount, route: actualRoute, name: drug?.n ?? legacy.name, unit: selected?.unit ?? drug?.unit ?? legacy.unit,
-    orderedAt, continuousPump: !!selected?.pumpHalfLife, fixedPump: !!selected?.infusionMinutes && isFixedPump(actualRoute),
-    vascular: /静|输血|输注|输液|泵入/.test(actualRoute), centralOnly: selected?.centralAccess === true };
+  return { id: drug?.id ?? id, dose: amount, route: actualRoute,
+    vascular: /静|输血|输注|输液|泵入/.test(actualRoute) };
 }
 
-function medicationPumpId(S, order) {
-  if (order.continuousPump) return order.id;
-  return order.fixedPump ? FIXED_PUMP_PREFIX + (S.given?.length ?? 0) : null;
-}
-
-function medicationLine(S, order) {
-  const state = S.vascularAccess;
-  const pumpId = medicationPumpId(S, order);
-  if (pumpId) return VASCULAR.getAvailablePumpLine(state, pumpId, order.centralOnly ? CENTRAL_ONLY : undefined);
-  const active = VASCULAR.getActive(state);
-  if (!order.centralOnly) return active;
-  return active?.type === 'cvc' ? active : state.lines.find(line => line.type === 'cvc');
-}
-
-function missingMedicationAccess(S, order) {
-  const lines = S.vascularAccess.lines;
-  if (order.centralOnly && !lines.some(line => line.type === 'cvc')) return '该医嘱需要中心静脉通路';
-  if (lines.length && medicationPumpId(S, order)) return '可用通路的独立泵位已满，请释放泵位或建立其他通路';
-  return '该医嘱需要先建立血管通路';
-}
-
-function administerMedication(S, order, line) {
-  const { id, dose, route } = order;
-  const state = S.vascularAccess;
-  const pumpId = medicationPumpId(S, order);
-  const newPumpAssignment = line && pumpId && !VASCULAR.getPumpLine(state, pumpId);
-  if (newPumpAssignment) {
-    const assignment = VASCULAR.assignPump(state, pumpId, line.id);
-    if (!assignment.ok) return { ...assignment, status: 'invalid', order };
+function orderMedication(S, id, dose, route) {
+  if (!accessOpen(S)) return { ok: false, status: 'invalid', reason: '当前病例已结束' };
+  const order = medicationOrder(id, dose, route);
+  if (!order) return { ok: false, status: 'invalid', reason: '给药途径或剂量无效' };
+  if (order.vascular && !VASCULAR.hasAccess(S.vascularAccess)) {
+    return { ok: false, status: 'access', reason: '未建立血管通路' };
   }
   const logIndex = S.log.length;
-  const givenIndex = S.given?.length || 0;
-  if (give(S, id, dose, route) == null) {
-    if (newPumpAssignment) VASCULAR.releasePump(state, pumpId);
+  if (give(S, order.id, order.dose, order.route) == null) {
     return { ok: false, status: 'invalid', order, reason: '医嘱未执行，请检查当前设置' };
   }
-  const given = S.given?.[givenIndex];
-  if (given && line) given.accessLineId = line.id;
-  if (order.fixedPump) S.pk.at(-1).accessPumpId = pumpId;
   const entries = S.log.slice(logIndex);
   const entry = entries.findLast(item => item[5]) ?? entries.at(-1);
   return { ok: true, status: 'given', order, entry };
 }
 
-function orderMedication(S, id, dose, route, { replacePending = false } = {}) {
-  if (!accessOpen(S)) return { ok: false, status: 'invalid', reason: '当前病例已结束' };
-  const order = medicationOrder(S, id, dose, route);
-  if (!order) return { ok: false, status: 'invalid', reason: '给药途径或剂量无效' };
-  const state = S.vascularAccess;
-  const pending = state.pending;
-  const identical = pending?.id === order.id && pending.route === order.route && pending.dose === order.dose;
-  const line = order.vascular ? medicationLine(S, order) : null;
-  if (pending && !identical && !replacePending && (pending.id === order.id || (order.vascular && !line))) {
-    return { ok: false, status: 'busy', order: pending, reason: '已有待办医嘱，请先完成、取消或替换' };
-  }
-  if (!order.vascular || line) {
-    const result = administerMedication(S, identical ? pending : order, line);
-    if (result.ok && (identical || replacePending)) state.pending = null;
-    return result;
-  }
-  state.pending = identical ? pending : order;
-  return { ok: true, status: 'access', order: state.pending, reason: missingMedicationAccess(S, state.pending) };
-}
-
 function accessOptions(S) {
-  return VASCULAR.getOptions(S.vascularAccess, accessContext(S)).map(option => {
-    if (!accessOpen(S)) return { ...option, enabled: false, reason: '当前病例已结束' };
-    if (S.vascularAccess.pending?.centralOnly && option.type !== 'cvc' && option.enabled) {
-      return { ...option, pendingReason: '当前待办医嘱仍需要中心静脉通路' };
-    }
-    return option;
-  });
+  const options = VASCULAR.getOptions(S.vascularAccess, accessContext(S));
+  return accessOpen(S) ? options : options.map(option => ({ ...option, enabled: false, reason: '当前病例已结束' }));
 }
 
-function startAccess(S, type, side) {
+function startAccess(S, type) {
   if (!accessOpen(S)) return { ok: false, reason: '当前病例已结束' };
-  const result = VASCULAR.start(S.vascularAccess, { ...accessContext(S), type, side });
+  const result = VASCULAR.start(S.vascularAccess, { ...accessContext(S), type });
   if (result.ok) {
-    const { site, name, seconds } = result.attempt;
-    S.log.push([fmt(S.t), `操作 开始${name}（${site}，预计 ${seconds} 模拟秒）`, 'info', S.t, null, true]);
+    const { name, seconds } = result.attempt;
+    S.log.push([fmt(S.t), `操作 开始${name}（预计 ${seconds} 模拟秒）`, 'info', S.t, null, true]);
   }
   return result;
 }
@@ -2195,83 +2104,17 @@ function accessRemaining(S) {
   return VASCULAR.getRemaining(S.vascularAccess, S.t);
 }
 
-function cancelPendingMedication(S) {
-  const state = S.vascularAccess;
-  const order = state.pending;
-  if (!order) return false;
-  state.pending = null;
-  state.lastReceipt = { status: 'cancelled', at: S.t, order, reason: '已取消待办医嘱' };
-  return true;
-}
-
 function completeAccess(S, now) {
-  const state = S.vascularAccess;
-  const result = VASCULAR.advance(state, now);
+  const result = VASCULAR.advance(S.vascularAccess, now);
   if (!result) return;
-  const { success, attempt, line, cost } = result;
-  const order = state.pending;
+  const { success, attempt, cost } = result;
   chargeProcedure(S, cost, true);
-  S.log.push([fmt(S.t), `操作 ${attempt.name}${success ? '成功' : '失败'}（${attempt.site}，费用 ¥${cost}）`,
+  S.log.push([fmt(S.t), `操作 ${attempt.name}${success ? '成功' : '失败'}（费用 ¥${cost}）`,
     success ? 'good' : 'warn', S.t, null, true]);
-  const receipt = { status: success ? 'access-ready' : 'failed', at: S.t, order, attempt, line, cost };
-  if (!success) {
-    receipt.reason = [attempt.condition, order && '待办医嘱仍保留', '可改换部位或通路'].filter(Boolean).join('，');
-  } else if (order) {
-    const compatible = medicationLine(S, order);
-    if (compatible) {
-      const given = administerMedication(S, order, compatible);
-      if (given.ok) {
-        state.pending = null;
-        receipt.status = 'given';
-        receipt.entry = given.entry;
-      } else receipt.reason = given.reason;
-    } else receipt.reason = missingMedicationAccess(S, order);
-  }
-  state.lastReceipt = receipt;
-}
-
-function releaseFinishedAccessInfusions(S) {
-  const state = S.vascularAccess;
-  for (const id of Object.keys(state.pumps)) {
-    if (!id.startsWith(FIXED_PUMP_PREFIX)) continue;
-    const order = S.pk?.find(infusion => infusion.accessPumpId === id);
-    if (!infusionProgress(S, order)?.running) VASCULAR.releasePump(state, id);
-  }
-}
-
-function accessPumpName(S, id) {
-  if (id.startsWith(FIXED_PUMP_PREFIX)) return S.pk?.find(infusion => infusion.accessPumpId === id)?.n || '定时泵入';
-  return root.SUBSTANCES?.byId(id)?.n || DRUGS[id]?.name || id;
-}
-
-function selectAccessLine(S, lineId) {
-  return accessOpen(S) ? VASCULAR.selectLine(S.vascularAccess, lineId) : { ok: false, reason: '当前病例已结束' };
-}
-
-function accessMigration(S, toId, pumpIds) {
-  return VASCULAR.getMigration(S.vascularAccess, toId, pumpIds);
-}
-
-function migrateAccessPumps(S, toId, pumpIds) {
-  if (!accessOpen(S)) return { ok: false, reason: '当前病例已结束' };
-  const result = VASCULAR.migrate(S.vascularAccess, toId, pumpIds);
-  if (result.ok) {
-    const names = result.moved.map(id => accessPumpName(S, id)).join('、');
-    const target = VASCULAR.getLine(S.vascularAccess, toId);
-    S.log.push([fmt(S.t), `操作 ${names}已迁移至中心静脉通路（${target.site}）`, 'good', S.t, null, true]);
-  }
-  return result;
 }
 
 function closeVascularAccess(S) {
-  const state = S.vascularAccess;
-  if (!state) return;
-  if (state.attempt || state.pending) {
-    state.lastReceipt = { status: 'cancelled', at: S.t, order: state.pending, attempt: state.attempt, reason: '病例结束，处置已终止' };
-    state.pending = null;
-    state.attempt = null;
-  }
-  state.pumps = Object.create(null);
+  if (S.vascularAccess) S.vascularAccess.attempt = null;
 }
 
 function urineOutput(S, renalPerf, includeDiuresis = true) {
@@ -2414,7 +2257,6 @@ function advancePhysiology(S, dtSec) {
   const thyroidDepression = clamp(S.myxedemaSeverity || 0, 0, 1);
   const previousTime = S.t;
   S.t += dtSec;
-  releaseFinishedAccessInfusions(S);
   ADVANCED.advance(S, dtSec);
   DIAGNOSTICS.advanceTroponin(S, dtMin);
 
@@ -4017,8 +3859,7 @@ function finalScore(S) {
 
 const API = {
   setIdentity(p) { IDENTITY = p || null; }, CASES, DRUGS, ACTIONS, TESTS, DELIVERY_DURATION, create, restorePatient, tick, give, acetaminophenExposure, setEnv, finalScore, scoreBreakdown, bp, snapshot,
-              orderMedication, cancelPendingMedication, accessState, accessOptions, startAccess, accessRemaining,
-              selectAccessLine, accessMigration, migrateAccessPumps, accessPumpName,
+              orderMedication, accessState, accessOptions, startAccess, accessRemaining,
               REALISM_BONUS, ventilatorSettings, setVentilatorFlow, oxygenSettings, setOxygenFlow,
               ADVANCED_DEVICES: ADVANCED.DEVICES, advancedDevice, advancedDeviceAction, advancedDeviceReadings, vaEcmoReadings,
               advancedDeviceCost: S => S.deviceCost || 0, advancedDischargeBlockers: ADVANCED.dischargeBlockers,

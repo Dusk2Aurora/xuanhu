@@ -1560,8 +1560,6 @@ function generateCase(difficulty, seed, only, genVersion) {
     /* 主诉 = 主要症状 + 持续时间；并发病史只进现病史 */
     chief: primary[0].chief,
     admission, traits, ...(prehospitalAccess ? { prehospitalAccess } : {}),
-    ...(difficultForearm ? { vascularAccessSites: { piv: { right: { noVein: true } },
-      usPiv: { right: { ultrasoundVisible: true } } } } : {}),
     comorbidities,
     init,
     goals: Array.from(new Set(primary.flatMap(m => m.goal))),

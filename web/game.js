@@ -734,187 +734,96 @@ function infusionDuration(seconds) {
   return `${minutes} 分 ${seconds % 60} 秒`;
 }
 
-const accessReceipts = new WeakMap();
 let accessPanel;
 
-function accessOrderText(order) {
-  return `${order.name} ${infusionNumber.format(order.dose)} ${order.unit || ''} · ${order.route}`;
-}
-
 function accessSummary(patient) {
-  const { activeId, lines, attempt, pending, lastReceipt } = E.accessState(patient);
-  const line = lines.find(item => item.id === activeId);
-  if (attempt) return `${attempt.site}置管中 · ${infusionDuration(Math.ceil(E.accessRemaining(patient)))}`;
-  if (pending) return lastReceipt?.status === 'failed' ? '置管失败 · 原医嘱待执行' : '原医嘱待执行';
-  return line ? `${line.site} · ${line.name}${lines.length > 1 ? `等 ${lines.length} 条` : ''}`
-    : lastReceipt?.status === 'failed' ? '最近置管失败' : '本床暂无通路';
+  const { lines, attempt } = E.accessState(patient);
+  if (attempt) return `置管中 · 剩余 ${infusionDuration(Math.ceil(E.accessRemaining(patient)))}`;
+  return lines[0]?.name || '未建立';
 }
 
 function accessSummaryTag(patient) {
   return `<span data-access-summary>${escapeHtml(accessSummary(patient))}</span>`;
 }
 
-function refreshAccessNotice(patient) {
-  const el = $('#accessNotice');
-  const text = patient?.running ? E.accessState(patient).notice : '';
-  el.hidden = !text;
-  if (el.textContent !== text) el.textContent = text;
+function promptForAccess(back) {
+  back();
+  toast('请到「操作」建立血管通路，完成后重新开药。', true);
 }
 
-function accessReceiptText(receipt) {
-  const fee = Number.isFinite(receipt.cost) ? ' · 通路费用 ' + money(receipt.cost) : '';
-  const site = receipt.line?.site || receipt.attempt?.site;
-  const location = site ? site + ' · ' : '';
-  if (receipt.status === 'given') return location + '已执行 ' + accessOrderText(receipt.order) + fee;
-  if (receipt.status === 'access-ready') return location + '通路已建立' + fee + (receipt.reason ? ' · ' + receipt.reason : '');
-  if (receipt.status === 'failed') return location + '置管失败' + fee + (receipt.reason ? ' · ' + receipt.reason : '');
-  if (receipt.status === 'cancelled') return '已撤销待执行医嘱';
-  return receipt.reason || '';
+function accessOptionRow(patient, option, menu, afterStart = menu) {
+  const { attempt, lines } = E.accessState(patient);
+  const running = attempt?.type === option.type;
+  const existing = lines.find(line => line.type === option.type);
+  const tag = existing ? (existing.origin === 'prehospital' ? '当前通路 · 院前带入' : '当前通路') :
+    option.enabled ? infusionDuration(option.seconds) : option.reason;
+  return {
+    n: escapeHtml(option.name),
+    tag: running ? accessSummaryTag(patient) : escapeHtml(tag),
+    amt: running ? '查看' : option.enabled ? money(option.cost) : '',
+    disabled: !running && !option.enabled,
+    run: () => running ? openAccessProgress(patient, afterStart) : openAccessConfirmation(patient, option, menu, afterStart),
+  };
 }
 
-function openAccessSheet(patient, { mode = 'overview', back } = {}) {
+function openAccessConfirmation(patient, option, menu, afterStart) {
+  const current = E.accessState(patient).lines[0];
+  openSheet(current ? '更换血管通路' : '建立血管通路', patient.patient.name, [
+    { sec: escapeHtml(current ? `从${current.name}更换为${option.name}。新通路成功建立前，原通路可继续使用。` : option.name) },
+    { n: current ? '确认更换' : '确认建立', tag: infusionDuration(option.seconds), amt: money(option.cost),
+      run: () => {
+        const result = E.startAccess(patient, option.type);
+        if (!result.ok) {
+          toast(escapeHtml(result.reason || '暂时无法开始置管'), true);
+          menu();
+          return;
+        }
+        window.SOUND?.click();
+        saveGame();
+        openAccessProgress(patient, afterStart);
+      } },
+    { n: '取消', tag: '', amt: '', run: menu },
+  ], patient);
+}
+
+function openRoutineAccess(patient) {
   if (!isCurrentPatient(patient)) return;
-  accessPanel = { patient, mode, back };
-  drawAccessSheet(accessPanel);
+  const back = () => openActionSheet(patient);
+  if (E.accessState(patient).attempt) {
+    openAccessProgress(patient, back);
+    return;
+  }
+  const rows = E.accessOptions(patient).filter(option => option.type !== 'cvc')
+    .map(option => accessOptionRow(patient, option, () => openRoutineAccess(patient), back));
+  rows.push({ n: '返回操作', tag: '', amt: '返回', run: back });
+  openSheet('血管通路', patient.patient.name, rows, patient);
 }
 
-function drawAccessSheet(panel) {
-  const { patient, mode, back } = panel;
-  if (panel !== accessPanel || !isCurrentPatient(patient)) return;
-  const state = E.accessState(patient);
-  const { pending, attempt, lines, activeId, lastReceipt, pumps, notice } = state;
-  const rows = [];
-  if (pending) {
-    rows.push({ sec: '待执行医嘱 · ' + escapeHtml(accessOrderText(pending)) });
-    rows.push({ sec: '建立合适通路后自动执行原医嘱。' });
-  }
-  if (attempt) {
-    rows.push({ sec: `${escapeHtml(attempt.name)} · ${escapeHtml(attempt.site)}` });
-    rows.push({ sec: `<progress id="accessProgress" class="infusion-progress" max="${attempt.seconds}" value="0" aria-label="置管进度"></progress><span id="accessProgressText"></span>` });
-  } else if (lastReceipt) {
-    rows.push({ sec: `<span role="status">最近回执 · ${escapeHtml(accessReceiptText(lastReceipt))}</span>` });
-  }
-  if ((pending || attempt) && !realismRules.noPause) {
-    rows.push({ n: paused ? '继续模拟时钟' : '暂停模拟时钟', tag: paused ? '恢复后按模拟时间推进置管' : '暂停时仍可选择操作',
-      amt: paused ? '继续' : '暂停', run: () => { paused = !paused; syncSpeedUI(); drawAccessSheet(panel); } });
-  }
-  if (attempt || pending) {
-    rows.push({ n: '收起，返回床旁', tag: attempt ? '可继续按压、除颤和其他操作' : '保留待执行医嘱', amt: '收起', run: closeSheet });
-  }
-  if (notice) rows.push({ sec: escapeHtml(notice) });
-
-  for (const line of lines) {
-    const assigned = Object.keys(pumps).filter(id => pumps[id] === line.id);
-    const names = assigned.map(id => E.accessPumpName(patient, id));
-    const site = `${line.name} · ${line.site}`;
-    const details = [line.id === activeId ? '当前首选' : '已建立', line.origin === 'prehospital' && '院前带入',
-      `泵位 ${assigned.length} / ${line.pumpCapacity}`, names.join('、')].filter(Boolean).join(' · ');
-    rows.push({ n: escapeHtml(site), tag: escapeHtml(details), amt: line.id === activeId ? '' : '设为首选',
-      disabled: line.id === activeId, run: () => {
-        const result = E.selectAccessLine(patient, line.id);
-        if (!result.ok) { toast(escapeHtml(result.reason || '无法切换通路'), true); return; }
-        saveGame();
-        refreshAccessNotice(patient);
-        drawAccessSheet(panel);
-      } });
-    const migration = line.type === 'cvc' && E.accessMigration(patient, line.id);
-    if (migration?.ok && migration.moved?.length) {
-      rows.push({ n: '一键迁移泵药至此通路', tag: '沿用当前泵速', amt: '迁移', run: () => {
-        const result = E.migrateAccessPumps(patient, line.id);
-        if (!result.ok) { toast(escapeHtml(result.reason || '无法迁移泵药'), true); return; }
-        saveGame();
-        refreshAccessNotice(patient);
-        drawAccessSheet(panel);
-        toast('已迁移泵药并保留泵速');
-      } });
-    } else if (line.type === 'cvc' && Object.values(pumps).some(id => id !== line.id) && migration?.reason) {
-      rows.push({ sec: escapeHtml(migration.reason) });
-    }
-  }
-
-  if (!attempt) {
-    if (mode !== 'overview') {
-      const options = E.accessOptions(patient).filter(option => mode === 'central' ? option.type === 'cvc' : option.type !== 'cvc');
-      rows.push({ sec: '选择通路及穿刺部位' });
-      for (const option of options) {
-        const tag = option.enabled ? [
-          option.condition,
-          `模拟用时 ${infusionDuration(option.seconds)}`,
-          `失败率 ${Math.round(option.failureChance * 100)}% · 失败耗材 ${money(option.failureCost)}`,
-          option.pendingReason,
-        ].filter(Boolean).join(' · ') : `${option.reason || '该部位暂不可用'} · 无费用`;
-        rows.push({ n: escapeHtml(option.name + ' · ' + option.site), tag: escapeHtml(tag),
-          amt: option.enabled ? money(option.cost) : '不可选', disabled: !option.enabled, run: () => {
-            const result = E.startAccess(patient, option.type, option.side);
-            if (!result.ok) toast(escapeHtml(result.reason || '暂时无法开始置管'), true);
-            else { window.SOUND?.click(); saveGame(); }
-            drawAccessSheet(panel);
-          } });
-      }
-    } else {
-      if (!lines.length) rows.push({ sec: '本床暂无血管通路。' });
-      rows.push({ n: '建立外周静脉或骨髓腔通路', tag: '常规外周 · 超声引导外周 · 骨髓腔通路（IO）', amt: '选择',
-        run: () => openAccessSheet(patient, { mode: 'routine', back: () => openAccessSheet(patient, { back }) }) });
-      rows.push({ n: '中心静脉通路（CVC）', tag: '高级设备与介入', amt: '查看', run: () => openAdvancedCare(patient) });
-    }
-    if (mode === 'routine' && pending?.centralOnly) {
-      rows.push({ n: '前往高级设备与介入', tag: '当前医嘱需要中心静脉通路', amt: '查看', run: () => openAdvancedCare(patient) });
-    }
-  }
-  if (pending) rows.push({ n: '撤销待执行医嘱', tag: attempt ? '已开始的置管继续进行' : '', amt: '撤销',
-    run: () => {
-      if (!E.cancelPendingMedication(patient)) return;
-      accessReceipts.set(patient, E.accessState(patient).lastReceipt);
-      saveGame();
-      drawAccessSheet(panel);
-    } });
-  if (!attempt && back) rows.push({ n: '返回', tag: '', amt: '返回', run: back });
-  const title = attempt ? '置管进度' : mode === 'overview' ? '血管通路' : '选择血管通路';
-  openSheet(title, `床位 ${activeIdx + 1} · ${patient.patient.name}`, rows, patient);
+function openAccessProgress(patient, back) {
+  const { attempt } = E.accessState(patient);
+  if (!attempt) { back(); return; }
+  accessPanel = { patient, attempt, back };
+  openSheet('置管进度', patient.patient.name, [
+    { sec: escapeHtml(attempt.name) },
+    { sec: `<progress id="accessProgress" class="infusion-progress" max="${attempt.seconds}" value="0" aria-label="置管进度"></progress><span id="accessProgressText"></span>` },
+    { n: '返回', tag: '', amt: '', run: back },
+  ], patient);
   $('#sheetTitle').dataset.view = 'access';
-  panel.attempt = attempt;
-  panel.receipt = lastReceipt;
-  panel.notice = notice;
   refreshAccessSheet(patient);
 }
 
 function refreshAccessSheet(patient) {
-  const { attempt, lastReceipt, notice } = E.accessState(patient);
   if (accessPanel?.patient !== patient || !isCurrentPatient(patient)) return;
-  if (accessPanel.attempt !== attempt || accessPanel.receipt !== lastReceipt || accessPanel.notice !== notice) {
-    drawAccessSheet(accessPanel);
+  const { attempt, back } = accessPanel;
+  if (E.accessState(patient).attempt !== attempt) {
+    back();
     return;
   }
-  if (!attempt) return;
   const remaining = E.accessRemaining(patient);
-  const seconds = Math.ceil(remaining);
   $('#accessProgress').value = Math.max(0, attempt.seconds - remaining);
-  const label = `剩余 ${infusionDuration(seconds)}${paused ? ' · 模拟已暂停' : ' · 模拟时间'}`;
+  const label = `剩余 ${infusionDuration(Math.ceil(remaining))}`;
   const status = $('#accessProgressText');
   if (status.textContent !== label) status.textContent = label;
-}
-
-function processAccessReceipts() {
-  let changed = false;
-  for (const [index, { S: patient }] of beds.entries()) {
-    const receipt = E.accessState(patient).lastReceipt;
-    if (!receipt || receipt === accessReceipts.get(patient)) continue;
-    accessReceipts.set(patient, receipt);
-    changed = true;
-    checkBudget(patient);
-    if (receipt.status === 'given' && receipt.entry) {
-      judge('drug', receipt.order.id, null, receipt.entry, patient);
-      if (isCurrentPatient(patient)) window.SOUND?.drug();
-    }
-    if (receipt.status !== 'cancelled') {
-      const context = isCurrentPatient(patient) ? '' : `床位 ${index + 1} · ${patient.patient.name} · `;
-      toast(escapeHtml(context + accessReceiptText(receipt)), receipt.status === 'failed');
-    }
-    if (isCurrentPatient(patient) && $('#sheet').classList.contains('on') && $('#sheetTitle').dataset.view === 'access') {
-      refreshAccessSheet(patient);
-    }
-  }
-  if (changed) saveGame();
 }
 
 function infusionRecords(patient) {
@@ -951,7 +860,6 @@ function infusionRecords(patient) {
 
 function infusionSnapshot(patient) {
   const records = infusionRecords(patient);
-  const access = E.accessState(patient);
   const timed = [], history = [], pumps = [];
   for (const record of records) {
     if (record.pumpAction && record.pumpAction !== 'stop') {
@@ -959,9 +867,7 @@ function infusionSnapshot(patient) {
       continue;
     }
     const progress = E.infusionProgress(patient, record);
-    const accessLineId = access.pumps[record.pk?.accessPumpId] || record.accessLineId;
-    const line = access.lines.find(item => item.id === accessLineId);
-    if (record.pk && progress?.running) timed.push({ ...record, progress, line });
+    if (record.pk && progress?.running) timed.push({ ...record, progress });
     else history.push({ ...record, progress, eventAt: progress?.stoppedAt ??
       (progress && !progress.running ? progress.completedAt : record.t) });
   }
@@ -980,8 +886,7 @@ function infusionSnapshot(patient) {
         if (event.pumpAction === 'adjust') adjustedAt ??= event.t;
       }
     }
-    const line = access.lines.find(item => item.id === access.pumps[id]);
-    pumps.push({ id, n: sub?.n || id, unit: route?.unit || sub?.unit, route, line,
+    pumps.push({ id, n: sub?.n || id, unit: route?.unit || sub?.unit, route,
       rate: pump.rate, pausedRate: pump.pausedRate, startedAt, adjustedAt, delivery });
   }
   history.reverse().sort((a, b) => (b.eventAt ?? -1) - (a.eventAt ?? -1));
@@ -1008,7 +913,6 @@ function timedInfusionRow(record, index, selected) {
     `<button type="button" class="pill infusion-manage" data-infusion-id="${escapeHtml(record.id)}" data-infusion-index="${index}">查看输注</button>`;
   return infusionRow(name, status, `
     <p class="infusion-meta">${escapeHtml(record.route || '定时输注')} · 开始于 ${caseTime(record.t)}${record.givenNumber ? ` · 医嘱 #${record.givenNumber}` : ''}</p>
-    ${record.line ? `<p class="infusion-meta">通路 · ${escapeHtml(record.line.name + ' · ' + record.line.site)}</p>` : ''}
     <progress class="infusion-progress" aria-label="${escapeHtml(name)}输注进度" max="${record.infusionMinutes}" value="0"></progress>
     <p class="infusion-amounts"><span data-infused-amount></span><span data-infusion-remaining></span></p>
     ${controls}`);
@@ -1110,7 +1014,6 @@ function refreshInfusions(patient) {
   const activeRows = timedRows.map((record, i) => timedInfusionRow(record, i, selected)).join('') + (selected ? '' : pumps.map(pump =>
     infusionRow(pump.n, pump.pausedRate ? '已暂停' : '持续泵入', `
       <p class="infusion-meta">${pump.pausedRate ? '暂停前泵速' : '当前泵速'} <strong>${infusionAmount(pump.rate || pump.pausedRate, pump.unit)}</strong></p>
-      ${pump.line ? `<p class="infusion-meta">通路 · ${escapeHtml(pump.line.name + ' · ' + pump.line.site)}</p>` : ''}
       <p class="infusion-meta">本轮启动 ${caseTime(pump.startedAt)} · 最近调速 ${pump.adjustedAt != null ?
         caseTime(pump.adjustedAt) : pump.startedAt != null ? '尚未调速' : '时间未记录'}</p>
       <p class="infusion-meta" data-pump-duration></p>
@@ -1183,7 +1086,6 @@ function openGiveConfig(it, patient, back, { backLabel = '返回药物列表', r
   const routeDose = rt => (rt.pumpHalfLife && (E.pumpRate(patient, it.id) || pausedPumpRate())) || rt.d;
   let ri = Math.max(0, routes.findIndex(rt => rt.r === initialRoute));
   let dose = routeDose(routes[ri]);
-  let accessBlocked = '';
   const fmt = v => (Math.round(v * 100) / 100).toString();
 
   const render = () => {
@@ -1248,19 +1150,13 @@ function openGiveConfig(it, patient, back, { backLabel = '返回药物列表', r
         <button id="dGo" class="pill" ${sameRate ? 'disabled' : ''} style="width:100%;padding:14px;font-size:16px;font-weight:700;cursor:${sameRate ? 'default' : 'pointer'};background:${over ? '#f7e6e6' : '#fff'}">
           ${order}
         </button>
-        ${accessBlocked ? `<div class="note access-order-notice" id="drugAccessNotice" role="status" tabindex="-1">${escapeHtml(accessBlocked)}</div>
-          <button type="button" id="drugAccessOps" class="pill infusion-manage">前往操作</button>` : ''}
         ${currentRate && rt.pumpPause ? '<button type="button" id="dPause" class="pill" style="width:100%;margin-top:8px;padding:14px;font-size:16px;font-weight:700;cursor:pointer">暂停泵入</button>' : ''}
         ${currentRate || pausedRate ? '<button type="button" id="dStop" class="pill" style="width:100%;margin-top:8px;padding:14px;font-size:16px;font-weight:700;cursor:pointer">停止泵入</button>' : ''}
       </div>`;
 
     $('#drugBack').onclick = () => { if (isCurrentPatient(patient)) back(); };
-    const ops = $('#drugAccessOps');
-    if (ops) ops.onclick = () => {
-      if ($('#sheetList').contains(ops) && $('#sheet').classList.contains('on') && hasCurrentSaveEpoch()) openActionSheet(patient);
-    };
     $('#sheetList').querySelectorAll('[data-ri]').forEach(el => {
-      el.addEventListener('click', () => { ri = +el.dataset.ri; dose = routeDose(routes[ri]); accessBlocked = ''; render(); });
+      el.addEventListener('click', () => { ri = +el.dataset.ri; dose = routeDose(routes[ri]); render(); });
     });
     $('#sheetList').querySelectorAll('[data-mul]').forEach(el => {
       el.addEventListener('click', () => { dose = Math.max(minimum, roundDose(rt.d * +el.dataset.mul)); render(); });
@@ -1276,18 +1172,8 @@ function openGiveConfig(it, patient, back, { backLabel = '返回药物列表', r
         E.orderMedication(patient, it.id, dose, rt.r);
       if (result == null) return;
       if (action === 'apply' && result.status !== 'given') {
-        if (result.status === 'access' || result.status === 'busy') {
-          const pending = E.accessState(patient).pending;
-          accessBlocked = result.status === 'busy' ? '已有待执行医嘱。可在「操作」的血管通路中处理或撤销。' :
-            '缺少合适的血管通路。请前往「操作」建立通路，建立后将执行已保留的医嘱。';
-          if (result.status === 'access' && pending?.centralOnly) accessBlocked += ' 本医嘱需要中心静脉通路。';
-          if (pending) accessBlocked += ' 已保留 ' + accessOrderText(pending) + '。';
-          saveGame();
-          render();
-          $('#drugAccessNotice').focus();
-        } else {
-          toast(escapeHtml(result.reason || '请复核当前医嘱'), true);
-        }
+        if (result.status === 'access') promptForAccess(back);
+        else toast(escapeHtml(result.reason || '请复核当前医嘱'), true);
         return;
       }
       const entry = result.entry || patient.log.at(-1);
@@ -1375,8 +1261,8 @@ function drugRows() {
       const route = (d.routes && d.routes[0]) || '';
       const result = E.orderMedication(patient, id, d.defaultDose, route);
       if (result.status !== 'given') {
-        saveGame();
-        toast(escapeHtml(result.reason || '缺少合适的血管通路，请前往「操作」建立通路。'), true);
+        if (result.status === 'access') promptForAccess(openDrugSheet);
+        else toast(escapeHtml(result.reason || '请复核当前医嘱'), true);
         return;
       }
       checkBudget();
@@ -1463,8 +1349,8 @@ function openRespiratoryFlow(patient) {
 
 function openAdvancedCare(patient) {
   if (!isCurrentPatient(patient)) return;
-  const rows = [{ n: '中心静脉置管（CVC）', tag: accessSummaryTag(patient), amt: '查看',
-    run: () => openAccessSheet(patient, { mode: 'central', back: () => openAdvancedCare(patient) }) }];
+  const central = E.accessOptions(patient).find(option => option.type === 'cvc');
+  const rows = [accessOptionRow(patient, central, () => openAdvancedCare(patient))];
   for (const [id, device] of Object.entries(E.ADVANCED_DEVICES)) {
     const state = E.advancedDevice(patient, id);
     if (id === 'aorticBypass' && !E.aorticBypassIndicated(patient) && state.startedAt == null) continue;
@@ -1479,7 +1365,11 @@ function openAdvancedCare(patient) {
   rows.push({ n: PE_INTERVENTION.name, tag: PE_INTERVENTION.status(patient), amt: money(PE_INTERVENTION.cost),
     run: () => openThrombectomy(patient) });
   openSheet('高级设备与介入', `床位 ${activeIdx + 1} · ${patient.patient.name}`, rows, patient);
-  Object.assign($('#sheetTitle').dataset, { view: 'advanced-care', bypass: String(E.aorticBypassIndicated(patient)) });
+  Object.assign($('#sheetTitle').dataset, {
+    view: 'advanced-care',
+    bypass: String(E.aorticBypassIndicated(patient)),
+    accessAttempt: E.accessState(patient).attempt?.id ?? '',
+  });
 }
 
 function openAorticOrder(patient, id) {
@@ -1676,7 +1566,7 @@ function actionRows(patient) {
     return { n: name, tag: '', amt: a.cost ? '¥' + a.cost : '—', run: () => performAction(id, a) };
   });
   return [{ n: '血管通路', tag: accessSummaryTag(patient), amt: '查看',
-      run: () => openAccessSheet(patient, { mode: 'routine', back: () => openActionSheet(patient) }) },
+      run: () => openRoutineAccess(patient) },
     { n: '高级设备与介入', tag: '中心静脉置管 · 生命支持 · 亚低温 · 血管手术', amt: '查看', run: () => openAdvancedCare(patient) },
     { n: '体温处置', tag: '物理降温 · 被动保暖', amt: '查看', run: () => openTemperatureSheet(patient) }, ...actions];
 }
@@ -2361,16 +2251,26 @@ function loop(ts) {
       ? dt * (ff ? 20 : speed) * (nightMode ? 1.3 : 1)
       : Math.min(dt * 1200, 20);
     acc += adv;
+    let accessFinished = false;
     while (acc >= 0.2 && !observationEnd) {
-      for (const b of beds) {
-        if (!b.S.running) continue;
-        E.tick(b.S, 0.2);
-        if (window.CASEGEN) CASEGEN.step(b.S, 0.2, E);   // 病理模块的病程推进
+      for (const { S: patient } of beds) {
+        if (!patient.running) continue;
+        const attempt = patient.vascularAccess?.attempt;
+        E.tick(patient, 0.2);
+        if (attempt && !patient.vascularAccess?.attempt && patient.running) {
+          accessFinished = true;
+          checkBudget(patient);
+          if (isCurrentPatient(patient)) {
+            const success = E.accessState(patient).lines.some(line => line.id === attempt.id);
+            toast(success ? '通路已建立' : '置管失败，可重新尝试', !success);
+          }
+        }
+        if (window.CASEGEN) CASEGEN.step(patient, 0.2, E);   // 病理模块的病程推进
       }
       acc -= 0.2;
       if (observation) observationEnd = observationStopReason();
     }
-    processAccessReceipts();
+    if (accessFinished) saveGame();
     for (const { patient, from, hourlyRate } of billedBeds) {
       if (!patient.ins) initInsurance(undefined, patient);
       patient.bedCost = (patient.bedCost || 0) + hourlyRate * (patient.t - from) / 3600;
@@ -2514,7 +2414,6 @@ function renderHUD() {
   $('#clock').textContent = E.fmt(S.t);
   renderVitals();
   renderStates();
-  refreshAccessNotice(S);
   syncEnvSheet();
   if ($('#sheet').classList.contains('on')) {
     const panel = $('#sheetTitle').dataset;
@@ -2526,7 +2425,8 @@ function renderHUD() {
     }
     if (panel.view === 'device') refreshDeviceOrder(S);
     if (panel.view === 'aortic-order') refreshAorticOrder(S);
-    if (panel.view === 'advanced-care' && panel.bypass !== String(E.aorticBypassIndicated(S))) openAdvancedCare(S);
+    if (panel.view === 'advanced-care' && (panel.bypass !== String(E.aorticBypassIndicated(S)) ||
+        panel.accessAttempt !== (E.accessState(S).attempt?.id ?? ''))) openAdvancedCare(S);
     if (panel.view === 'thrombectomy' && (panel.active !== String(PE_INTERVENTION.active(S)) ||
         panel.canRequest !== String(PE_INTERVENTION.canRequest(S)))) openThrombectomy(S);
   }
@@ -4140,8 +4040,6 @@ function openBedsideMenu(assessment) {
     ...(isCurrentPatient(patient) ? [
       {n:'查看操作日志', tag:'当前床位', amt:'查看', run: () => openOperationLog(patient)},
       {n:'当前输液与泵药', tag:'输注进度与泵速', amt:'查看', run: () => openInfusions(patient)},
-      {n:'血管通路', tag:accessSummaryTag(patient), amt:'查看',
-        run: () => openAccessSheet(patient, { back: () => openBedsideMenu() })},
     ] : []),
     {n:'音效设置', tag:SOUND.enabled ? SOUND.volume + '%' : '静音', amt:'调节', run:openSoundSettings},
     {sec:'存档与测试'},
@@ -4654,7 +4552,6 @@ function renderAll() {
   renderPatient();
   mountBedBar();
   renderBedBar();
-  refreshAccessNotice(S);
   if (!S) {
     for (const id of ['#vitals', '#states', '#anat', '#opTitle', '#opan']) $(id).replaceChildren();
     delete $('#states').dataset.labels;
@@ -4673,7 +4570,7 @@ function renderAll() {
 /* 更新公告：每次发版在这里加一条（新的放最前面） */
 const RELEASES = [
   { v: '1.57.3', notes: [
-    '新增逐床血管通路。缺通路时保留医嘱，可在操作里手动置管，出院无需拔管。难度 6 起按穿刺条件判定成败。',
+    '每床共用一条血管通路。在操作中选择并确认置管，建好后回药库开药。更换方式时原通路保留至置管成功，出院无需拔管。',
     '新增艾司洛尔短效静脉泵入，支持调速、暂停和恢复。新增氯胺酮静脉镇静镇痛，可在插管或胸腔引流前单独开立。',
     '新接诊病例的医保、真实出院和禁用暂停，每项全程开启可在结算时额外获得 15 分。重大问题签字失败仍为 0 分。',
   ] },
@@ -4997,7 +4894,6 @@ if (beds.length > 1) flashBedBar(3000);
 showLobby();
 bindDialogFocus();
 settleBeds();
-for (const { S: patient } of beds) accessReceipts.set(patient, E.accessState(patient).lastReceipt);
 saveGame();
 window.addEventListener('pagehide', saveGame);
 /* 设置了在线版地址：启动时提示（不强制跳转，避免断网就进不去） */

@@ -3,7 +3,7 @@ const G = require('../prototype/generator');
 const E = require('../prototype/engine');
 const procedure = require('../prototype/pe-intervention');
 
-const bed = E.create(G.generate(2, 101, ['pe']));
+const bed = E.create(G.generate(3, 101, ['pe', 'tbi']));
 function advance(patient, seconds) {
   for (let elapsed = 0; elapsed < seconds; elapsed += 10) {
     const step = Math.min(10, seconds - elapsed);
@@ -41,4 +41,38 @@ advance(restored, 10);
 assert.equal(restored.log.filter(row => row[1]?.includes('导管取栓完成')).length, 1);
 assert.equal(restored.cost, before + procedure.cost);
 assert.equal(procedure.active(bed), true, '读档后操作独立');
-console.log('介入证据、模拟时钟、单次收费及读档验证通过');
+
+E.ACTIONS.craniotomy.apply(restored);
+assert.equal(restored.cranied, true);
+const withoutAnticoagulation = seconds => {
+  restored.t += seconds;
+  G.step(restored, seconds, E);
+};
+withoutAnticoagulation(20 * 60);
+assert.ok(restored.clot > 0.25 && restored.clot < 0.50);
+assert.equal(procedure.canRequest(restored), false, '仅少量残留或回升不触发再次会诊');
+
+withoutAnticoagulation(65 * 60);
+assert.ok(restored.clot >= 0.50);
+assert.equal(procedure.canRequest(restored), true);
+assert.match(procedure.start(restored).reason, /复查 CT/);
+E.orderTest(restored, 'ctpa');
+assert.match(procedure.start(restored).reason, /复查 CT/, '等待新采样回报');
+restored.t = restored.tests.ctpa.readyAt;
+E.pollTests(restored);
+const newReport = E.reports(restored, 'ctpa').at(-1);
+assert.ok(newReport.sampledAt > restored.peIntervention.completedAt);
+assert.ok(newReport.values.pulmonaryClotBurden >= 0.50);
+restored.map = 85;
+assert.match(procedure.start(restored).reason, /循环不稳/, '开颅术后出血风险仍需结合循环指征');
+
+E.give(restored, 'dobutamine', 5, '泵入');
+assert.equal(E.pumpRate(restored, 'dobutamine'), 5);
+const repeated = Object.assign(E.create(restored.cas), JSON.parse(JSON.stringify({ ...restored, cas: undefined })));
+E.restorePatient(repeated);
+const beforeRepeat = repeated.cost;
+assert.equal(procedure.start(repeated).ok, true, '在强心支持下维持血压仍需评估循环');
+assert.equal(repeated.peIntervention.previousSuccessAt, restored.peIntervention.completedAt);
+assert.equal(repeated.cost, beforeRepeat + procedure.cost);
+assert.equal(procedure.start(repeated).ok, false);
+console.log('介入证据、模拟时钟、收费、读档及复发后再次介入验证通过');

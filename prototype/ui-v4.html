@@ -418,6 +418,7 @@ button { color: inherit; }
   cursor: pointer;
 }
 button.drow { width: 100%; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; }
+button.drow:disabled { opacity: .7; cursor: default; }
 .paired-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 4px; }
 .related-action { min-height: 44px; border: 0; background: transparent; color: var(--accent); font: inherit; font-size: 13px; cursor: pointer; }
 .drow .nm { flex: 1 1 115px; min-width: 0; font-size: 14px; overflow-wrap: anywhere; }
@@ -475,6 +476,55 @@ button.drow { width: 100%; border: 0; background: transparent; color: inherit; f
 .infusion-status, .infusion-meta, .infusion-amounts { color: var(--ink-2); font-size: 12px; line-height: 1.65; }
 .infusion-progress { display: block; width: 100%; height: 8px; margin: 8px 0 4px; accent-color: var(--accent); }
 .infusion-manage { min-height: 40px; margin-top: 6px; cursor: pointer; }
+
+#infusionPanel { flex: none; }
+#infusionPanel .infusion-heading,
+#infusionPanel .infusion-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 8px;
+}
+#infusionPanel .infusion-heading { align-items: center; margin-bottom: 6px; }
+#infusionPanel .panel-title { margin: 0; }
+#bedsideInfusionDetails {
+  min-width: 44px;
+  min-height: 32px;
+  padding: 2px 7px;
+  color: var(--accent);
+  cursor: pointer;
+}
+#infusionPanel .infusion-list {
+  display: grid;
+  gap: 4px;
+  max-height: clamp(78px, 22vh, 176px);
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  scrollbar-width: thin;
+  list-style: none;
+}
+#infusionPanel .infusion-list:focus-visible { outline-offset: -2px; }
+#infusionPanel .infusion-row {
+  min-width: 0;
+  padding: 5px 7px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--subtle);
+}
+#infusionPanel .infusion-name { font-size: 12px; overflow-wrap: anywhere; }
+#infusionPanel .infusion-state {
+  flex: none;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+#infusionPanel .infusion-meta { margin: 1px 0 0; font-size: 11px; line-height: 1.35; overflow-wrap: anywhere; }
+#infusionPanel .infusion-progress { height: 6px; margin: 4px 0 1px; }
+#infusionPanel .is-pump .infusion-state { color: var(--green); }
+#infusionPanel .is-pump .infusion-progress { accent-color: var(--green); }
+#infusionPanel .is-paused .infusion-state { color: var(--amber); }
 
 #detail.case-review .card {
   width: min(760px, 100%);
@@ -553,6 +603,11 @@ button.drow { width: 100%; border: 0; background: transparent; color: inherit; f
 }
 #detail.case-review .case-review-log li + li { border-top: 1px solid var(--line); }
 #detail summary { color: var(--accent); cursor: pointer; }
+#detail .case-share { grid-column: 1 / -1; padding: 8px 0; }
+#detail .case-share summary { padding: 5px 0; font-weight: 650; }
+#detail .case-share p { color: var(--ink-2); margin: 6px 0; }
+#detail .case-share textarea { display: block; width: 100%; resize: vertical; font: 12px/1.5 var(--mono); }
+#detail .case-share button { margin-top: 8px; min-height: 40px; }
 #detail details dl { margin: 6px 0; }
 #detail.case-review .case-review-log time {
   color: var(--ink-2);
@@ -646,13 +701,14 @@ button.drow { width: 100%; border: 0; background: transparent; color: inherit; f
   :root { --dock-h: 64px; }
   .stage {
     grid-template-columns: minmax(0, 1.25fr) minmax(114px, 1fr);
-    grid-template-rows: auto auto auto minmax(302px, 1fr);
-    grid-template-areas: "vitals vitals" "states states" "mentor mentor" "anatomy organ";
+    grid-template-rows: auto auto auto auto minmax(302px, 1fr);
+    grid-template-areas: "vitals vitals" "states states" "infusion infusion" "mentor mentor" "anatomy organ";
     align-items: start;
-    gap: 8px;
+    gap: 0 8px;
     padding-top: 8px;
     overflow: auto;
   }
+  .monitor-panel, .status-panel, #infusionPanel, #mentorSlot { margin-bottom: 8px; }
   .rail { display: contents; }
   .monitor-panel { grid-area: vitals; }
   .monitor-panel, .status-panel { padding: 8px; }
@@ -664,11 +720,10 @@ button.drow { width: 100%; border: 0; background: transparent; color: inherit; f
   .status-panel .panel-title { flex: none; margin: 0; }
   #states { gap: 4px; }
   .spill { min-height: 28px; padding: 3px 6px; font-size: 11px; }
+  #infusionPanel { grid-area: infusion; padding: 5px 8px 8px; }
+  #infusionPanel .infusion-heading { margin-bottom: 3px; }
+  #infusionPanel .infusion-list { max-height: 88px; }
   #mentorSlot { grid-area: mentor; }
-  .stage:not(:has(#mentorCard:not([style*="display: none"], [style*="display:none"]))) {
-    grid-template-rows: auto auto minmax(302px, 1fr);
-    grid-template-areas: "vitals vitals" "states states" "anatomy organ";
-  }
   #mentorCard { max-height: 75px; }
   .bodywrap { grid-area: anatomy; min-height: 302px; height: 100%; }
   .organ-panel { grid-area: organ; padding: 9px; }
@@ -871,6 +926,13 @@ button.drow { width: 100%; border: 0; background: transparent; color: inherit; f
         <p id="conditionReviewResult" role="status" hidden></p>
         <div id="vitals"></div>
       </section>
+      <section class="panel" id="infusionPanel" aria-labelledby="infusionTitle" hidden>
+        <div class="infusion-heading">
+          <h2 class="panel-title" id="infusionTitle">输液与泵药</h2>
+          <button class="pill" id="bedsideInfusionDetails" type="button" aria-label="输液与泵药详情" aria-haspopup="dialog">详情</button>
+        </div>
+        <ul class="infusion-list" id="infusionList" tabindex="0" aria-labelledby="infusionTitle"></ul>
+      </section>
       <div id="mentorSlot"></div>
     </div>
 
@@ -981,10 +1043,12 @@ button.drow { width: 100%; border: 0; background: transparent; color: inherit; f
 <script src="organs.js"></script>
 <script src="substances.js"></script>
 <script src="traits.js"></script>
+<script src="emergency-cases.js"></script>
 <script src="generator.js"></script>
 <script src="intake.js"></script>
 <script src="exams.js"></script>
 <script src="finance.js"></script>
+<script src="vascular-access.js"></script>
 <script src="advanced-care.js"></script>
 <script src="pe-intervention.js"></script>
 <script src="engine.js"></script>

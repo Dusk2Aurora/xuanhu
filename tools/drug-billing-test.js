@@ -14,10 +14,38 @@ const close = (actual, expected, message) => {
 const reload = (scenario, saved) => {
   const base = bed(70, scenario);
   const S = Object.assign(base, structuredClone(saved));
-  E.restorePatient(S);
+  E.restorePatient(S, saved);
   E.restoreDrugCost(S, saved);
   return S;
 };
+
+for (const sub of SUB.ALL) {
+  for (const route of sub.routes || []) {
+    if (!/静滴|静脉滴注|输液|挂液|输血|输注|泵入/.test(route.r)) continue;
+    const minutes = SUB.infusionMinutesFor(route, route.d);
+    const label = `${sub.n}（${route.r}）`;
+    assert.ok(Boolean(minutes > 0) !== Boolean(route.pumpHalfLife > 0),
+      label + ' 应能按定时输注或持续泵管理');
+    const S = bed(70, { ...baseline, prehospitalAccess: { type: 'piv' } });
+    assert.equal(E.orderMedication(S, sub.id, route.d, route.r).status, 'given', label);
+    if (minutes) {
+      const order = S.pk.find(record => record.id === sub.id);
+      assert.equal(E.infusionProgress(S, order)?.deliveredDose, 0, label);
+      E.tick(S, 1);
+      const partial = E.infusionProgress(S, order);
+      assert.ok(partial.running && partial.deliveredDose > 0 && partial.deliveredDose < route.d, label);
+      assert.ok(E.stopInfusion(S, order), label);
+      E.tick(S, 1);
+      assert.equal(E.infusionProgress(S, order).deliveredDose, partial.deliveredDose, label);
+    } else {
+      assert.equal(E.pumpRate(S, sub.id), route.d, label);
+      E.tick(S, 1);
+      assert.ok(E.pumpEffect(S, sub.id) > 0, label);
+      assert.ok(E.stopPump(S, sub.id), label);
+      assert.equal(E.pumpRate(S, sub.id), 0, label);
+    }
+  }
+}
 
 {
   const S = bed();
@@ -116,6 +144,135 @@ const reload = (scenario, saved) => {
   assert.equal(secondReload.drugCostPartial, true);
   close(secondReload.drugCost, throughDeath, '再次存档保留本版累计金额与标记');
   close(secondReload.cost, 170 + throughDeath, '旧档总费用保留并累加新费用');
+}
+
+{
+  const heparin = SUB.byId('heparin');
+  const route = heparin.routes.find(route => route.pumpHalfLife);
+  const S = bed(), control = bed();
+  const advance = (patient, minutes) => {
+    for (let second = 0; second < minutes * 60; second += 10) E.tick(patient, 10);
+    assert.ok(patient.running);
+  };
+  E.setBleedingRate(S, 'test', 0.0005);
+  E.setBleedingRate(control, 'test', 0.0005);
+  assert.equal(E.give(S, heparin.id, 1200, route.r), 1200);
+  assert.equal(S.pk.length, 0, '开泵不会生成静推医嘱');
+  assert.equal(S.drugCost, 0);
+  advance(S, 30);
+  advance(control, 30);
+  assert.ok(E.coagulation(S) < E.coagulation(control) && S.rbcMass < control.rbcMass);
+  const initialActivity = E.heparinActivity(S);
+  assert.equal(E.give(S, heparin.id, 1800, route.r), 1800);
+  close(E.heparinActivity(S), initialActivity, '调速延续已有抗凝活性');
+  assert.equal(E.give(S, heparin.id, 1800, route.r), null);
+  advance(S, 20);
+  E.orderTest(S, 'coag');
+  const sampled = S.tests.coag.sample;
+  assert.ok(sampled.s.aptt > 29 && sampled.s.heparinAntiXa > 0);
+  const beforePause = E.heparinActivity(S);
+  assert.equal(E.pausePump(S, heparin.id), 1800);
+  assert.equal(E.pausePump(S, heparin.id), null);
+  assert.match(S.log.at(-1)[1], /暂停泵入.*1800 U\/h.*600 U.*¥5\.40/);
+  const { cas, ...state } = S;
+  const restored = reload(cas, JSON.parse(JSON.stringify(state)));
+  advance(restored, 60);
+  close(E.heparinActivity(restored), beforePause / 2, '暂停后按半衰期清除');
+  close(restored.drugCost, 10.8, '暂停和重载期间不产生额外泵费');
+  E.pollTests(restored);
+  const report = E.reports(restored, 'coag').at(-1);
+  assert.equal(report.sampledAt, sampled.t);
+  assert.equal(report.values.aptt, sampled.s.aptt);
+  assert.equal(report.values.heparinAntiXa, sampled.s.heparinAntiXa);
+  assert.equal(report.rows.find(row => row.label === '采样时普通肝素泵速')?.value, '1800 U/h');
+  E.orderTest(restored, 'coag');
+  assert.ok(restored.tests.coag.sample.s.heparinAntiXa < report.values.heparinAntiXa);
+  assert.equal(E.give(restored, heparin.id, 1800, route.r), 1800);
+  assert.equal(restored.given.at(-1).pumpAction, 'resume');
+  advance(restored, 20);
+  assert.equal(E.stopPump(restored, heparin.id), 1800);
+  const segments = restored.given.filter(given => given.pumpSeconds > 0);
+  assert.equal(segments.length, 3);
+  for (const segment of segments) {
+    assert.equal(segment.unit, 'U/h');
+    close(segment.endedAt - segment.t, segment.pumpSeconds, '医嘱时段与运行时长一致');
+    close(segment.pumpDose, 600, '药量随每段泵速和时间计算');
+    close(segment.cost, 5.4, '按该段实际用量收费一次');
+  }
+  close(restored.drugCost, 16.2, '三段费用与药费汇总一致');
+  close(E.pumpDelivery(restored, heparin.id).dose, 1800, '泵入量汇总与三段医嘱一致');
+  E.give(restored, heparin.id);
+  E.give(restored, heparin.id, heparin.dose, '皮下');
+  assert.deepEqual(restored.pk.map(order => order.route), ['静推', '皮下']);
+  close(restored.drugCost, 16.2 + 2 * heparin.cost, '静推与皮下仍按单次剂量计费');
+
+  for (const finish of [
+    patient => E.endCase(patient, 'discharge', '达到出院标准'),
+    patient => { patient.k = 8; assert.equal(E.signDischarge(patient).status, 'failed'); },
+    patient => E.endCase(patient, 'death', '测试病案结束'),
+  ]) {
+    const patient = bed();
+    E.give(patient, heparin.id, 1200, route.r);
+    advance(patient, 1);
+    finish(patient);
+    const [segment, stopped] = patient.given;
+    assert.equal(segment.endedAt, patient.t);
+    assert.equal(stopped.pumpAction, 'stop');
+    close(segment.pumpDose, 20, '结算时关闭最后一段并记录实际泵量');
+    close(segment.cost, 0.18, '结算时最后一段费用与汇总一致');
+    assert.match(patient.log.at(-2)[1], /停止泵入.*1200 U\/h.*20 U.*¥0\.18/);
+    E.finishPumps(patient);
+    E.tick(patient, 60);
+    assert.equal(patient.given.length, 2, '整理病历时重复结算不增加医嘱');
+    close(patient.drugCost, segment.cost, '结算后无新增泵入费用');
+  }
+}
+
+{
+  const esmolol = SUB.byId('esmolol');
+  const route = esmolol.routes[0];
+  const scenario = CASEGEN.generate(2, 101, ['aorticDissection']);
+  const S = bed(105, scenario), control = bed(105, scenario);
+  const advance = (patient, minutes) => {
+    for (let second = 0; second < minutes * 60; second += 2) {
+      E.tick(patient, 2);
+      CASEGEN.step(patient, 2, E);
+    }
+    assert.ok(patient.running);
+  };
+  assert.equal(esmolol.unit, 'μg/kg/min');
+  assert.equal(E.give(S, esmolol.id, 50, '静推'), null);
+  assert.equal(E.give(S, esmolol.id, 225, route.r), null);
+  assert.equal(E.give(S, esmolol.id, 50, route.r), 50);
+  assert.equal(S.drugCost, 0);
+  advance(S, 9);
+  advance(control, 9);
+  assert.ok(S.hr < control.hr - 8 && E.bp(S).sys < E.bp(control).sys);
+  assert.ok(S.aorticDissectionLoad < control.aorticDissectionLoad, '较低的心率和血压减缓夹层进展');
+  close(E.pumpDelivery(S, esmolol.id).dose, 47.25, '按体重和实际分钟数换算输注毫克量');
+  close(S.drugCost, 10.8, '按体重和泵入时间计费');
+  const beforeAdjust = E.pumpEffect(S, esmolol.id);
+  assert.equal(E.give(S, esmolol.id, 100, route.r), 100);
+  close(E.pumpEffect(S, esmolol.id), beforeAdjust, '调速延续已有药效');
+  advance(S, 9);
+  assert.ok(S.hr < 80 && E.bp(S).map > 65);
+  assert.ok(E.dischargeCheck(S).majorReasons.some(reason => reason.includes(esmolol.n)));
+  const beforePause = E.pumpEffect(S, esmolol.id);
+  const hrBeforePause = S.hr;
+  assert.equal(E.pausePump(S, esmolol.id), 100);
+  assert.match(S.log.at(-1)[1], /100 μg\/kg\/min.*94\.5 mg.*¥21\.60/);
+  const { cas, ...state } = S;
+  const restored = reload(cas, JSON.parse(JSON.stringify(state)));
+  advance(restored, 9);
+  assert.ok(E.pumpEffect(restored, esmolol.id) < beforePause * 0.65 && restored.hr > hrBeforePause);
+  close(restored.drugCost, 32.4, '暂停期间保留已计费用');
+  assert.equal(E.give(restored, esmolol.id, 100, route.r), 100);
+  assert.equal(restored.given.at(-1).pumpAction, 'resume');
+  advance(restored, 1);
+  assert.equal(E.stopPump(restored, esmolol.id), 100);
+  assert.equal(E.pumpDelivery(restored, esmolol.id).unit, 'mg');
+  close(E.pumpDelivery(restored, esmolol.id).dose, 152.25, '暂停、恢复和停用保留累计输注量');
+  close(restored.drugCost, 34.8, '只对实际泵入时段计费');
 }
 
 {
@@ -234,4 +391,132 @@ const earnedNoPressor = S => {
   assert.equal(earnedNoPressor(reload(E.CASES.sepsis, oldSave)), true, '完整给药记录不受日志上限影响');
 }
 
-console.log('药费、器械费用、医保预算与升压药成就回归通过');
+{
+  const S = bed();
+  assert.equal(E.orderMedication(S, 'water').status, 'given');
+  assert.equal(E.orderMedication(S, 'v_rhino').status, 'given');
+  assert.equal(E.orderMedication(S, 'naloxone', 0.8, '肌注').status, 'given');
+  const before = { cost: S.cost, drugCost: S.drugCost, count: S.given.length, log: S.log.length };
+  assert.deepEqual(E.orderMedication(S, 'prbc', 1, '输血'), {
+    ok: false, status: 'access', reason: '未建立血管通路',
+  });
+  assert.equal(E.orderMedication(S, 'c_plt', 1, '输注').status, 'access');
+  assert.equal(S.log.length, before.log);
+  const { attempt } = E.startAccess(S, 'piv');
+  assert.equal(E.startAccess(S, 'piv').ok, false);
+  E.tick(S, attempt.seconds - 7);
+  assert.equal(E.accessRemaining(S), 7);
+  assert.equal(E.accessState(S).available, false);
+  assert.equal(S.cost, before.cost);
+  assert.equal(S.given.length, before.count);
+  assert.deepEqual(E.accessState(bed()), { lines: [], attempt: null, available: false });
+
+  const saved = JSON.parse(JSON.stringify(S));
+  // An interrupted order from the old system must not be given when the saved placement completes.
+  saved.vascularAccess.pending = { id: 'c_plt', dose: 1, route: '输注', orderedAt: 0 };
+  saved.vascularAccess.lastReceipt = { status: 'given' };
+  saved.vascularAccess.attempt.side = 'right';
+  const resumed = reload(baseline, saved);
+  E.tick(resumed, 8);
+  const state = E.accessState(resumed);
+  assert.equal(state.available, true);
+  assert.equal(state.attempt, null);
+  assert.equal(state.lines[0].establishedAt, attempt.endsAt);
+  assert.equal(resumed.vascularAccess.pending, undefined);
+  assert.equal(resumed.vascularAccess.lastReceipt, undefined);
+  assert.equal(resumed.given.length, before.count);
+  assert.equal(resumed.drugCost, before.drugCost);
+  assert.equal(resumed.cost, before.cost + attempt.cost);
+  assert.ok(resumed.log.some(entry => entry[1].includes('外周静脉置管成功') && entry[5]));
+  assert.equal(E.orderMedication(resumed, 'prbc', 1, '输血').status, 'given');
+  assert.equal(E.orderMedication(resumed, 'c_plt', 1, '输注').status, 'given');
+  E.tick(resumed, 1);
+  assert.equal(resumed.given.filter(order => order.id === 'c_plt').length, 1);
+  assert.equal(resumed.drugCost, before.drugCost + E.drugPrice(SUB.byId('prbc'), 1, resumed.patient) + SUB.byId('c_plt').cost);
+}
+
+{
+  const S = bed();
+  assert.equal(E.orderMedication(S, 'epi', 1, '静推').status, 'access');
+  const { attempt } = E.startAccess(S, 'piv');
+  attempt.failureChance = 1;
+  E.tick(S, attempt.seconds);
+  assert.deepEqual(E.accessState(S), { lines: [], attempt: null, available: false });
+  assert.ok(S.log.some(entry => entry[1].includes('外周静脉置管失败') && entry[5]));
+  assert.equal(S.cost, attempt.failureCost);
+  assert.equal(S.drugCost, 0);
+  assert.equal(S.given.length, 0);
+
+  S.rhythm = 'vf';
+  const retry = E.startAccess(S, 'io');
+  assert.ok(retry.ok);
+  E.ACTIONS.cpr.apply(S);
+  assert.equal(E.accessState(S).attempt, retry.attempt);
+  E.tick(S, retry.attempt.seconds);
+  assert.equal(E.accessState(S).available, true);
+  assert.equal(E.accessState(S).lines[0].type, 'io');
+  assert.equal(S.given.length, 0);
+  assert.equal(E.orderMedication(S, 'epi', 1, '静推').status, 'given');
+  assert.equal(E.orderMedication(S, 'nacl', 500, '静滴').status, 'given');
+}
+
+{
+  const S = bed(70, { ...baseline, prehospitalAccess: { type: 'piv' } });
+  const heparin = '持续静脉泵入';
+  assert.equal(E.accessState(S).lines[0].origin, 'prehospital');
+  assert.equal(E.startAccess(S, 'piv').ok, false);
+  assert.equal(E.orderMedication(S, 'heparin', 1200, heparin).status, 'given');
+  assert.equal(S.cost, 0);
+  E.pausePump(S, 'heparin');
+  assert.equal(S.pumps.heparin.pausedRate, 1200);
+  assert.equal(E.orderMedication(S, 'heparin', 1400, heparin).status, 'given');
+  assert.equal(E.orderMedication(S, 'insulin', 2, '泵入').status, 'given');
+  assert.equal(E.orderMedication(S, 'calcium_cl').status, 'given');
+  assert.equal(E.pumpRate(S, 'heparin'), 1400);
+  const infusion = S.pk.find(order => order.id === 'insulin');
+  assert.ok(E.infusionProgress(S, infusion).running);
+  assert.equal(E.accessState(S).lines.length, 1);
+  const saved = JSON.parse(JSON.stringify(S));
+  saved.vascularAccess.activeId = saved.vascularAccess.lines[0].id;
+  saved.vascularAccess.pumps = { heparin: saved.vascularAccess.activeId };
+
+  const restored = reload(baseline, saved);
+  assert.equal(E.accessState(restored).available, true);
+  assert.equal(restored.vascularAccess.activeId, undefined);
+  assert.equal(restored.vascularAccess.pumps, undefined);
+  assert.equal(E.pumpRate(restored, 'heparin'), 1400);
+  const change = E.startAccess(restored, 'cvc');
+  assert.ok(change.ok);
+  change.attempt.failureChance = 1;
+  assert.equal(E.orderMedication(restored, 'calcium_cl').status, 'given');
+  E.tick(restored, change.attempt.seconds);
+  assert.equal(E.accessState(restored).lines[0].type, 'piv');
+  assert.equal(E.pumpRate(restored, 'heparin'), 1400);
+  assert.ok(restored.log.some(entry => /中心静脉置管失败（费用 ¥200）/.test(entry[1])));
+  assert.ok(E.stopInfusion(restored, restored.pk.find(order => order.id === 'insulin')));
+  E.stopPump(restored, 'heparin');
+  assert.equal(E.pumpRate(restored, 'heparin'), 0);
+}
+
+{
+  const ended = bed();
+  const { attempt } = E.startAccess(ended, 'piv');
+  E.endCase(ended, 'death', '测试');
+  E.tick(ended, attempt.seconds);
+  assert.deepEqual(E.accessState(ended), { lines: [], attempt: null, available: false });
+  assert.equal(ended.cost, 0);
+}
+
+{
+  const S = bed();
+  const route = '持续静脉泵入';
+  E.give(S, 'heparin', 1200, route);
+  delete S.vascularAccess;
+  const restored = reload(baseline, JSON.parse(JSON.stringify(S)));
+  assert.equal(E.accessState(restored).lines[0].origin, 'legacy');
+  assert.equal(E.orderMedication(restored, 'heparin', 1400, route).status, 'given');
+  assert.equal(E.pumpRate(restored, 'heparin'), 1400);
+  assert.equal(restored.cost, 0);
+}
+
+console.log('药费、器械费用、医保预算、血管通路与升压药成就回归通过');

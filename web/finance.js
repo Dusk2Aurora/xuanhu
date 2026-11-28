@@ -34,6 +34,7 @@ function familyIncome(percentile) {
 }
 
 function initInsurance(patient, type) {
+  if (patient.cas?.exploration) return;
   const previous = patient.ins;
   if (previous && type == null) return previous;
   const seed = patient.seed ?? patient.cas?.seed;
@@ -68,8 +69,10 @@ function chargeDevice(patient, amount, coverage, phase) {
 }
 
 function costSummary(patient, additionalCost = 0, additionalCoverage) {
-  const { cost = 0, bedCost = 0, ins, coverageCost } = patient;
-  const total = cost + bedCost + additionalCost;
+  const { cost = 0, bedCost = 0, coverageCost } = patient;
+  const exploration = patient.cas?.exploration;
+  const ins = exploration ? null : patient.ins;
+  const total = cost + (exploration ? 0 : bedCost) + additionalCost;
   const totalFen = Math.round(total * 100);
   const selfPayOnly = (coverageCost?.selfPay || 0) + (additionalCoverage === 'selfPay' ? additionalCost : 0);
   const partial = (coverageCost?.partial || 0) + (additionalCoverage === 'partial' ? additionalCost : 0);
@@ -81,7 +84,7 @@ function costSummary(patient, additionalCost = 0, additionalCoverage) {
   const selfPayOnlyFen = excludedFen - partialUpfrontFen;
   const reimbFen = ins ? Math.round(Math.min(ins.cap * 100, Math.max(0, eligibleFen - ins.ded * 100) * ins.rate)) : 0;
   return {
-    total: totalFen / 100, reimb: reimbFen / 100, selfPay: (totalFen - reimbFen) / 100, cap: ins?.oopCap || 0,
+    total: totalFen / 100, reimb: reimbFen / 100, selfPay: exploration ? null : (totalFen - reimbFen) / 100, cap: exploration ? null : ins?.oopCap || 0,
     selfPayOnly: selfPayOnlyFen / 100, partialUpfront: partialUpfrontFen / 100, eligible: eligibleFen / 100,
   };
 }

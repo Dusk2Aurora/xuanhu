@@ -13,7 +13,8 @@
 (function (root) {
 'use strict';
 const clamp = (x,a,b)=>Math.min(b,Math.max(a,x));
-const VERSION = 5;
+const VERSION = 7;
+const EMERGENCY_CASES = root.EMERGENCY_CASES || (typeof module !== 'undefined' && module.exports ? require('./emergency-cases.js') : null);
 const traitsApi = root.TRAITS || (typeof module !== 'undefined' && module.exports ? require('./traits.js') : null);
 const substances = root.SUBSTANCES || (typeof module !== 'undefined' && module.exports ? require('./substances.js') : null);
 
@@ -82,7 +83,8 @@ function caseMeasureReasons(primary, S) {
   const failures = new Map();
   for (const m of primary) {
     for (const [key, rule] of Object.entries(m.measures || {})) {
-      const reading = CASE_MEASURES[key](S, rule);
+      const limit = m.id === 'apap' && key === 'cr' ? S.cas?.apapRenalDischargeLimit ?? rule : rule;
+      const reading = CASE_MEASURES[key](S, limit);
       if (!reading) continue;
       const { label, value, target } = reading;
       const metric = key === 'urinePerKg' ? 'uo' : key;
@@ -102,7 +104,10 @@ function caseMeasureReasons(primary, S) {
 
 const CASE_MEASURES = {
   cr: (S, max) => S.cr > max && { label: '肌酐', value: `${Math.round(S.cr)} µmol/L`, target: `≤${max} µmol/L` },
-  coag: (S, min) => (S.coag || 1) < min && { label: '凝血功能', value: S.coag.toFixed(2), target: `≥${min.toFixed(2)}` },
+  coag: (S, min) => {
+    const value = root.LIFE?.coagulation(S) ?? S.coag ?? 1;
+    return value < min && { label: '凝血功能', value: value.toFixed(2), target: `≥${min.toFixed(2)}` };
+  },
   vol: (S, min) => S.vol < min && { label: '有效循环血量', value: `${S.vol.toFixed(1)} L`, target: `≥${min} L` },
   uo: (S, min) => S.uo < min && { label: '尿量', value: `${Math.round(S.uo * 60 * 100) / 100} mL/h`, target: `≥${min * 60} mL/h` },
   urinePerKg(S, min) {
@@ -114,12 +119,12 @@ const CASE_MEASURES = {
 /* 病例判据可在保留同一出院理由的同时，标记尚未解除的重大问题。 */
 const dischargeReason = reason => reason;
 
-function observeAfter(startTime, duration, reason, check) {
+function observeAfter(startTime, duration, reason, check = () => []) {
   const observation = S => {
     const start = startTime(S);
     if (start == null) return null;
     const endsAt = start + duration;
-    return S.t < endsAt ? { endsAt, reason } : null;
+    return S.t < endsAt - 1e-7 ? { endsAt, reason } : null;
   };
   return { observation, check: (S, issue) => {
     const reasons = check(S, issue);
@@ -247,9 +252,9 @@ const MODULES = [
     /* 神经体液血管收缩驱动：替代原来"只能靠 init.svr 一次性设定、随即被压力反射拉回"
        的写法。扩血管药（硝酸甘油/硝普钠/米力农）直接削减这个驱动 → 后负荷下降 →
        衰竭心肌每搏量上升（engine 的 afterloadF）→ CO 上升 → 心率回落。 */
-    advance(S, dtMin) {
-      const vaso = (active(S,'nitroglycerin') ? 0.55 : 0)
-                 + (active(S,'nitroprusside') ? 0.95 : 0)
+    advance(S, dtMin, E) {
+      const vaso = 0.55 * E.infusedDrugActivity(S, 'nitroglycerin')
+                 + 0.95 * Math.max(E.pumpEffect(S, 'nitroprusside'), E.infusedDrugActivity(S, 'nitroprusside'))
                  + (active(S,'hydralazine') ? 0.40 : 0)
                  + (active(S,'captopril') ? 0.25 : 0)
                  + (active(S,'milrinone') ? 0.45 : 0);
@@ -363,11 +368,11 @@ const MODULES = [
     check:S=>[ (1-(S.acheActivity==null?1:S.acheActivity))>0.25 ? '胆碱酯酶仍被抑制、分泌物多' : null ].filter(Boolean),
     hint:'阿托品对抗毒蕈碱样症状，碘解磷定复活胆碱酯酶。先给氧再解毒。',
     advance(S, dtMin, E) {
-      const pra = active(S,'pralidoxime');
+      const pra = E.infusedDrugActivity(S, 'pralidoxime');
       const atro = active(S,'atropine');
       /* 胆碱酯酶活性：老化（不可逆）继续下降，解磷定复活；>6 h 后老化使复活效率大减 */
       const aging = S.t > 6 * 3600 ? 0.20 : 1;
-      let react = (pra ? 0.030 * aging : 0) - 0.0016;
+      const react = 0.030 * aging * pra - 0.0016;
       S.acheActivity = clamp((S.acheActivity == null ? 0.12 : S.acheActivity) + react * dtMin, 0, 0.95);
       S.opTox = 1 - S.acheActivity;      // 兼容 mentor.js / check() 的旧字段名
       /* 阿托品只是阻断毒蕈碱受体，不恢复酶活性 */
@@ -392,23 +397,30 @@ const MODULES = [
       [240, '院前病史', '吞服约 20 片对乙酰氨基酚。', 'medications'],
       [null, '院前病史', '服药后出现恶心。'],
     ],
-    goal:['尽早使用解毒剂','观察 2 小时无肝损证据','肌酐与乳酸正常'],
+    goal:['尽早使用解毒剂','观察 2 小时无肝损证据','乳酸达标并复评肌酐'],
     measures: { cr: 130, coag: 0.60 },
-    ...observeAfter(() => 0, 2 * 3600, '对乙酰氨基酚中毒需观察 2 小时（肝损窗口）', S => [
-               S.lac>3.0 ? `乳酸 ${S.lac.toFixed(1)} mmol/L` : null ].filter(Boolean)),
+    ...observeAfter(() => 0, 2 * 3600, '对乙酰氨基酚中毒需观察 2 小时（肝损窗口）'),
     hint:'早期没有症状不等于安全。N-乙酰半胱氨酸越早给越有效，8 小时后疗效明显下降。',
     advance(S, dtMin, E) {
-      const nac = active(S,'nacetylcysteine');
+      const nac = E.infusedDrugActivity(S, 'nacetylcysteine');
       /* NAPQI 生成（CYP 2E1）→ 与 GSH 结合解毒；GSH 耗竭后与肝细胞蛋白共价结合 */
-      const form = 0.016 * (S.apapLoad == null ? 1 : S.apapLoad);
-      const conj = 1.8 * (S.gsh || 0) * (S.napqi || 0) + (nac ? 0.8 : 0) * (S.napqi || 0);
+      const load = S.apapLoad ?? 1;
+      const form = 0.016 * load;
+      S.apapLoad = load * Math.exp(-Math.LN2 * dtMin / 240);
+      const conj = (1.8 * (S.gsh || 0) + 0.8 * nac) * (S.napqi || 0);
       const hydr = 0.04 * (S.napqi || 0);
       S.napqi = clamp((S.napqi || 0) + (form - conj - hydr) * dtMin, 0, 3);
-      const gshSyn = 0.0035 + (nac ? 0.020 : 0);         // NAC 是 GSH 前体
+      const gshSyn = 0.0035 + 0.020 * nac;                // NAC 是 GSH 前体
       S.gsh = clamp((S.gsh || 0) + (gshSyn - 2.4 * (S.gsh || 0) * (S.napqi || 0)) * dtMin, 0, 1.2);
       /* 只有 GSH 明显耗竭（<0.25）时 NAPQI 才造成肝细胞坏死 */
       const bind = 0.055 * (S.napqi || 0) * ((S.gsh || 0) < 0.25 ? (1 - (S.gsh || 0) / 0.25) : 0);
-      S.hepatotox = clamp((S.hepatotox || 0) + bind * dtMin, 0, 1);
+      const injury = S.hepatotox || 0;
+      // 模拟时间压缩。毒性代谢物受控、谷胱甘肽恢复后，肝功能可逐步恢复。
+      const recovering = S.gsh >= 0.35 && S.napqi < 0.06;
+      const repaired = recovering ? injury * -Math.expm1(-Math.LN2 * dtMin / 120) : 0;
+      S.hepatotox = clamp(injury + bind * dtMin - repaired, 0, 1);
+      // 只回补这一段肝损恢复所对应的凝血能力，保留其他抗凝或失血影响。
+      if (repaired > 0) S.coag += 0.78 * repaired;
       S.apapDamage = S.hepatotox;   // 兼容旧字段名
     },
   },
@@ -441,9 +453,9 @@ const MODULES = [
     hint:'高血压急症要平稳降压。可持续静脉泵入尼卡地平，根据血压和心率调速。',
     advance(S, dtMin, E) {
       const potency = 0.12 * (E?.pumpEffect?.(S, 'nicardipine') || 0)
-                    + (active(S,'nitroprusside') ? 0.95 : 0)
+                    + 0.95 * Math.max(E.pumpEffect(S, 'nitroprusside'), E.infusedDrugActivity(S, 'nitroprusside'))
                     + (active(S,'labetalol') ? 0.35 : 0)
-                    + (active(S,'nitroglycerin') ? 0.25 : 0)
+                    + 0.25 * E.infusedDrugActivity(S, 'nitroglycerin')
                     + (active(S,'nifedipine') ? 0.18 : 0)
                     + (active(S,'hydralazine') ? 0.35 : 0)
                     + (active(S,'captopril') ? 0.15 : 0)
@@ -502,8 +514,8 @@ const MODULES = [
     check:S=>[ (S.clot||0)>0.25 ? '右心负荷仍未减轻（血栓未清除）' : null ].filter(Boolean),
     hint:'大面积肺栓塞先给氧、抗凝，血流动力学不稳时溶栓。补液要小心，右心已经撑不住了。',
     advance(S, dtMin, E) {
-      const lysis = active(S,'alteplase') ? 0.050 : 0;
-      const hep = active(S,'heparin') ? 0.012 : 0;
+      const lysis = 0.050 * E.infusedDrugActivity(S, 'alteplase');
+      const hep = 0.012 * clamp((E?.heparinActivity(S) || 0) * 2, 0, 1);
       S.clot = clamp((S.clot == null ? 0.90 : S.clot) + (0.003 - lysis - hep) * dtMin, 0, 1);
       /* 血栓负荷 → 肺血管阻力（替代原来的 svr 上限钳制） */
       S.pvr = 1.8 + 9.5 * S.clot;
@@ -578,11 +590,15 @@ const MODULES = [
     goal:['平均动脉压 ≥ 65','尿量 ≥ 30 mL/h','疼痛缓解'],
     measures: { vol: 3.9, uo: 0.5 },
     hint:'胰腺炎的头 24 小时死于第三间隙丢失，不是死于疼痛——先补液，再谈镇痛。',
+    lactateDrive(S) {
+      const hypovolemia = clamp((4.2 - S.vol) / 0.6, 0, 1);
+      const hypoperfusion = clamp((70 - S.map) / 15, 0, 1);
+      return 0.03 + 0.04 * Math.max(hypovolemia, hypoperfusion);
+    },
     advance(S, dtMin){
       /* 炎症导致毛细血管渗漏：液体持续进入第三间隙，不补就低容量 */
       S.vol = Math.max(2.2, S.vol - 0.0045 * dtMin);
       S.interstitium = Math.min(24, (S.interstitium || 11) + 0.0032 * dtMin * 0.7);
-      S.lactProd = 0.070;
       /* 第三间隙丢失到一定程度即为失代偿性低容量：直接累积休克损伤 */
       /* 重症胰腺炎的两个标志性机制：低钙（脂肪皂化）与早期 ARDS */
       S.ca = Math.max(0.75, (S.ca == null ? 1.05 : S.ca) - 0.00004 * dtMin);
@@ -677,6 +693,9 @@ const MODULES = [
     ],
     goal:['核心体温 ≤ 37.8','收缩压 ≥ 90','意识恢复'],
     hint:'热射病需尽快散热。在「环境 / 场景」开启物理降温，同时补液并监测血压。',
+    lactateDrive(S) {
+      return BASE.lactProd + (0.08 - BASE.lactProd) * clamp((S.heatstrokeDrive ?? 1.30) / 1.30, 0, 1);
+    },
     advance(S, dtMin){
       const recovering = S.heatstrokeCooled && !S.env?.heat;
       const cooling = S.env?.cooling ? 0.05 : (recovering ? 0.04 : 0);
@@ -685,7 +704,6 @@ const MODULES = [
       }
       /* 横纹肌溶解 → 高钾 + 凝血障碍（热射病的真实并发症） */
       if (S.temp > 40) { S.kProd = 0.020; S.coag = Math.max(0.35, (S.coag || 1) - 0.0015 * dtMin); }
-      S.lactProd = 0.08;
     },
   },
 
@@ -839,7 +857,7 @@ const MODULES = [
            hb:136, wbc:11.0, plt:230, temp:38.8, gcs:7,
            hr:142, sv:58, svr:14, rr:30, pao2:78, paco2:30, spo2:90, uo:0.5,
            contractility:0.88, seizure:0.90 },
-    drivers:{ kProd:0.014, lactProd:0.095 },
+    drivers:{ kProd:0.014, lactProd:0.03 },
     history:[
       [20, '现场人员转述', '开始持续抽搐。'],
       [null, '院前交接', '急救人员到场时仍在抽搐，伴牙关紧闭和发绀。'],
@@ -848,12 +866,9 @@ const MODULES = [
     goal:['抽搐停止','意识恢复','乳酸下降'],
     hint:'持续抽搐超过 5 分钟就要止惊。首选苯二氮卓，给药后仍持续发作可静滴左乙拉西坦。止惊后继续监测意识与呼吸。',
     advance(S, dtMin){
-      /* 未止惊则持续放电：乳酸飙升、体温上升、缺氧 */
+      /* 引擎按抽搐强度计算乳酸生成和发热。 */
       if ((S.seizure || 0) > 0.2) {
-        S.lactProd = 0.150;   // 持续抽搐的乳酸生成（高于初始 7.5 的稳态，才会继续升）
         S.insult.hypox += 0.10 * (S.seizure || 0) * dtMin;
-      } else {
-        S.lactProd = 0.030;
       }
       /* 抽搐自行终止很慢（每 10 分钟衰减 4%） */
       S.seizure = Math.max(0, (S.seizure || 0) - 0.0015 * dtMin);
@@ -1080,6 +1095,7 @@ const MODULES = [
     }),
     hint:'穿刺点持续渗血时复查凝血和纤维蛋白原。浓缩物可较快补充，也可输注冷沉淀，仍需处理出血点。',
   },
+  ...EMERGENCY_CASES.modules,
 ];
 
 /* 主诉只记录促使患者来诊的症状。补充症状、暴露及诱因留给问诊。 */
@@ -1122,6 +1138,9 @@ const CHIEF_COMPLAINTS = {
   digoxinTox: ['恶心、头晕约 12 小时', 720],
   mtxDelayed: ['尿量减少、恶心约 12 小时', 720],
   fibrinogenBleed: ['黑便约 8 小时，伴呕血', 480],
+  aorticDissection: ['突发剧烈胸痛约 45 分钟', 45],
+  aorticDissectionB: ['突发背痛、右腿发凉约 1 小时', 60],
+  fallTrauma: ['坠落后胸腹痛、气促约 35 分钟', 35],
 };
 for (const m of MODULES) {
   m.complaint = m.history.map(([, , text]) => text).join('');
@@ -1164,6 +1183,7 @@ const incompatible = [
 ];
 
 function fitsEpisode(module, selected) {
+  if (selected.length && (module.standalone || selected.some(m => m.standalone))) return false;
   const site = module.bleedingSite || module.id;
   if (selected.some(m => (m.bleedingSite || m.id) === site)) return false;
   const ids = new Set(selected.map(m => m.id));
@@ -1171,11 +1191,23 @@ function fitsEpisode(module, selected) {
     (a === module.id && ids.has(b)) || (b === module.id && ids.has(a)));
 }
 
+/* 有活动性出血或颅内血肿时，肺栓塞更常需要评估导管介入。 */
+const peBleedingCompanions = new Set(['bleed', 'trauma', 'tbi', 'spleen', 'ectopic']);
+const standalone = m => m.standalone || EMERGENCY_CASES.rescueCase(m.id);
+
 /* 按权重抽病理：weight 越大越常见 */
-function weightedIndex(rnd, pool) {
-  const total = pool.reduce((s, m) => s + (m.weight || 1), 0);
+function weightedIndex(rnd, pool, genVersion, selected) {
+  const weight = m => {
+    const base = m.weight || 1;
+    if (genVersion < 6) return base;
+    if (EMERGENCY_CASES.rescueCase(m.id)) return 0.28;
+    const complicatedPe = m.id === 'pe' ? selected.some(p => peBleedingCompanions.has(p.id))
+      : peBleedingCompanions.has(m.id) && selected.some(p => p.id === 'pe');
+    return complicatedPe ? base * 0.25 : base;
+  };
+  const total = pool.reduce((s, m) => s + weight(m), 0);
   let r = rnd() * total, k = 0;
-  for (; k < pool.length; k++) { r -= (pool[k].weight || 1); if (r <= 0) break; }
+  for (; k < pool.length; k++) { r -= weight(pool[k]); if (r <= 0) break; }
   return Math.min(k, pool.length - 1);
 }
 
@@ -1183,18 +1215,20 @@ function pickWeighted(rnd, arr, n, genVersion) {
   const pool = arr.slice();
   const out = [];
   for (let i = 0; i < n && pool.length; i++) {
-    let index = weightedIndex(rnd, pool);
+    const candidates = genVersion >= 6 && out.length ? pool.filter(m => !standalone(m)) : pool;
+    let index = pool.indexOf(candidates[weightedIndex(rnd, candidates, genVersion, out)]);
     if (genVersion >= 2) {
       const demographics = demographicsFor(out);
       const eligibleModule = m => fitsDemographics(m, demographics)
         && (genVersion < 3 || fitsEpisode(m, out));
       if (!eligibleModule(pool[index])) {
-        const eligible = pool.filter(eligibleModule);
+        const eligible = candidates.filter(eligibleModule);
         if (!eligible.length) throw new RangeError('没有符合当前病例背景的病理模块');
-        index = pool.indexOf(eligible[weightedIndex(rnd, eligible)]);
+        index = pool.indexOf(eligible[weightedIndex(rnd, eligible, genVersion, out)]);
       }
     }
     out.push(pool.splice(index, 1)[0]);
+    if (genVersion >= 6 && standalone(out[0])) break;
   }
   return out;
 }
@@ -1299,6 +1333,7 @@ function makeAdmission(modules, patient, additionalHistory, diabetesType) {
 
 function historyTime(minutes) {
   if (minutes == null) return '到院前（时间未详）';
+  if (minutes === 0) return '到院时';
   if (minutes % 1440 === 0) return `到院前约 ${minutes / 1440} 天`;
   if (minutes % 60 === 0) return `到院前约 ${minutes / 60} 小时`;
   return `到院前约 ${minutes} 分钟`;
@@ -1346,7 +1381,10 @@ function generateCase(difficulty, seed, only, genVersion) {
   const eligible = MODULES.filter(m => (m.since ?? 1) <= genVersion);
   const primary = (only && only.length)
     ? only.map(id => eligible.find(m => m.id === id)).filter(Boolean).slice(0, nMods)
-    : pickWeighted(rnd, eligible, nMods, genVersion);
+    : pickWeighted(rnd, eligible.filter(m => intakeDifficulty >= (m.minDifficulty ?? 1)), nMods, genVersion);
+  if (genVersion >= 6 && !only && primary.length === 1 && EMERGENCY_CASES.rescueCase(primary[0].id) && rnd() < 0.78) {
+    primary[0] = EMERGENCY_CASES.standardCareVariant(primary[0]) || primary[0];
+  }
 
   if (!primary.length) throw new RangeError('缺少有效的病理模块');
   const demographics = demographicsFor(primary);
@@ -1413,6 +1451,7 @@ function generateCase(difficulty, seed, only, genVersion) {
   init.temp = +(init.temp + (rnd() - 0.5) * 0.4).toFixed(1);
   init.hr = Math.round(init.hr + (rnd() - 0.5) * 10);
   init.k = +(init.k + (rnd() - 0.5) * 0.2).toFixed(1);
+  for (const m of primary) m.personalize?.(init, rnd);
 
   /* 难度=5 时加基础病 */
   const additionalHistory = [];
@@ -1453,6 +1492,15 @@ function generateCase(difficulty, seed, only, genVersion) {
 
   const tags = primary.map(m => m.tag);
   const cases = primary.map(m => m.id);
+  const chronicRenalCase = primary.find(m => m.id === 'highK');
+  const chronicRenalCapacity = aki ? 0.68 : Math.min(
+    chronicRenalCase ? chronicRenalCase.init.renalFactor * (age >= 65 ? 0.85 : 1) : 1,
+    additionalHistory.includes('慢性肾病') ? 0.55 : 1,
+  );
+  // 慢性肾病以恢复灌注后的预期肌酐为基线，不采用入院时可能已升高的肌酐。
+  const apapRenalDischargeLimit = cases.includes('apap') && chronicRenalCapacity < 1
+    ? Math.max(130, Math.ceil(BASE.cr / chronicRenalCapacity + 25))
+    : null;
   const combined = unified && cases.length > 1;
   const combinedAirway = combined && cases.includes('asthma') && cases.includes('burn');
   const combinedPvr = combined && cases.includes('pe') && cases.includes('ptx');
@@ -1463,11 +1511,27 @@ function generateCase(difficulty, seed, only, genVersion) {
   if (combinedPvr) init.pvr = 1.8 + 9.5 * init.clot + 6.0 * init.tensionPTX;
   const names = primary.map(m => m.name).join(' + ');
   const admission = makeAdmission(primary, patient, additionalHistory, diabetesType);
+  // 交接记录和实际带入的留置针共用同一来源，既有会诊码仍按原版本生成。
+  const transport = genVersion >= 7 && primary.find(m =>
+    ['fibrinogenBleed', 'fallTrauma', 'aorticDissection'].includes(m.id));
+  const difficultForearm = genVersion >= 7 && cases.includes('burn');
+  const prehospitalAccess = transport ? { type: 'piv', side: difficultForearm || (actualSeed & 1) ? 'left' : 'right' } : null;
+  if (difficultForearm) {
+    admission.history.push({ moduleId: 'burn', minutesBefore: 0, source: '院前交接',
+      text: '右前臂水肿，未辨清浅静脉，转运中未在此处建立通路。' });
+  }
+  if (prehospitalAccess) {
+    const side = prehospitalAccess.side === 'left' ? '左' : '右';
+    admission.history.push({ moduleId: transport.id, minutesBefore: 0, source: '院前交接',
+      text: `到院交接时${side}前臂外周静脉留置针在位，通畅可用。` });
+  }
   const complaint = admissionNarrative({ admission });
 
   /* 并发病程共享同一体征，分别推进后合并共同的病理负荷。 */
   const deadSpaceBackground = additionalHistory.includes('慢性阻塞性肺疾病') ? 0.42 : 0.33;
   const combinedDeadSpace = combined && (cases.includes('asthma') || cases.includes('pe'));
+  const variableLactate = primary.filter(m => m.lactateDrive);
+  const backgroundLactate = Math.max(BASE.lactProd, ...primary.filter(m => !m.lactateDrive).map(m => m.drivers?.lactProd ?? BASE.lactProd));
   const advance = function (S, dtMin, E) {
     let deadSpace = deadSpaceBackground;
     for (const m of primary) {
@@ -1478,6 +1542,9 @@ function generateCase(difficulty, seed, only, genVersion) {
     if (combinedDeadSpace) S.vdvt = deadSpace;
     if (combinedAirway) S.airwayResistance = Math.max(S.asthmaResistance, S.burnAirwayResistance);
     if (combinedPvr) S.pvr = 1.8 + 9.5 * S.clot + 6.0 * S.tensionPTX;
+    if (variableLactate.length) {
+      S.lactProd = variableLactate.reduce((rate, m) => Math.max(rate, m.lactateDrive(S)), backgroundLactate);
+    }
   };
 
   init.seed = actualSeed;
@@ -1492,11 +1559,12 @@ function generateCase(difficulty, seed, only, genVersion) {
     complaint,
     /* 主诉 = 主要症状 + 持续时间；并发病史只进现病史 */
     chief: primary[0].chief,
-    admission, traits,
+    admission, traits, ...(prehospitalAccess ? { prehospitalAccess } : {}),
     comorbidities,
     init,
     goals: Array.from(new Set(primary.flatMap(m => m.goal))),
     minDischargeHR: Math.max(...primary.map(m => m.minDischargeHR ?? 50)),
+    apapRenalDischargeLimit,
     hint: primary[0].hint,
     extra: (S, issue) => [...primary.flatMap(m => m.check?.(S, issue) ?? []), ...caseMeasureReasons(primary, S)],
     observations: S => primary.map(m => m.observation?.(S)).filter(Boolean),

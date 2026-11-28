@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const { enterWard, gameUrl, launchBrowser } = require('./browser');
 
-const conditions = /出院评估|可出院|未达标|稳定期留观|血钾|测试治疗目标/;
+const conditions = /出院评估|可出院|未达标|稳定期留观|血钾|血钠|测试治疗目标/;
 
 async function withPage(browser, scenario, legacyInsurance = false) {
   const page = await browser.newPage({ offline: true, viewport: { width: 1400, height: 950 } });
@@ -47,17 +47,17 @@ async function assertRules(page, insurance, signedDischarge, noPause = false) {
   assert.equal(await rule(page, 'noPause').getAttribute('aria-pressed'), String(noPause));
 }
 
-async function startPatient(page, replace = true) {
+async function startPatient(page, replace = true, difficulty) {
   await enterWard(page);
-  await page.evaluate(replace => {
+  await page.evaluate(({ replace, difficulty }) => {
     const game = window.__LIFE_GAME;
     game.startCase({
       id: 'realism-rules-test', name: '出院规则测试病例', tags: [], goals: ['测试治疗目标'],
       patient: { name: '测试患者', sex: '女', age: 40, height: 165, weight: 60 },
       init: { ...window.CASEGEN.BASE },
-    }, replace);
+    }, replace, difficulty);
     window.dischargeTestPatient = game.S;
-  }, replace);
+  }, { replace, difficulty });
   const intro = page.locator('#admissionIntro');
   await intro.getByText(/查体与化验请自行评估/).click();
   await intro.waitFor({ state: 'detached' });
@@ -79,6 +79,7 @@ async function openSigning(page, checkSheet = true) {
   const discharge = checks.getByRole('button').first();
   assert.doesNotMatch(await discharge.innerText(), conditions);
   assert.equal(await checks.getByText('出院评估', { exact: true }).count(), 0);
+  assert.equal(await checks.getByText('稳定期留观快进', { exact: true }).count(), 0);
   await discharge.getByText('办理出院', { exact: true }).click();
   const prompt = page.locator('#sheet.on').filter({ hasText: /是否签字出院/ });
   await prompt.waitFor();
@@ -99,6 +100,21 @@ async function assertSignedOutcome(page, prompt, status) {
   });
   assert.deepEqual(result, [status, false, status !== 'failed', null]);
   assert.equal(await recordCount(page), 1);
+  const shared = await page.locator('#detail .case-share textarea').evaluate(el => window.SHARE.parse(el.value).data);
+  const record = await page.evaluate(() => JSON.parse(localStorage.getItem('life.records'))[0]);
+  assert.deepEqual([shared.o, shared.p.n, shared.sc], [status === 'failed' ? 'failed' : 'discharge', record.患者, record.评分]);
+  assert.equal(!!shared.penalized, status === 'penalized');
+}
+
+async function startSodiumObservation(page) {
+  return page.evaluate(() => {
+    const { S, E } = window.__LIFE_GAME;
+    S.na0 = 120;
+    S.naMass = 131 * (S.ecfVd + S.freeWater);
+    S._naPrev = 131;
+    E.tick(S, 5);
+    return { t: S.t, deadline: E.dischargeCheck(S).observationEndsAt };
+  });
 }
 
 async function testMigration(page) {
@@ -159,16 +175,108 @@ async function testFailedDischarge(page) {
 }
 
 async function testSuccessfulDischarges(page, status) {
+  const early = status === 'penalized';
   await openRules(page);
+  await rule(page, 'insurance').click();
   await rule(page, 'signedDischarge').click();
-  await assertRules(page, false, true);
+  if (!early) await rule(page, 'noPause').click();
+  await assertRules(page, true, true, !early);
   await page.locator('#sheetClose').click();
   await startPatient(page);
-  if (status === 'penalized') await page.evaluate(() => { window.__LIFE_GAME.S.temp = 38.1; });
+  if (early) {
+    await startSodiumObservation(page);
+    await page.locator('#btnMenu').click();
+    await page.locator('#sheet.on').getByText('现实模式', { exact: true }).click();
+    await rule(page, 'insurance').click();
+    await rule(page, 'insurance').click();
+    await rule(page, 'noPause').click();
+    await assertRules(page, true, true, true);
+    await page.locator('#sheetClose').click();
+  }
   await assertSignedOutcome(page, await openSigning(page), status);
-  const deduction = page.locator('.case-review-score').getByRole('row', { name: /出院条件未达标/ });
-  if (status === 'penalized') assert.match(await deduction.innerText(), /−30/);
+  const score = page.locator('.case-review-score');
+  const deduction = score.getByRole('row', { name: /出院条件未达标/ });
+  if (early) assert.match(await deduction.innerText(), /−30/);
   else assert.equal(await deduction.count(), 0);
+  const bonusRows = score.getByRole('row', { name: /现实模式加分/ });
+  assert.deepEqual(await bonusRows.allTextContents(), early ? ['现实模式加分（真实出院）+15'] :
+    ['现实模式加分（医保与自付）+15', '现实模式加分（真实出院）+15', '现实模式加分（禁用暂停）+15']);
+  const total = early ? '85 / 115' : '145 / 145';
+  assert.equal(await score.getByRole('row', { name: /最终得分/ }).locator('td').innerText(), total);
+  if (!early) {
+    await page.reload();
+    await page.locator('#lobby [data-act="records"]').click();
+    await page.locator('#sheet.on').getByText('出院规则测试病例', { exact: true }).click();
+    assert.equal(await score.getByRole('row', { name: /最终得分/ }).locator('td').innerText(), total);
+  }
+}
+
+async function testSodiumObservation(page) {
+  await startPatient(page);
+  const { t: startedAt, deadline } = await startSodiumObservation(page);
+  assert.equal(deadline, startedAt + 7200);
+  await page.locator('#btnMenu').click();
+  await page.locator('#sheet.on').getByText('出院评估', { exact: true }).click();
+  assert.match(await page.locator('#detail.on #dWarn').innerText(), /血钠.*纠正过快.*120 分钟/);
+  await page.locator('#detailX').click();
+  await page.evaluate(endsAt => { window.__LIFE_GAME.S.t = endsAt - 5; }, deadline);
+  await page.locator('#sheet.on').getByText('稳定期留观快进', { exact: true }).click();
+  const t = await page.evaluate(() => {
+    window.advanceSimulation();
+    window.advanceSimulation(420);
+    return window.__LIFE_GAME.S.t;
+  });
+  assert.ok(Math.abs(t - deadline) < 1e-6, `留观快进停在 ${t}，应停在 ${deadline}`);
+  await page.locator('#btnMenu').click();
+  await page.locator('#sheet.on').getByText('办理出院', { exact: true }).waitFor();
+}
+
+async function testReviewClearsAfterDischarge(page) {
+  await startPatient(page);
+  await page.evaluate(() => {
+    const { S, E } = window.__LIFE_GAME;
+    E.orderTest(S, 'abg');
+    S.tests.abg.readyAt = S.t + 408;
+  });
+  await page.locator('#conditionWait').click();
+  await page.evaluate(() => {
+    window.advanceSimulation();
+    for (let i = 0; i < 21; i++) window.advanceSimulation(420);
+  });
+  const review = page.locator('#conditionReviewResult');
+  assert.match(await review.innerText(), /已过 6\.8 分钟。床位 1 的动脉血气已回报/);
+  await page.locator('#btnMenu').click();
+  await page.locator('#sheet.on').getByText('办理出院', { exact: true }).click();
+  await page.locator('#detail.on .case-review-summary').waitFor();
+  await page.locator('#detailX').click();
+  assert.equal(await page.locator('#lobby [data-bed]').count(), 0);
+  await page.locator('#lobby [data-new]').click();
+  const intro = page.locator('#admissionIntro');
+  await intro.click();
+  await intro.waitFor({ state: 'detached' });
+  assert.equal(await page.locator('#clock').innerText(), '00:00');
+  assert.equal(await review.isVisible(), false);
+  assert.equal(await review.textContent(), '');
+}
+
+async function testEmergencyAssessmentRefresh(page) {
+  await startPatient(page, true, 6);
+  await page.evaluate(() => { window.__LIFE_GAME.S.k = 6.1; });
+  await page.locator('#btnMenu').click();
+  await page.locator('#sheet.on').getByText('出院评估', { exact: true }).click();
+  const assessment = page.locator('#detail.on #dKv');
+  assert.match(await assessment.innerText(), /暂未达到出院标准/);
+  assert.doesNotMatch(await assessment.innerText(), /血钾|测试治疗目标/);
+  await page.evaluate(() => {
+    window.__LIFE_GAME.S.k = 4.2;
+    window.advanceSimulation();
+    window.advanceSimulation(420);
+  });
+  assert.match(await assessment.innerText(), /已达到出院标准/);
+  await page.locator('#detailX').click();
+  await page.locator('#sheet.on').getByText('办理出院', { exact: true }).click();
+  await page.locator('#detail.on .case-review-summary').waitFor();
+  assert.equal(await recordCount(page), 1);
 }
 
 async function assertWardElapsed(page, expectedSeconds) {
@@ -261,6 +369,9 @@ async function main() {
   try {
     await withPage(browser, testMigration, true);
     await withPage(browser, testFailedDischarge);
+    await withPage(browser, testSodiumObservation);
+    await withPage(browser, testReviewClearsAfterDischarge);
+    await withPage(browser, testEmergencyAssessmentRefresh);
     await withPage(browser, page => testSuccessfulDischarges(page, 'penalized'));
     await withPage(browser, page => testSuccessfulDischarges(page, 'normal'));
     await withPage(browser, testNoPause);

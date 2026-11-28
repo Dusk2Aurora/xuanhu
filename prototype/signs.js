@@ -385,7 +385,7 @@ const SIGNS = [
     id: 'coagulopathy', name: '凝血功能异常', level: 'warning',
     brief: '凝血指标明显下降，出血风险升高。',
     causes: '肝衰竭、DIC、抗凝药过量、大量输血',
-    test: (s, S) => { const v = optional(S, 'coag'); return v != null && v < 0.6; },
+    test: (s, S) => { const v = root.LIFE?.coagulation(S) ?? optional(S, 'coag'); return v != null && v < 0.6; },
   },
   {
     id: 'anaphylaxis', name: '过敏反应', level: 'warning',

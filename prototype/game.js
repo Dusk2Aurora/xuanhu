@@ -6,7 +6,8 @@
 'use strict';
 const E = window.LIFE;
 const FINANCE = window.LIFE_FINANCE;
-function isEDIntake(patient) { return (patient?.intake?.difficulty ?? patient?.diff ?? patient?.cas?.diff) === 6; }
+const REALISM_BONUS = E.REALISM_BONUS;
+function isEDIntake(patient) { return (patient?.intake?.difficulty ?? patient?.diff ?? patient?.cas?.diff) >= 6; }
 const $ = s => document.querySelector(s);
 const r1 = x => Math.round(x * 10) / 10;
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, ch =>
@@ -31,13 +32,16 @@ let bigFont = false;
 /* 白天 / 夜间：夜间难度显著提升（病情推进更快、提示更少、界面转暗） */
 let nightMode = false;
 const REALISM_RULES = {
-  insurance: { name: '医保与自付', note: '按参保类型结算费用，追踪家庭自付负担。' },
-  signedDischarge: { name: '真实出院', note: '自行判断出院时机。签字后结算，病情未达标扣分，重大问题直接判负。' },
-  noPause: { name: '禁用暂停', note: '全病房持续推进，仍可调整倍速、快进或等病情变化。' },
+  insurance: { name: REALISM_BONUS.names.insurance, note: '普通病例按参保类型结算并追踪家庭自付。无病探索可自由使用设备和药品。' },
+  signedDischarge: { name: REALISM_BONUS.names.signedDischarge, note: '自行判断出院时机。签字后结算，病情未达标扣分，重大问题直接判负。' },
+  noPause: { name: REALISM_BONUS.names.noPause, note: '全病房持续推进，仍可调整倍速、快进或等病情变化。' },
 };
 const realismRules = { insurance: false, signedDischarge: false, noPause: false };
-function enabledRules() {
-  return Object.keys(REALISM_RULES).filter(key => realismRules[key]);
+function insuranceApplies(patient) {
+  return !!patient && !patient.cas?.exploration && realismRules.insurance;
+}
+function enabledRules(patient) {
+  return Object.keys(REALISM_RULES).filter(key => realismRules[key] && !(key === 'insurance' && patient?.cas.exploration));
 }
 function ruleNames(keys) {
   return keys.map(key => REALISM_RULES[key]?.name).filter(Boolean).join('、') || '无';
@@ -151,7 +155,7 @@ const ORGAN_META = {
     ['床旁观察', E.convulsionSigns(state) ?? '未见抽搐', ''], eegOrganRow(state)]},
   lung:    {n:'肺',   f: s => [['SpO₂', s.spo2 ?? '无信号', s.spo2 == null ? '' : '%'], ['PaO₂', s.pao2, 'mmHg'], ['FiO₂', Math.round(s.fio2 * 100), '%'], ['PaCO₂', s.paco2, 'mmHg'], ['RR', s.rr, s.vent ? 'rpm · 机械通气' : 'rpm']]},
   heart:   {n:'心脏', f: s => [['HR', s.hr, 'bpm'], ['EF', s.rhythm === 'sinus' ? s.ef : '—', s.rhythm === 'sinus' ? '%' : ''], ['MAP', s.map, 'mmHg'], ['心律', s.rhythm === 'sinus' ? '窦性' : (s.rhythm === 'vf' ? '室颤' : '心静止'), '']]},
-  liver:   {n:'肝脏', f: (s, state) => [['凝血系数', state.coag.toFixed(2), ''], ['肝损伤指数', s.hepato, '']]},
+  liver:   {n:'肝脏', f: (s, state) => [['凝血系数', E.coagulation(state).toFixed(2), ''], ['肝损伤指数', s.hepato, '']]},
   stomach: {n:'胃',   f: (s, state) => [['上消化道出血', bleedingStatus(state, 'bleed'), '']]},
   spleen:  {n:'脾',   f: (s, state) => [['脾脏出血', bleedingStatus(state, 'spleen'), '']]},
   pancreas:{n:'胰腺', f: s => [['血糖', s.glu, 'mmol/L']]},
@@ -169,12 +173,17 @@ function bleedingStatus(state, site) {
   return state.bleedingSites[site] > 0 ? '活动性出血' : '已止血';
 }
 
+function consciousnessStatus(gcs) {
+  if (!Number.isFinite(gcs)) return '';
+  return gcs < 12 ? 'crit' : gcs < 15 ? 'warn' : '';
+}
+
 function organState(id, s) {
   if (id === 'heart') return s.rhythm !== 'sinus' ? 'crit' : (s.map < 65 || s.hr > 120 ? 'crit' : (s.hr > 100 ? 'warn' : 'ok'));
   if (id === 'lung')  return s.spo2 == null || s.spo2 < 92 ? 'warn' : 'ok';
   if (id === 'kidney')return s.k > 6.5 ? 'crit' : (s.k > 5.5 || s.uo < 0.5 ? 'warn' : 'ok');
   if (id === 'liver') return s.hepato >= 0.75 ? 'crit' : (s.hepato > 0.45 ? 'warn' : 'ok');
-  if (id === 'brain') return s.gcs < 12 ? 'crit' : (s.gcs < 15 ? 'warn' : 'ok');
+  if (id === 'brain') return consciousnessStatus(s.gcs) || 'ok';
   if (id === 'pancreas') return s.glu > 11 ? 'warn' : 'ok';
   return 'ok';
 }
@@ -332,7 +341,7 @@ function vitalList(S) {
     {k:'temp', n:'体温' + suffix(tempSource), v:temp ?? (ed ? '待查' : '未测'), u:temp == null ? '' : '℃',
      source: tempSource, st: ed ? '' : E.temperatureStatus(S.temp)},
     {k:'gcs',  n:'意识' + suffix(gcsSource), v:gcs ?? '待查', u:gcs == null ? '' : 'GCS',
-     source: gcsSource, st: ed ? '' : gcs < 12 ? 'crit' : (gcs < 15 ? 'warn' : '')},
+     source: gcsSource, st: ed ? '' : consciousnessStatus(gcs)},
   ];
 }
 function renderVitals() {
@@ -400,6 +409,12 @@ function renderStates() {
   const out = [];
   if (s.rhythm === 'vf') out.push('心室颤动');
   else if (s.rhythm === 'asystole') out.push('心静止');
+  const gcsSource = ed ? edReading(S, E.knownResults(S), 'gcs') : null;
+  const gcs = ed ? gcsSource?.value : s.gcs;
+  const severity = consciousnessStatus(gcs);
+  const source = gcsSource ? (gcsSource.reportId ? '上次查体 ' : '首测 ') : '';
+  const consciousness = severity ? `${severity === 'crit' ? '意识障碍' : '意识减退'}（${source}GCS ${gcs}）` : '';
+  if (consciousness) out.push(consciousness);
   if (!ed) {
     if (s.k > 5.5) out.push('高血钾');
     if (s.k < 3.5) out.push('低血钾');
@@ -464,6 +479,10 @@ function renderStates() {
     el.style.cursor = 'pointer';
     el.addEventListener('click', () => {
       const name = el.dataset.state;
+      if (name === consciousness) {
+        $('#vitals [data-v="gcs"]').click();
+        return;
+      }
       const card = window.GLOSSARY && window.GLOSSARY.renderCard(name);
       if (card) openDetail(card.title, card.sub, card.kv, '');
       else if (window.GLOSSARY) openGlossary(name);
@@ -480,29 +499,37 @@ function isCurrentPatient(st) {
 function openSheet(title, sub, rows, patient) {
   stopObservation();
   const list = $('#sheetList');
-  $('#sheetTitle').innerHTML = `${escapeHtml(title)} <small>${escapeHtml(sub)}</small>`;
+  const header = $('#sheetTitle');
+  const sameMenu = $('#sheet').classList.contains('on') && header.dataset.title === title && header.dataset.subtitle === sub;
+  const position = sameMenu ? list.scrollTop : 0;
+  const focus = sameMenu && list.contains(document.activeElement) ? document.activeElement : null;
+  header.dataset.title = title;
+  header.dataset.subtitle = sub;
+  header.innerHTML = `${escapeHtml(title)} <small>${escapeHtml(sub)}</small>`;
   delete $('#sheetTitle').dataset.view;
   delete $('#sheetTitle').dataset.testGroup;
   delete $('#sheetTitle').dataset.eligible;
   delete $('#sheetTitle').dataset.observation;
   list.innerHTML = rows.map((r, i) => {
     if (r.sec) return `<div class="sec">${r.sec}</div>`;
-    const button = `<button type="button" class="drow" data-i="${i}"><span class="nm">${r.n}</span>
+    const button = `<button type="button" class="drow" data-i="${i}"${r.disabled ? ' disabled' : ''}><span class="nm">${r.n}</span>
         <span class="tag">${r.tag}</span><span class="amt">${r.amt}</span></button>`;
     return r.related ? `<div class="paired-actions">${button}<button type="button" class="related-action" data-i="${i}">${escapeHtml(r.related.label)}</button></div>` : button;
   }).join('');
   list.querySelectorAll('button[data-i]').forEach(el => {
     el.addEventListener('click', () => {
-      if (!list.contains(el) || !$('#sheet').classList.contains('on')) return;
+      if (el.disabled || !list.contains(el) || !$('#sheet').classList.contains('on')) return;
       if (!hasCurrentSaveEpoch()) return;
       if (patient && !isCurrentPatient(patient)) return;
       const row = rows[+el.dataset.i];
       if (el.classList.contains('related-action')) row.related.run();
-      else row.run();
+      else row.run?.();
     });
   });
   $('#sheet').classList.add('on');
   $('#mask').classList.add('on');
+  if (focus?.dataset.i) list.querySelector(`button.${focus.className.split(' ')[0]}[data-i="${focus.dataset.i}"]`)?.focus({ preventScroll: true });
+  list.scrollTop = position;
 }
 let returnToLobby = false;
 function closeSheet() {
@@ -534,6 +561,7 @@ function openDetail(name, sub, kv, warn) {
   fields.removeAttribute('tabindex');
   detail.classList.remove('case-review', 'case-review-success', 'case-review-failure');
   detail.querySelector('.case-review-body')?.remove();
+  detail.querySelector('.case-share')?.remove();
   detail.querySelector('.card').scrollTop = 0;
   $('#dName').textContent = name;
   $('#dSub').textContent = sub || '';
@@ -554,8 +582,8 @@ const PIN_DRUGS = {
 
 const DRUG_SECTIONS = {
   '补液、电解质与血糖': ['扩容', '高渗液', '电解质', '碱性药', '酸化药', '升糖', '降糖'],
-  '循环与心律': ['血管活性', '强心', '强心苷', '抗心律失常', '钙拮抗剂', 'β阻滞剂', 'ACEI', 'ARB', '硝酸酯'],
-  '呼吸与过敏': ['祛痰', '平喘', '支气管扩张', '呼吸兴奋', '抗组胺'],
+  '循环与心律': ['血管活性', '血管扩张', '强心', '强心苷', '抗心律失常', '钙拮抗剂', 'β阻滞剂', 'ACEI', 'ARB', '硝酸酯'],
+  '呼吸与过敏': ['祛痰', '镇咳', '平喘', '支气管扩张', '呼吸兴奋', '抗组胺'],
   '镇痛、镇静与麻醉': ['解热镇痛', 'NSAID', '阿片类', '阿片', '镇静', '肌松', '催眠药'],
   '止血与抗栓': ['止血药', '抗凝', '抗血小板', '溶栓'],
   '解毒与拮抗': ['阿片拮抗', '解毒', '解毒与拮抗'],
@@ -563,8 +591,8 @@ const DRUG_SECTIONS = {
   '利尿与脱水': ['袢利尿', '保钾利尿', '利尿', '利尿脱水'],
   '消化系统': ['止吐', '止泻', '抑酸'],
   '内分泌与激素': ['糖皮质激素', '甲状腺素', '抗甲状腺', '性激素', '激素拮抗'],
-  '神经与精神': ['抗癫痫', '抗精神病', '抗精神病2', '心境稳定剂', '抗抑郁药', '抗帕金森', '抗胆碱能'],
-  '其他精神活性物质': ['兴奋剂', '致幻剂'],
+  '神经与精神': ['抗癫痫', '抗精神病', '抗精神病2', '心境稳定剂', '抗抑郁药', '抗帕金森', '抗胆碱能', '胆碱酯酶抑制剂'],
+  '其他精神活性物质': ['兴奋剂', '致幻剂', '大麻类'],
 };
 const drugSectionFor = new Map(Object.entries(DRUG_SECTIONS).flatMap(([section, classes]) =>
   classes.map(cls => [cls, section])));
@@ -663,7 +691,7 @@ function openDrugSheet({ tab = 'all', query = '', expanded = new Set(), scrollTo
     rememberGroups();
     const focusRow = { id: button.dataset.id, section: button.closest('details')?.dataset.section };
     const state = { tab, expanded, query: input.value, scrollTop: list.scrollTop, focusRow };
-    openGiveConfig(SUB.byId(button.dataset.id), patient, () => openDrugSheet(state));
+    openGiveConfig(SUB.byId(button.dataset.id), patient, () => openDrugSheet(state), { returnAfterApply: true });
   };
   input.value = query;
   input.oninput = draw;
@@ -677,10 +705,10 @@ function openDrugSheet({ tab = 'all', query = '', expanded = new Set(), scrollTo
 }
 
 const EFF_NAME = { k:'血钾', na:'血钠', cl:'血氯', ca:'血钙', hco3:'HCO₃⁻', glu:'血糖', lac:'乳酸',
-                   vol:'血容量', freeWater:'自由水', hb:'血红蛋白', hr:'心率', svr:'血管张力', sv:'心肌收缩力',
-                   rr:'呼吸频率', spo2:'血氧', temp:'体温', gcs:'意识', uo:'尿量', infection:'感染负荷',
+                   vol:'血容量', freeWater:'自由水', hb:'血红蛋白', plt:'血小板', wbc:'白细胞', hr:'心率', svr:'血管张力', sv:'心肌收缩力',
+                   rr:'呼吸频率', spo2:'血氧', temp:'体温', gcs:'意识', uo:'尿量', infection:'感染负荷', infectionExposure:'模拟感染暴露', cr:'肌酐',
                    coag:'凝血能力', halfSaline:'低渗补液量', icp:'颅内压', estrogen:'雌激素',
-                   testosterone:'睾酮', pao2:'动脉氧分压', seizure:'抽搐',
+                   testosterone:'睾酮', pao2:'动脉氧分压', seizure:'抽搐', tca:'三环类心脏毒性', arrhythmiaRisk:'心律失常风险',
                    warfarinFactors:'凝血因子补充', dabigatranBinding:'达比加群中和', digoxinBinding:'地高辛中和',
                    fibrinogenReplacement:'纤维蛋白原补充', mtxCleavage:'血浆甲氨蝶呤清除', mtxCellProtection:'细胞保护' };
 function describeEff(eff) {
@@ -701,9 +729,107 @@ function infusionAmount(dose, unit) {
   return `${infusionNumber.format(dose)}${unit ? ' ' + escapeHtml(unit) : ''}`;
 }
 
+function bedsideDeliveredAmount(dose, unit) {
+  const scale = unit === 'mL' ? 1 : 10;
+  if (dose > 0 && dose * scale < 1) return `<${1 / scale}`;
+  return String(Math.floor(dose * scale) / scale);
+}
+
 function infusionDuration(seconds) {
   const minutes = Math.floor(seconds / 60);
   return `${minutes} 分 ${seconds % 60} 秒`;
+}
+
+let accessPanel;
+
+function accessSummary(patient) {
+  const { lines, attempt } = E.accessState(patient);
+  if (attempt) return `置管中 · 剩余 ${infusionDuration(Math.ceil(E.accessRemaining(patient)))}`;
+  return lines[0]?.name || '未建立';
+}
+
+function accessSummaryTag(patient) {
+  return `<span data-access-summary>${escapeHtml(accessSummary(patient))}</span>`;
+}
+
+function promptForAccess(back) {
+  back();
+  toast('请到「操作」建立血管通路，完成后重新开药。', true);
+}
+
+function accessOptionRow(patient, option, menu, afterStart = menu) {
+  const { attempt, lines } = E.accessState(patient);
+  const running = attempt?.type === option.type;
+  const existing = lines.find(line => line.type === option.type);
+  const tag = existing ? (existing.origin === 'prehospital' ? '当前通路 · 院前带入' : '当前通路') :
+    option.enabled ? infusionDuration(option.seconds) : option.reason;
+  return {
+    n: escapeHtml(option.name),
+    tag: running ? accessSummaryTag(patient) : escapeHtml(tag),
+    amt: running ? '查看' : option.enabled ? money(option.cost) : '',
+    disabled: !running && !option.enabled,
+    run: () => running ? openAccessProgress(patient, afterStart) : openAccessConfirmation(patient, option, menu, afterStart),
+  };
+}
+
+function openAccessConfirmation(patient, option, menu, afterStart) {
+  const current = E.accessState(patient).lines[0];
+  openSheet(current ? '更换血管通路' : '建立血管通路', patient.patient.name, [
+    { sec: escapeHtml(current ? `从${current.name}更换为${option.name}。新通路成功建立前，原通路可继续使用。` : option.name) },
+    { n: current ? '确认更换' : '确认建立', tag: infusionDuration(option.seconds), amt: money(option.cost),
+      run: () => {
+        const result = E.startAccess(patient, option.type);
+        if (!result.ok) {
+          toast(escapeHtml(result.reason || '暂时无法开始置管'), true);
+          menu();
+          return;
+        }
+        window.SOUND?.click();
+        saveGame();
+        openAccessProgress(patient, afterStart);
+      } },
+    { n: '取消', tag: '', amt: '', run: menu },
+  ], patient);
+}
+
+function openRoutineAccess(patient) {
+  if (!isCurrentPatient(patient)) return;
+  const back = () => openActionSheet(patient);
+  if (E.accessState(patient).attempt) {
+    openAccessProgress(patient, back);
+    return;
+  }
+  const rows = E.accessOptions(patient).filter(option => option.type !== 'cvc')
+    .map(option => accessOptionRow(patient, option, () => openRoutineAccess(patient), back));
+  rows.push({ n: '返回操作', tag: '', amt: '返回', run: back });
+  openSheet('血管通路', patient.patient.name, rows, patient);
+}
+
+function openAccessProgress(patient, back) {
+  const { attempt } = E.accessState(patient);
+  if (!attempt) { back(); return; }
+  accessPanel = { patient, attempt, back };
+  openSheet('置管进度', patient.patient.name, [
+    { sec: escapeHtml(attempt.name) },
+    { sec: `<progress id="accessProgress" class="infusion-progress" max="${attempt.seconds}" value="0" aria-label="置管进度"></progress><span id="accessProgressText"></span>` },
+    { n: '返回', tag: '', amt: '', run: back },
+  ], patient);
+  $('#sheetTitle').dataset.view = 'access';
+  refreshAccessSheet(patient);
+}
+
+function refreshAccessSheet(patient) {
+  if (accessPanel?.patient !== patient || !isCurrentPatient(patient)) return;
+  const { attempt, back } = accessPanel;
+  if (E.accessState(patient).attempt !== attempt) {
+    back();
+    return;
+  }
+  const remaining = E.accessRemaining(patient);
+  $('#accessProgress').value = Math.max(0, attempt.seconds - remaining);
+  const label = `剩余 ${infusionDuration(Math.ceil(remaining))}`;
+  const status = $('#accessProgressText');
+  if (status.textContent !== label) status.textContent = label;
 }
 
 function infusionRecords(patient) {
@@ -740,30 +866,86 @@ function infusionRecords(patient) {
 
 function infusionSnapshot(patient) {
   const records = infusionRecords(patient);
-  const timed = [], history = [], pumps = [];
+  const timed = [], history = [];
   for (const record of records) {
-    if (record.pumpAction && record.pumpAction !== 'stop') continue;
+    if (record.pumpAction && record.pumpAction !== 'stop') {
+      if (record.endedAt != null && record.pumpSeconds > 0) history.push({ ...record, eventAt: record.endedAt });
+      continue;
+    }
     const progress = E.infusionProgress(patient, record);
     if (record.pk && progress?.running) timed.push({ ...record, progress });
     else history.push({ ...record, progress, eventAt: progress?.stoppedAt ??
       (progress && !progress.running ? progress.completedAt : record.t) });
   }
+  history.reverse().sort((a, b) => (b.eventAt ?? -1) - (a.eventAt ?? -1));
+  return { timed, pumps: currentPumps(patient, records), history: history.slice(0, 8) };
+}
+
+function currentPumps(patient, records = []) {
+  const pumps = [];
   for (const [id, pump] of Object.entries(patient.pumps || {})) {
-    if (!(pump?.rate > 0)) continue;
+    if (!(pump?.rate > 0 || pump?.pausedRate > 0)) continue;
     const sub = window.SUBSTANCES?.byId(id);
     const route = sub?.routes?.find(rt => rt.pumpHalfLife);
-    let startedAt, adjustedAt;
-    for (let i = records.length - 1; i >= 0; i--) {
-      const event = records[i];
-      if (event.id !== id || !event.pumpAction) continue;
-      if (event.pumpAction === 'stop') break;
-      if (event.pumpAction === 'start') { startedAt = event.t; break; }
-      if (event.pumpAction === 'adjust') adjustedAt ??= event.t;
+    const delivery = E.pumpDelivery(patient, id);
+    let startedAt = delivery?.startedAt, adjustedAt = delivery?.adjustedAt;
+    if (!delivery) {
+      for (let i = records.length - 1; i >= 0; i--) {
+        const event = records[i];
+        if (event.id !== id || !event.pumpAction) continue;
+        if (event.pumpAction === 'stop') break;
+        if (event.pumpAction === 'start') { startedAt = event.t; break; }
+        if (event.pumpAction === 'adjust') adjustedAt ??= event.t;
+      }
     }
-    pumps.push({ id, n: sub?.n || id, unit: sub?.unit, route, rate: pump.rate, startedAt, adjustedAt });
+    pumps.push({ id, n: sub?.n || id, unit: route?.unit || sub?.unit, route,
+      rate: pump.rate, pausedRate: pump.pausedRate, startedAt, adjustedAt, delivery });
   }
-  history.reverse().sort((a, b) => (b.eventAt ?? -1) - (a.eventAt ?? -1));
-  return { timed, pumps, history: history.slice(0, 8) };
+  return pumps;
+}
+
+let bedsideInfusionPatient, bedsideInfusionMarkup = '';
+function renderBedsideInfusions(patient) {
+  const panel = $('#infusionPanel'), list = $('#infusionList');
+  const changedBed = bedsideInfusionPatient !== patient;
+  bedsideInfusionPatient = patient;
+  const timed = [], rows = [];
+  if (patient?.running) {
+    for (const order of patient.pk || []) {
+      const progress = E.infusionProgress(patient, order);
+      if (!progress?.running) continue;
+      timed.push({ progress, unit: order.unit });
+      const name = escapeHtml(order.n || order.id);
+      rows.push(`<li class="infusion-row"><div class="infusion-line"><strong class="infusion-name">${name}</strong><span class="infusion-state">${escapeHtml(order.route)}</span></div>
+        <progress class="infusion-progress" max="${order.infusionMinutes}" value="0" aria-label="${name}输注进度"></progress>
+        <div class="infusion-meta" data-bedside-remaining></div></li>`);
+    }
+    for (const pump of currentPumps(patient)) {
+      const paused = pump.pausedRate > 0;
+      const name = escapeHtml(pump.n);
+      rows.push(`<li class="infusion-row is-pump${paused ? ' is-paused' : ''}"><div class="infusion-line"><strong class="infusion-name">${name}</strong>
+        <span class="infusion-state">${paused ? '已暂停' : '持续泵入'}</span></div>
+        ${paused ? '' : `<progress class="infusion-progress" aria-label="${name}持续泵入"></progress>`}
+        <div class="infusion-meta">${paused ? '暂停前泵速' : '泵速'} ${infusionAmount(pump.rate || pump.pausedRate, pump.unit)}</div></li>`);
+    }
+  }
+  const markup = rows.join('');
+  panel.hidden = !markup;
+  if (changedBed || bedsideInfusionMarkup !== markup) {
+    const top = changedBed ? 0 : list.scrollTop;
+    list.innerHTML = bedsideInfusionMarkup = markup;
+    list.scrollTop = top;
+  }
+  timed.forEach(({ progress, unit }, index) => {
+    const row = list.children[index];
+    row.querySelector('progress').value = progress.elapsedMinutes;
+    const remaining = row.querySelector('[data-bedside-remaining]');
+    const seconds = Math.ceil(progress.remainingMinutes * 60 - 1e-8);
+    const amount = Number.isFinite(progress.totalDose)
+      ? `已输 ${bedsideDeliveredAmount(progress.deliveredDose, unit)} / ${infusionNumber.format(progress.totalDose)}${unit ? ' ' + unit : ''} · ` : '';
+    const label = amount + '剩余 ' + infusionDuration(seconds);
+    if (remaining.textContent !== label) remaining.textContent = label;
+  });
 }
 
 function infusionSection(label, content) {
@@ -844,6 +1026,11 @@ function handleInfusionAction(event, panel) {
     showInfusionPanel(panel);
     return;
   }
+  if (button.hasAttribute('data-heparin-monitor')) {
+    closeDetail();
+    openTestGroup(patient, E.TESTS.coag.group);
+    return;
+  }
 
   panel.cardTop = detail.querySelector('.card').scrollTop;
   panel.listTop = list.scrollTop;
@@ -853,7 +1040,7 @@ function handleInfusionAction(event, panel) {
     return;
   }
   const pumpId = button.dataset.pumpId;
-  if (!pumpId || E.pumpRate(patient, pumpId) <= 0) return;
+  if (!pumpId || !(E.pumpRate(patient, pumpId) > 0 || patient.pumps?.[pumpId]?.pausedRate > 0)) return;
   const sub = window.SUBSTANCES?.byId(pumpId);
   if (!sub) return;
   panel.focusPump = pumpId;
@@ -863,7 +1050,8 @@ function handleInfusionAction(event, panel) {
     closeSheet();
     if (panel.fromBedsideMenu) openBedsideMenu();
     showInfusionPanel(panel);
-  }, { backLabel: '返回输液与泵药', returnAfterApply: true });
+  }, { backLabel: '返回输液与泵药', returnAfterApply: true,
+    initialRoute: sub.routes?.find(route => route.pumpHalfLife)?.r });
 }
 
 function refreshInfusions(patient) {
@@ -879,14 +1067,21 @@ function refreshInfusions(patient) {
     { ...selected, progress: E.infusionProgress(patient, selected.pk) });
   const timedRows = selected ? (selectedRecord?.progress ? [selectedRecord] : []) : timed;
   const activeRows = timedRows.map((record, i) => timedInfusionRow(record, i, selected)).join('') + (selected ? '' : pumps.map(pump =>
-    infusionRow(pump.n, '持续泵入', `
-      <p class="infusion-meta">当前泵速 <strong>${infusionAmount(pump.rate, pump.unit)}</strong></p>
+    infusionRow(pump.n, pump.pausedRate ? '已暂停' : '持续泵入', `
+      <p class="infusion-meta">${pump.pausedRate ? '暂停前泵速' : '当前泵速'} <strong>${infusionAmount(pump.rate || pump.pausedRate, pump.unit)}</strong></p>
       <p class="infusion-meta">本轮启动 ${caseTime(pump.startedAt)} · 最近调速 ${pump.adjustedAt != null ?
         caseTime(pump.adjustedAt) : pump.startedAt != null ? '尚未调速' : '时间未记录'}</p>
       <p class="infusion-meta" data-pump-duration></p>
-      ${pump.route ? `<button type="button" class="pill infusion-manage" data-pump-id="${escapeHtml(pump.id)}">调速或停用</button>` : ''}`)).join(''));
+      ${pump.delivery ? '<p class="infusion-meta" data-pump-delivery></p>' : ''}
+      ${pump.route ? `<button type="button" class="pill infusion-manage" data-pump-id="${escapeHtml(pump.id)}">${pump.pausedRate ? '恢复或停用' : pump.route.pumpPause ? '调速、暂停或停用' : '调速或停用'}</button>` : ''}
+      ${pump.id === 'heparin' ? '<button type="button" class="pill infusion-manage" data-heparin-monitor>凝血复查</button>' : ''}`)).join(''));
   const historyRows = selected ? '' : history.map(record => {
     const { progress } = record;
+    if (record.endedAt != null && record.pumpSeconds > 0) {
+      return infusionRow(record.n || record.id, '已完成泵入时段', `
+        <p class="infusion-meta">${caseTime(record.t)}–${caseTime(record.endedAt)} · ${infusionAmount(record.dose, record.unit)}
+        · 已泵入 ${infusionAmount(record.pumpDose, record.pumpDoseUnit || 'U')} · 药费 ${money(record.cost)} · 医嘱 #${record.givenNumber}</p>`);
+    }
     const status = record.pumpAction === 'stop' ? '已停泵' : progress?.stoppedAt != null ? '已停止' :
       progress && !progress.running ? '已完成' : '单次医嘱';
     const amount = record.pumpAction === 'stop' ? `停泵前 ${infusionAmount(record.dose, record.unit)}` : progress && !progress.running
@@ -911,6 +1106,7 @@ function refreshInfusions(patient) {
       const next = [...list.querySelectorAll('button')].find(button =>
         (focusedPump && button.dataset.pumpId === focusedPump) ||
         (focusedOrder && timed[+button.dataset.infusionIndex]?.pk === focusedOrder) ||
+         (focus.hasAttribute('data-heparin-monitor') && button.hasAttribute('data-heparin-monitor')) ||
         (focus.hasAttribute('data-infusion-back') && button.hasAttribute('data-infusion-back')) ||
         (focus.hasAttribute('data-stop-infusion') && button.hasAttribute('data-stop-infusion')));
       (next || list.querySelector('[data-infusion-back]') || $('#detailX')).focus({ preventScroll: true });
@@ -929,32 +1125,39 @@ function refreshInfusions(patient) {
       `剩余 ${infusionDuration(Math.ceil(data.remainingMinutes * 60 - 1e-8))}`;
   });
   if (!selected) list.querySelectorAll('[data-pump-duration]').forEach((el, i) => {
-    const at = pumps[i].startedAt;
-    el.textContent = `累计泵入 ${at == null ? '未记录' : infusionDuration(Math.max(0, Math.floor(patient.t - at)))}`;
+    const { delivery, startedAt } = pumps[i];
+    const seconds = delivery?.seconds ?? (startedAt == null ? null : patient.t - startedAt);
+    el.textContent = `累计泵入 ${seconds == null ? '未记录' : infusionDuration(Math.max(0, Math.floor(seconds + 1e-6)))}`;
+    const amounts = el.parentElement.querySelector('[data-pump-delivery]');
+    if (amounts) amounts.innerHTML = `已泵入 ${infusionAmount(delivery.dose, delivery.unit || 'U')} · 药费 ${money(delivery.cost)}`;
   });
 }
 
 
 /* 选完药 → 选途径 + 调剂量（允许给错、给过量） */
-function openGiveConfig(it, patient, back, { backLabel = '返回药物列表', returnAfterApply = false } = {}) {
+function openGiveConfig(it, patient, back, { backLabel = '返回药物列表', returnAfterApply = false, initialRoute } = {}) {
   const routes = (it.routes && it.routes.length) ? it.routes : [{ r: it.route, d: it.dose, on: it.onset, du: it.dur }];
-  let ri = 0;
-  let dose = E.pumpRate(patient, it.id) || routes[0].d;
+  const pausedPumpRate = () => patient.pumps?.[it.id]?.pausedRate || 0;
+  const routeDose = rt => (rt.pumpHalfLife && (E.pumpRate(patient, it.id) || pausedPumpRate())) || rt.d;
+  let ri = Math.max(0, routes.findIndex(rt => rt.r === initialRoute));
+  let dose = routeDose(routes[ri]);
   const fmt = v => (Math.round(v * 100) / 100).toString();
 
   const render = () => {
     if (!isCurrentPatient(patient)) return;
     const rt = routes[ri];
-    const infusion = rt.infusionMinutes;
+    const infusion = window.SUBSTANCES.infusionMinutesFor(rt, dose);
     const pump = rt.pumpHalfLife;
+    const unit = rt.unit || it.unit;
     const minimum = rt.pumpStep ?? 0.01;
     const precision = String(minimum).split('.')[1]?.length ?? 0;
     const roundDose = value => +value.toFixed(precision);
     const currentRate = pump ? E.pumpRate(patient, it.id) : 0;
+    const pausedRate = pump ? pausedPumpRate() : 0;
     const sameRate = pump && currentRate === dose;
-    const order = pump ? (sameRate ? '维持当前泵速' : E.pumpOrder(it.n, currentRate ? 'adjust' : 'start', dose, it.unit))
-      : infusion ? `开始${rt.r} ${it.n}（${E.infusionDetails(dose, it.unit, infusion)}）`
-        : `给予 ${it.n} ${fmt(dose)}${it.unit}`;
+    const order = pump ? (sameRate ? '维持当前泵速' : E.pumpOrder(it.n, currentRate ? 'adjust' : pausedRate ? 'resume' : 'start', dose, unit))
+      : infusion ? `开始${rt.r} ${it.n}（${E.infusionDetails(dose, unit, infusion)}）`
+        : `给予 ${it.n} ${fmt(dose)}${unit}${it.id === 'ketamine' ? '（共 ' + fmt(dose * patient.patient.weight) + ' mg）' : ''}`;
     const hi = rt.maxDose ?? it.doseRange?.[1] ?? rt.d * 10;
     const over = dose > (rt.maxDose ?? rt.d * 2.5), under = dose < rt.d * 0.4;
     const doseLabel = pump ? '泵速' : '剂量';
@@ -972,15 +1175,15 @@ function openGiveConfig(it, patient, back, { backLabel = '返回药物列表', r
         <button type="button" id="drugBack" class="pill">${backLabel}</button>
         ${routes.length > 1 ? `<div class="sec">给药途径</div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;padding:0 0 14px">
-            ${routes.map((x, i) => `<span class="pill" data-ri="${i}" style="cursor:pointer;${i === ri ? 'background:#f7e6e6;color:#a33;font-weight:700' : ''}">${x.r}</span>`).join('')}
+            ${routes.map((x, i) => `<button type="button" class="pill" data-ri="${i}" aria-pressed="${i === ri}" style="cursor:pointer;${i === ri ? 'background:#f7e6e6;color:#a33;font-weight:700' : ''}">${x.r}</button>`).join('')}
           </div>` : ''}
-        ${pump ? `<div class="sec">${rt.r} · ${currentRate ? `当前泵速 ${currentRate} ${it.unit}` : '未泵入'}</div>` : ''}
-        <div class="sec">${pump ? (currentRate ? '调整泵速' : '起始泵速') : infusion ? '输注总量' : '剂量'}</div>
+        ${pump ? `<div class="sec">${rt.r} · ${currentRate ? `当前泵速 ${currentRate} ${unit}` : pausedRate ? `已暂停 · 暂停前 ${pausedRate} ${unit}` : '未泵入'}</div>` : ''}
+        <div class="sec">${pump ? (currentRate ? '调整泵速' : pausedRate ? '恢复泵速' : '起始泵速') : infusion ? '输注总量' : '剂量'}</div>
         <div style="display:flex;align-items:center;gap:10px;padding:6px 0 10px">
           <button id="dMinus" class="pill" style="width:46px;height:46px;font-size:22px;cursor:pointer">−</button>
           <div style="flex:1;text-align:center">
             <span style="font-family:var(--mono);font-size:28px;font-weight:600">${pump ? dose : fmt(dose)}</span>
-            <span style="font-size:13px;color:#9a9a9a"> ${it.unit}</span>
+            <span style="font-size:13px;color:#9a9a9a"> ${unit}</span>
           </div>
           <button id="dPlus" class="pill" ${dose >= hi ? 'disabled' : ''} style="width:46px;height:46px;font-size:22px;cursor:pointer">+</button>
         </div>
@@ -991,21 +1194,25 @@ function openGiveConfig(it, patient, back, { backLabel = '返回药物列表', r
         <div class="note" style="margin-bottom:12px;font-size:11.5px">
           ${quote}${feeLabel} ${money(price)}${selfPay == null ? '' : ' · 预计新增自付 ' + money(selfPay)}<br>
           ${payment ? '游戏支付 · ' + payment + '<br>' : ''}
-          ${rt.maxDose ? `本方案${doseLabel}上限 ${rt.maxDose} ${it.unit}<br>` : ''}
+          ${rt.maxDose ? `本方案${doseLabel}上限 ${rt.maxDose} ${unit}<br>` : ''}
           ${infusion ? `${rt.r} · 输注时长 ${infusion} 分钟<br>` : ''}
           ${pump ? `持续至手动停泵 · 模拟血药浓度半衰期约 ${pump} 分钟`
+            : infusion && (it.cls === '扩容' || it.cls === '血液成分') ? '按实际已输量逐步生效'
             : `起效 ${rt.on} min · ${infusion ? '药效' : ''}维持 ${rt.du} min`} · 效应 ${describeEff(it.eff) || '—'}
-          ${it.note ? '<br>' + it.note : ''}
+          ${it.adverse ? '<br>较大暴露时可能出现：' + describeEff(it.adverse.eff) : ''}
+          ${it.note ? '<br>' + escapeHtml(it.note) : ''}
+          ${it.clinicalNote ? '<br>临床提示（当前模拟未覆盖） · ' + escapeHtml(it.clinicalNote) : ''}
         </div>
         <button id="dGo" class="pill" ${sameRate ? 'disabled' : ''} style="width:100%;padding:14px;font-size:16px;font-weight:700;cursor:${sameRate ? 'default' : 'pointer'};background:${over ? '#f7e6e6' : '#fff'}">
           ${order}
         </button>
-        ${currentRate ? '<button type="button" id="dStop" class="pill" style="width:100%;margin-top:8px;padding:14px;font-size:16px;font-weight:700;cursor:pointer">停止泵入</button>' : ''}
+        ${currentRate && rt.pumpPause ? '<button type="button" id="dPause" class="pill" style="width:100%;margin-top:8px;padding:14px;font-size:16px;font-weight:700;cursor:pointer">暂停泵入</button>' : ''}
+        ${currentRate || pausedRate ? '<button type="button" id="dStop" class="pill" style="width:100%;margin-top:8px;padding:14px;font-size:16px;font-weight:700;cursor:pointer">停止泵入</button>' : ''}
       </div>`;
 
     $('#drugBack').onclick = () => { if (isCurrentPatient(patient)) back(); };
     $('#sheetList').querySelectorAll('[data-ri]').forEach(el => {
-      el.addEventListener('click', () => { ri = +el.dataset.ri; dose = routes[ri].d; render(); });
+      el.addEventListener('click', () => { ri = +el.dataset.ri; dose = routeDose(routes[ri]); render(); });
     });
     $('#sheetList').querySelectorAll('[data-mul]').forEach(el => {
       el.addEventListener('click', () => { dose = Math.max(minimum, roundDose(rt.d * +el.dataset.mul)); render(); });
@@ -1014,23 +1221,31 @@ function openGiveConfig(it, patient, back, { backLabel = '返回药物列表', r
     const mi = $('#sheetList').querySelector('#dMinus'), pl = $('#sheetList').querySelector('#dPlus');
     if (mi) mi.addEventListener('click', () => { dose = Math.max(Math.min(dose, minimum), roundDose(dose - step)); render(); });
     if (pl) pl.addEventListener('click', () => { dose = Math.min(hi, roundDose(dose + step)); render(); });
-    const execute = (event, stop) => {
-      if (!$('#sheetList').contains(event.currentTarget) || !$('#sheet').classList.contains('on') || !isCurrentPatient(patient)) return;
-      const result = stop ? E.stopPump(patient, it.id) : E.give(patient, it.id, dose, rt.r);
+    const execute = (event, action) => {
+      if (!$('#sheetList').contains(event.currentTarget) || !$('#sheet').classList.contains('on') ||
+          !hasCurrentSaveEpoch() || !isCurrentPatient(patient)) return;
+      const result = action === 'stop' ? E.stopPump(patient, it.id) : action === 'pause' ? E.pausePump(patient, it.id) :
+        E.orderMedication(patient, it.id, dose, rt.r);
       if (result == null) return;
-      const entry = patient.log[patient.log.length - 1];
+      if (action === 'apply' && result.status !== 'given') {
+        if (result.status === 'access') promptForAccess(back);
+        else toast(escapeHtml(result.reason || '请复核当前医嘱'), true);
+        return;
+      }
+      const entry = result.entry || patient.log.at(-1);
       checkBudget();
-      if (window.SOUND && !stop) SOUND.drug();
-      if (currentRate) markEvent(entry);
+      if (window.SOUND && action === 'apply') SOUND.drug();
+      if (currentRate || pausedRate) markEvent(entry);
       else judge('drug', it.id, null, entry);
       saveGame();
       closeSheet();
-      toast(pump || infusion ? entry[1] : `已${order}（${rt.r}）`);
+      toast(escapeHtml(pump || infusion ? entry[1] : `已${order}（${rt.r}）`));
       renderAll();
       if (returnAfterApply) back();
     };
-    $('#sheetList').querySelector('#dGo').addEventListener('click', event => execute(event, false));
-    $('#sheetList').querySelector('#dStop')?.addEventListener('click', event => execute(event, true));
+    $('#sheetList').querySelector('#dGo').addEventListener('click', event => execute(event, 'apply'));
+    $('#sheetList').querySelector('#dStop')?.addEventListener('click', event => execute(event, 'stop'));
+    $('#sheetList').querySelector('#dPause')?.addEventListener('click', event => execute(event, 'pause'));
   };
   render();
 }
@@ -1075,11 +1290,6 @@ function openEnvControls(patient, title, controls, allowReset = false) {
   }
   $('#sheetTitle').dataset.view = 'env';
   syncEnvSheet();
-  if ($('#sheet').classList.contains('on')) {
-    const panel = $('#sheetTitle').dataset;
-    if (panel.view === 'device') refreshDeviceOrder(S);
-    if (panel.view === 'thrombectomy' && panel.active !== String(PE_INTERVENTION.active(S))) openThrombectomy(S);
-  }
 }
 
 function openTemperatureSheet(patient) {
@@ -1100,17 +1310,23 @@ function openEnvSheet(patient) {
 
 /* 给药列表（旧接口，保留给不支持 SUBSTANCES 的场合） */
 function drugRows() {
+  const patient = S;
   return Object.entries(E.DRUGS).map(([id, d]) => ({
-    n: d.name, tag: d.routes?.[0] || '', amt: d.defaultDose + ' ' + d.unit + ' · ' + money(E.drugPrice(d, d.defaultDose, S.patient)),
+    n: d.name, tag: d.routes?.[0] || '', amt: d.defaultDose + ' ' + d.unit + ' · ' + money(E.drugPrice(d, d.defaultDose, patient.patient)),
     run: () => {
       const route = (d.routes && d.routes[0]) || '';
-      E.give(S, id, d.defaultDose, route);
+      const result = E.orderMedication(patient, id, d.defaultDose, route);
+      if (result.status !== 'given') {
+        if (result.status === 'access') promptForAccess(openDrugSheet);
+        else toast(escapeHtml(result.reason || '请复核当前医嘱'), true);
+        return;
+      }
       checkBudget();
       if (window.SOUND) SOUND.drug();
-      judge('drug', id);
+      judge('drug', id, null, result.entry, patient);
       saveGame();
       closeSheet();
-      toast(`已给予 ${d.name} ${d.defaultDose}${d.unit}（${route}）`);
+      toast(escapeHtml(result.entry?.[1] || `已开立 ${d.name} ${d.defaultDose}${d.unit}（${route}）`));
       openDetail(d.name, `${d.defaultDose} ${d.unit} · ${route}`, [['说明', d.desc]], '');
       renderAll();
     },
@@ -1136,7 +1352,7 @@ function reviewDelivery(patient) {
       { sec: '胎儿 · 当前病例未提供胎心监护。分娩后由新生儿科接手观察。' },
       { sec: '产科团队接手后，分娩方式和产程合并模拟。经过 ' + E.DELIVERY_DURATION / 60 + ' 分钟模拟时间完成分娩，胎盘娩出后开始产后观察。' },
     ]),
-    { n: ongoing ? '返回操作' : '暂缓分娩', tag: deliveryStatus(patient), amt: '返回', run: () => openSheet('操作', patient.patient.name, actionRows(), patient) },
+    { n: ongoing ? '返回操作' : '暂缓分娩', tag: deliveryStatus(patient), amt: '返回', run: () => openActionSheet(patient) },
   ];
   if (!ongoing) rows.push({ n: '确认启动分娩', tag: '启动后持续至分娩完成', amt: '¥' + E.ACTIONS.delivery.cost,
     run: () => performAction('delivery', E.ACTIONS.delivery) });
@@ -1189,20 +1405,91 @@ function openRespiratoryFlow(patient) {
 
 function openAdvancedCare(patient) {
   if (!isCurrentPatient(patient)) return;
-  const rows = Object.entries(E.ADVANCED_DEVICES).map(([id, device]) => ({
-    n: device.name, tag: E.advancedDevice(patient, id).active ? '本床运行中' : '可启用',
-    amt: '查看', run: () => openDeviceOrder(patient, id),
-  }));
+  const central = E.accessOptions(patient).find(option => option.type === 'cvc');
+  const rows = [accessOptionRow(patient, central, () => openAdvancedCare(patient))];
+  for (const [id, device] of Object.entries(E.ADVANCED_DEVICES)) {
+    const state = E.advancedDevice(patient, id);
+    if (id === 'aorticBypass' && !E.aorticBypassIndicated(patient) && state.startedAt == null) continue;
+    rows.push({ n: device.name, tag: state.trial ? '试撤中' : state.active ? '本床运行中' : '可启用',
+      amt: '查看', run: () => openDeviceOrder(patient, id) });
+  }
+  for (const id of ['aortic_replacement', 'tevar']) {
+    const surgery = E.ACTIONS[id];
+    rows.push({ n: surgery.name, tag: id === 'tevar' ? '血管腔内介入' : '心外科',
+      amt: money(surgery.cost), run: () => openAorticOrder(patient, id) });
+  }
   rows.push({ n: PE_INTERVENTION.name, tag: PE_INTERVENTION.status(patient), amt: money(PE_INTERVENTION.cost),
     run: () => openThrombectomy(patient) });
   openSheet('高级设备与介入', `床位 ${activeIdx + 1} · ${patient.patient.name}`, rows, patient);
+  Object.assign($('#sheetTitle').dataset, {
+    view: 'advanced-care',
+    bypass: String(E.aorticBypassIndicated(patient)),
+    accessAttempt: E.accessState(patient).attempt?.id ?? '',
+  });
+}
+
+function openAorticOrder(patient, id) {
+  const open = id === 'aortic_replacement';
+  const surgery = E.ACTIONS[id];
+  const status = open ? EMERGENCY_CASES.aorticSurgeryStatus(patient) : EMERGENCY_CASES.tevarStatus(patient);
+  const report = E.reports(patient, 'aorta_cta').at(-1);
+  const rows = [{ sec: escapeHtml(surgery.desc) }];
+  if (report) rows.push({ n: '复阅本床主动脉 CTA', tag: caseTime(report.reportedAt), amt: '报告',
+    run: () => openReportType(patient, 'aorta_cta') });
+  if (!report || status === 'irrelevant' || status === 'unconfirmed') {
+    rows.push({ sec: report ? '本床 CTA 尚未证实这项术式的适应证。' : '尚缺本床主动脉 CTA 报告。' });
+  } else if (status === 'running' || status === 'complete') {
+    const time = status === 'running' ? (open ? patient.aorticSurgeryStartedAt : patient.tevarStartedAt)
+      : (open ? patient.aorticSurgeryCompletedAt : patient.tevarCompletedAt);
+    rows.push({ sec: (status === 'running' ? '手术进行中 · 开始于 ' : '手术完成于 ') + caseTime(time) });
+  } else {
+    rows.push({ sec: escapeHtml(EMERGENCY_CASES.AORTIC_PERFUSION_GUIDE) });
+    if (open) rows.push({ n: '手术室控温与灌注', tag: '查看准备进度', amt: '查看', run: () => openDeviceOrder(patient, 'aorticBypass') });
+    rows.push({ sec: '<span id="aorticProgress"></span>' });
+    rows.push({ n: '申请' + surgery.name, tag: status === 'ready' ? '准备就绪' : '准备中',
+      amt: money(surgery.cost), run: () => performAction(id, surgery) });
+  }
+  rows.push({ n: '返回高级设备与介入', tag: '', amt: '返回', run: () => openAdvancedCare(patient) });
+  openSheet(surgery.name, patient.patient.name, rows, patient);
+  Object.assign($('#sheetTitle').dataset, { view: 'aortic-order', surgery: id, stage: status, report: report?.id || '' });
+  refreshAorticOrder(patient);
+}
+
+function refreshAorticOrder(patient) {
+  const { surgery, stage, report } = $('#sheetTitle').dataset;
+  const open = surgery === 'aortic_replacement';
+  const status = open ? EMERGENCY_CASES.aorticSurgeryStatus(patient) : EMERGENCY_CASES.tevarStatus(patient);
+  if (stage !== status || report !== (E.reports(patient, 'aorta_cta').at(-1)?.id || '')) {
+    openAorticOrder(patient, surgery); return;
+  }
+  const el = $('#aorticProgress');
+  if (!el) return;
+  const state = open ? E.advancedDevice(patient, 'aorticBypass') : EMERGENCY_CASES.tevarCirculation(patient);
+  const elapsed = caseTime(state.stableSeconds || 0);
+  const time = state.stableSecondsRequired;
+  const { sys, dia, map, hr, spo2 } = E.snapshot(patient);
+  const monitor = `血压 ${sys}/${dia}（MAP ${Math.round(map)}） · 心率 ${hr} · SpO₂ ${spo2 ?? '—'}%`;
+  const progress = open && !state.active ? '待心外科团队启动手术室控温与灌注'
+    : (open ? '体温与循环' : '循环与氧合') + '已连续达标 ' + elapsed + ' / ' + caseTime(time) + '（模拟时间）';
+  el.textContent = monitor + ' · ' + progress;
 }
 
 function openDeviceOrder(patient, id) {
   const device = E.ADVANCED_DEVICES[id];
-  const { active } = E.advancedDevice(patient, id);
+  const { active, phase, trial } = E.advancedDevice(patient, id);
+  const thermal = id === 'ttm' || id === 'aorticBypass';
+  const intraoperative = id === 'aorticBypass' && patient.aorticSurgeryStartedAt != null && patient.aorticSurgeryCompletedAt == null;
   const firstHour = device.startCost + device.hourlyCost;
   const estimate = estimateSelfPay(patient, active ? device.hourlyCost : firstHour, device.coverage);
+  function deviceAction(enable) {
+    if (!hasCurrentWard()) return;
+    const result = E.advancedDeviceAction(patient, id, enable);
+    if (!result.ok) { toast(result.reason || '请复核当前设备状态', true); return; }
+    checkBudget(patient);
+    saveGame();
+    renderAll();
+    openDeviceOrder(patient, id);
+  }
   const rows = [
     { sec: escapeHtml(device.description) },
     { sec: `开机耗材 ${money(device.startCost)} · 运行 ${money(device.hourlyCost)} / 模拟小时` },
@@ -1210,20 +1497,30 @@ function openDeviceOrder(patient, id) {
       (active ? '继续运行一小时 ' + money(device.hourlyCost) : '开机并运行一小时 ' + money(firstHour)) +
       (estimate == null ? '' : '，预计新增自付 ' + money(estimate)) },
     { sec: '<span id="deviceProgress"></span>' },
-    { n: active ? '确认停止本床设备' : '确认在本床启用', tag: device.name, amt: active ? '停机' : '开机', run: () => {
-      if (!hasCurrentWard()) return;
-      const result = E.advancedDeviceAction(patient, id, !active);
-      if (!result.ok) { toast(result.reason || '请复核当前设备状态', true); return; }
-      checkBudget(patient);
-      saveGame();
-      renderAll();
-      openDeviceOrder(patient, id);
-    } },
-    { n: '返回高级设备与介入', tag: '', amt: '返回', run: () => openAdvancedCare(patient) },
   ];
+  if (active && device.startCost > 0) {
+    if (trial) rows.push({ sec: '<span id="deviceTrialBaseline"></span>' });
+    rows.push({ sec: '<span id="deviceReadings"></span>' });
+    if (!intraoperative && phase !== 'rewarming') {
+      rows.push(trial ? { n: id === 'eeg' ? '恢复脑电采集' : '恢复原支持', tag: '沿用本次开机', amt: '恢复', run: () => deviceAction('restore') }
+        : { n: '开始试撤', tag: device.trialDescription, amt: '试撤', run: () => deviceAction('trial') });
+    }
+  }
+  rows.push(intraoperative ? { sec: '手术进行中，团队将在置换完成后自动启动复温。' }
+    : active && thermal && phase === 'rewarming' ? { sec: '受控复温中，达到复温目标后自动停机。' }
+    : { n: trial ? (thermal ? '结束试撤并受控复温' : '确认试撤后停机') : active && thermal ? '开始受控复温'
+      : active ? '确认停止本床设备' : '确认在本床启用',
+      tag: device.name, amt: active && thermal ? '复温' : active ? '停机' : '开机', run: () => deviceAction(!active) });
+  if (id === 'aorticBypass') rows.push({ n: '查看主动脉置换准备', tag: '心外科', amt: '查看',
+    run: () => openAorticOrder(patient, 'aortic_replacement') });
+  rows.push({ n: '返回高级设备与介入', tag: '', amt: '返回', run: () => openAdvancedCare(patient) });
   openSheet(device.name, `床位 ${activeIdx + 1} · ${patient.patient.name}`, rows, patient);
   $('#sheetTitle').dataset.view = 'device';
   $('#deviceProgress').dataset.device = id;
+  $('#deviceProgress').dataset.active = String(active);
+  $('#deviceProgress').dataset.phase = phase || '';
+  $('#deviceProgress').dataset.trial = String(!!trial);
+  if (trial) $('#deviceTrialBaseline').textContent = `试撤前 ${caseTime(trial.startedAt)} · ${trial.baseline}`;
   refreshDeviceOrder(patient);
 }
 
@@ -1232,9 +1529,27 @@ function refreshDeviceOrder(patient) {
   if (!el || !patient) return;
   const id = el.dataset.device;
   const state = E.advancedDevice(patient, id);
-  const status = state.active ? '运行中' : state.startedAt == null ? '尚未启用' : '已停机';
+  if (el.dataset.active !== String(state.active) || el.dataset.phase !== (state.phase || '') ||
+      el.dataset.trial !== String(!!state.trial)) {
+    openDeviceOrder(patient, id); return;
+  }
+  const status = state.trial ? '试撤中 ' + caseTime(patient.t - state.trial.startedAt)
+    : state.active ? '运行中' : state.startedAt == null ? '尚未启用' : '已停机';
   const lines = [status, '累计运行 ' + caseTime(state.seconds), '本设备累计 ' + money(state.cost)];
-  if (id === 'eeg' && state.startedAt != null) {
+  const readings = $('#deviceReadings');
+  if (readings) {
+    const text = '当前 · ' + E.advancedDeviceReadings(patient, id);
+    if (readings.textContent !== text) readings.textContent = text;
+  }
+  if ((id === 'ttm' || id === 'aorticBypass') && state.phase && !state.trial) {
+    lines.push(({ cooling: '降温中', maintaining: '维持目标体温', rewarming: '受控复温', complete: '复温完成' })[state.phase] || '已停机');
+    if (state.active) lines.push(`核心温度 ${patient.temp.toFixed(1)} ℃，目标 ${state.target} ℃`);
+  }
+  if (id === 'aorticBypass' && state.active && !state.trial && state.phase !== 'rewarming') {
+    lines.push(`温度与灌注达标 ${caseTime(state.stableSeconds)} / ${caseTime(state.stableSecondsRequired)}`);
+    if (state.ready) lines.push('手术准备就绪');
+  }
+  if (id === 'eeg' && state.startedAt != null && !state.active) {
     const reading = E.eegReading(patient);
     lines.push(reading.text);
     if (reading.lastSeizureAt != null) lines.push('最近发作样活动 ' + caseTime(reading.lastSeizureAt));
@@ -1247,10 +1562,10 @@ function openThrombectomy(patient) {
   const procedure = PE_INTERVENTION;
   const rows = [
     { sec: '肺动脉造影证实明显栓塞，合并循环不稳、出血风险或溶栓后仍有明显负荷时，可申请介入。操作耗时 20 个模拟分钟。' },
-    { sec: '一次性费用 ' + money(procedure.cost) + (realismRules.insurance ?
+    { sec: '一次性费用 ' + money(procedure.cost) + (insuranceApplies(patient) ?
       ' · 预计新增自付 ' + money(estimateSelfPay(patient, procedure.cost)) : '') },
   ];
-  if (!patient.peIntervention) rows.push({ n: '确认申请肺动脉导管取栓', tag: '本床介入会诊', amt: '申请', run: () => {
+  if (procedure.canRequest(patient)) rows.push({ n: patient.peIntervention ? '申请再次介入会诊' : '确认申请肺动脉导管取栓', tag: '本床介入会诊', amt: '申请', run: () => {
     if (!hasCurrentWard()) return;
     const result = procedure.start(patient);
     if (!result.ok) { toast(result.reason, true); return; }
@@ -1258,19 +1573,24 @@ function openThrombectomy(patient) {
     saveGame();
     openThrombectomy(patient);
   } });
-  else rows.push({ sec: procedure.status(patient) + ' · ' + (procedure.active(patient) ?
+  if (patient.peIntervention) rows.push({ sec: procedure.status(patient) + ' · ' + (procedure.active(patient) ?
     '预计完成于 ' + caseTime(patient.peIntervention.dueAt) : '完成于 ' + caseTime(patient.peIntervention.completedAt)) });
   rows.push({ n: '返回高级设备与介入', tag: '', amt: '返回', run: () => openAdvancedCare(patient) });
   openSheet(procedure.name, patient.patient.name, rows, patient);
   $('#sheetTitle').dataset.view = 'thrombectomy';
   $('#sheetTitle').dataset.active = String(procedure.active(patient));
+  $('#sheetTitle').dataset.canRequest = String(procedure.canRequest(patient));
 }
 
-function actionRows() {
-  const patient = S;
+function openActionSheet(patient) {
+  if (!isCurrentPatient(patient)) return;
+  openSheet('操作', patient.patient.name + ' · 急救与介入', actionRows(patient), patient);
+}
+
+function actionRows(patient) {
   const ed = isEDIntake(patient);
   const canRequestObstetrics = ed ? patient.patient.sex === '女' : patient.tags.includes('preeclampsia');
-  const actions = Object.entries(E.ACTIONS).filter(([id]) => id !== 'delivery' || canRequestObstetrics).map(([id, a]) => {
+  const actions = Object.entries(E.ACTIONS).filter(([id]) => !['aortic_replacement', 'tevar'].includes(id) && (id !== 'delivery' || canRequestObstetrics)).map(([id, a]) => {
     if (ed && id === 'delivery') return {
       n: '产科会诊', tag: '', amt: '评估', run: () => {
         const weeks = E.knownResults(patient).gestationalWeeks?.value;
@@ -1287,6 +1607,13 @@ function actionRows() {
     };
     if (id === 'intubate' && patient.vent) return { n: '调节呼吸机吸气流量',
       tag: `${E.ventilatorSettings(patient).flow} L/min`, amt: '调节', run: () => openRespiratoryFlow(patient) };
+    if (id === 'intubate' || id === 'chestTube') return {
+      n: a.name, tag: '', amt: money(a.cost), run: () => performAction(id, a),
+      related: { label: id === 'intubate' ? '氯胺酮诱导' : '氯胺酮镇静镇痛', run: () => {
+      const back = () => openActionSheet(patient);
+        openGiveConfig(window.SUBSTANCES.byId('ketamine'), patient, back, { backLabel: '返回操作', returnAfterApply: true });
+      } },
+    };
     if (id === 'oxygen' && !patient.vent) return { n: '调节氧疗供氧流量',
       tag: `${E.oxygenSettings(patient).flow} L/min`, amt: '调节', run: () => openRespiratoryFlow(patient),
       related: { label: a.name, run: () => performAction(id, a) } };
@@ -1294,28 +1621,35 @@ function actionRows() {
       id === 'oxygen' && S.vent ? '将呼吸机 FiO₂ 调至 100%' : a.name;
     return { n: name, tag: '', amt: a.cost ? '¥' + a.cost : '—', run: () => performAction(id, a) };
   });
-  return [{ n: '高级设备与介入', tag: 'ECMO · CRRT · 脑电 · 导管取栓', amt: '查看', run: () => openAdvancedCare(patient) },
+  return [{ n: '血管通路', tag: accessSummaryTag(patient), amt: '查看',
+      run: () => openRoutineAccess(patient) },
+    { n: '高级设备与介入', tag: '中心静脉置管 · 生命支持 · 亚低温 · 血管手术', amt: '查看', run: () => openAdvancedCare(patient) },
     { n: '体温处置', tag: '物理降温 · 被动保暖', amt: '查看', run: () => openTemperatureSheet(patient) }, ...actions];
 }
 
 function performAction(id, a) {
   const assessment = MENTOR.evaluate(S, 'action', id);
   const last = S.log.length;
+  const costBefore = S.cost;
   a.apply(S);
   const result = S.log.length > last ? S.log[S.log.length - 1] : null;
   if (!result) { toast('当前处置状态没有变化'); return; }
-  if (a.cost && result[2] === 'good') S.cost += a.cost;
+  if (a.cost && result[2] === 'good' && S.cost === costBefore) S.cost += a.cost;
   checkBudget();
   if (window.SOUND) SOUND.click();
   const feedback = result[2] === 'good' ? { ...assessment, msg: assessment.msg || result[1] } : {
     ok: (id === 'defib' && assessment.ok) || result[2] === 'info',
     msg: result[1],
   };
-  closeSheet();
+  if (isCurrentPatient(S)) {
+    if (id === 'aortic_replacement' || id === 'tevar') openAorticOrder(S, id);
+    else openActionSheet(S);
+  }
   judge('action', id, feedback, result);
   if (isEDIntake(S)) {
     const visibleResult = ['defib', 'cpr', 'oxygen', 'oxygen_off', 'intubate', 'extubate', 'pace', 'catheter'].includes(id);
-    const message = visibleResult || result[2] === 'good' ? result[1] : `${a.name} · 处置未执行，请复评`;
+    const documented = result[4] && E.getReport(S, result[4])?.kind === 'procedure';
+    const message = visibleResult || documented || result[2] === 'good' ? result[1] : `${a.name} · 处置回执请结合床旁情况复评`;
     result[5] = message; // 保留首诊当时实际展示的处置回执。
     toast(message, result[2] === 'bad');
   } else if (level === 'expert') toast(result[1], result[2] === 'warn' || result[2] === 'bad');
@@ -1370,6 +1704,7 @@ function openReportType(patient, type) {
 function performExam(patient, id) {
   if (!isCurrentPatient(patient)) return;
   if (!E.examine(patient, id)) return;
+  renderAll();
   saveGame();
   if ($('#sheet').classList.contains('on') && $('#sheetTitle').dataset.view === 'exams') openExamList(patient);
   openReportType(patient, id);
@@ -1418,12 +1753,23 @@ function openTestGroup(patient, id) {
   $('#sheetTitle').dataset.testGroup = id;
 }
 
-function dischargeMenuRows(patient) {
+function dischargeMenuRows(patient, assessment) {
   if (!isCurrentPatient(patient)) return [];
+  if (patient.cas.exploration) return [
+    { n: '结束本床探索', tag: '查看练习记录', amt: '结束', run: () => {
+      openSheet('结束本床探索', patient.patient.name, [
+        { n: '结束并查看本次记录', tag: '释放探索床位', amt: '确认', run: () => {
+          if (!hasCurrentWard()) return;
+          patient.running = false;
+          settleBeds();
+        } },
+        { n: '继续探索', tag: '', amt: '返回', run: openBedsideMenu },
+      ], patient);
+    } },
+  ];
   if (realismRules.signedDischarge) {
     return [{ n: '办理出院', tag: '', amt: '签字', run: () => confirmSignedDischarge(patient) }];
   }
-  const assessment = E.dischargeCheck(patient);
   const rows = [{
     n: assessment.ok ? '办理出院' : '出院评估', tag: '', amt: assessment.ok ? '办理' : '查看',
     run: () => {
@@ -1435,7 +1781,9 @@ function dischargeMenuRows(patient) {
         return;
       }
       if (isEDIntake(patient)) {
-        openDetail('出院评估', patient.patient.name, [['评估结果', current.ok ? '已达到出院标准，可返回菜单办理。' : '暂未达到出院标准，请结合床旁查体和已回报的检查复评。']], '');
+        openDetail('出院评估', patient.patient.name, [['评估结果', '<span id="edDischargeStatus"></span>']], '');
+        $('#detail').dataset.view = 'discharge';
+        refreshDischargeAssessment(patient, current);
         return;
       }
       const rows = [
@@ -1479,6 +1827,12 @@ function confirmSignedDischarge(patient) {
 }
 
 function refreshDischargeAssessment(patient, assessment) {
+  const emergencyStatus = $('#edDischargeStatus');
+  if (emergencyStatus) {
+    const message = assessment.ok ? '已达到出院标准，可返回菜单办理出院。' : '暂未达到出院标准，请结合床旁查体和已回报的检查复评。';
+    if (message !== emergencyStatus.textContent) emergencyStatus.textContent = message;
+    return;
+  }
   const pressure = E.bp(patient);
   $('#dischargeHr').textContent = Math.round(patient.hr) + ' 次/分';
   $('#dischargeBp').textContent = `${pressure.sys}/${pressure.dia} mmHg · MAP ${pressure.map} mmHg`;
@@ -1506,10 +1860,10 @@ function testRows(patient, group) {
         toast(t.name + '已开单，预计 ' + caseTime(order.readyAt) + ' 出报告');
         return;
       }
-      E.orderTest(patient, id);
+      if (E.orderTest(patient, id) == null) { toast(t.unavailable || '当前无法开出这项检查', true); return; }
       checkBudget();
       saveGame();
-      closeSheet();
+      openTestGroup(patient, group);
       toast(`已开 ${t.name}，${t.min} 分钟后出结果`);
       renderAll();
     },
@@ -1600,37 +1954,39 @@ function showAdvice(force) {
 }
 
 /* ---------------- 操作评价 ---------------- */
-function markEvent(entry) {
+function markEvent(entry, patient = S) {
   try {
-    S.tl = S.tl || [];
-    const b = E.snapshot(S);
-    entry[3] = S.t;
-    S.tl.push({ t: S.t, label: String(entry[1] || ''),
+    patient.tl = patient.tl || [];
+    const b = E.snapshot(patient);
+    const time = Number.isFinite(entry[3]) ? entry[3] : patient.t;
+    entry[3] = time;
+    patient.tl.push({ t: time, label: String(entry[1] || ''),
                 sys: b.sys, dia: b.dia, hr: b.hr, spo2: b.spo2,
-                k: +S.k.toFixed(1), glu: +S.glu.toFixed(1), ph: +S.ph.toFixed(2),
-                gcs: S.gcs, lac: +S.lac.toFixed(1), temp: +S.temp.toFixed(1) });
-    if (S.tl.length > 120) S.tl.shift();
+                k: +patient.k.toFixed(1), glu: +patient.glu.toFixed(1), ph: +patient.ph.toFixed(2),
+                gcs: patient.gcs, lac: +patient.lac.toFixed(1), temp: +patient.temp.toFixed(1) });
+    if (patient.tl.length > 120) patient.tl.shift();
   } catch (e) {}
 }
 
-function judge(kind, id, assessment, entry) {
+function judge(kind, id, assessment, entry, patient = S) {
   try {
-    const last = entry || S.log?.[S.log.length - 1];
-    if (last) markEvent(last);
+    const last = entry || patient.log?.at(-1);
+    if (last) markEvent(last, patient);
   } catch (e) {}
-  if (!MENTOR || level === 'expert') return;
-  const r = assessment || MENTOR.evaluate(S, kind, id);
+  if (patient.cas.exploration || !MENTOR || level === 'expert') return;
+  const r = assessment || MENTOR.evaluate(patient, kind, id);
   if (!r || !r.msg) return;
   if (!r.ok) {
-    S.penalties = (S.penalties || 0) + 1;
-    S.penaltyReasons = S.penaltyReasons || [];
-    const reason = S.penaltyReasons.find(item => item.label === r.msg);
+    patient.penalties = (patient.penalties || 0) + 1;
+    patient.penaltyReasons = patient.penaltyReasons || [];
+    const reason = patient.penaltyReasons.find(item => item.label === r.msg);
     if (reason) reason.count++;
-    else S.penaltyReasons.push({ label: r.msg, count: 1 });
+    else patient.penaltyReasons.push({ label: r.msg, count: 1 });
   }
-  if (isEDIntake(S)) return;
-  S.log.push([E.fmt(S.t), '带教点评：' + r.msg, r.ok ? 'good' : 'warn']);
-  S._lastJudgeAt = S.t;
+  if (isEDIntake(patient)) return;
+  patient.log.push([E.fmt(patient.t), '带教点评：' + r.msg, r.ok ? 'good' : 'warn']);
+  patient._lastJudgeAt = patient.t;
+  if (!isCurrentPatient(patient)) return;
   toast((r.ok ? '✓ ' : '⚠ ') + r.msg, !r.ok);
   /* 点评同时写进上级医师卡，方便回看 */
   try {
@@ -1771,7 +2127,7 @@ function loadGame() {
       }
       const cas = base.cas;
       const st = Object.assign(base, item.s, { cas });
-      E.restorePatient(st);
+      E.restorePatient(st, item.s);
       E.restoreDrugCost(st, item.s);
       INTAKE.init(st);
       E.restoreBenzodiazepines(st, item.s);
@@ -1783,6 +2139,20 @@ function loadGame() {
       if (st.death || st.discharged || st.dischargeOutcome?.status === 'failed') st.running = false;
       if (!Array.isArray(st.usedRealismRules)) {
         st.usedRealismRules = [...new Set([...(st.admissionSettings?.realism ? ['insurance'] : []), ...enabledRules()])];
+      }
+      if (Array.isArray(st.realismBonusRules)) {
+        st.realismBonusRules = enabledRules(st).filter(key => st.realismBonusRules.includes(key));
+      }
+      if (st.cas.exploration) {
+        delete st.ins;
+        delete st._refused;
+        delete st._overWarned;
+        st.bedCost = 0;
+        st.usedRealismRules = st.usedRealismRules.filter(key => key !== 'insurance');
+        if (st.admissionSettings) {
+          const rules = (st.admissionSettings.rules || []).filter(key => key !== 'insurance');
+          Object.assign(st.admissionSettings, { rules, realism: rules.length > 0 });
+        }
       }
       if (i <= savedActive) rebuiltActive = rebuilt.length;
       rebuilt.push({ S: st });
@@ -1905,7 +2275,10 @@ function monitorReportRows(monitor) {
     glu: ['血糖', 'mmol/L'],
     cr: ['肌酐', 'µmol/L'],
     bun: ['尿素氮', 'mmol/L'],
-    hb: ['血红蛋白', 'g/L'],
+    hb: ['血红蛋白', 'g/L', value => {
+      const flag = window.LIFE_EXAMS.valueRow('hb', value).flag;
+      return flag ? ' ' + flag : '';
+    }],
     wbc: ['白细胞', '×10⁹/L'],
     plt: ['血小板', '×10⁹/L'],
   };
@@ -1926,23 +2299,34 @@ function loop(ts) {
   lastTs = ts;
   if (paused || !beds.length) { ecg.pause(); silenceMonitor(); requestAnimationFrame(loop); return; }
   if (beds.length) {
-    const billedBeds = realismRules.insurance ? beds.filter(b => b.S.running).map(({ S: patient }) => ({
+    const billedBeds = beds.filter(b => b.S.running && insuranceApplies(b.S)).map(({ S: patient }) => ({
       patient, from: patient.t, hourlyRate: isSevere(patient) ? 80 : 25,
-    })) : [];
+    }));
     let observationEnd = observationStopReason();
     const adv = observationEnd ? 0 : !observation
       ? dt * (ff ? 20 : speed) * (nightMode ? 1.3 : 1)
       : Math.min(dt * 1200, 20);
     acc += adv;
+    let accessFinished = false;
     while (acc >= 0.2 && !observationEnd) {
-      for (const b of beds) {
-        if (!b.S.running) continue;
-        E.tick(b.S, 0.2);
-        if (window.CASEGEN) CASEGEN.step(b.S, 0.2, E);   // 病理模块的病程推进
+      for (const { S: patient } of beds) {
+        if (!patient.running) continue;
+        const attempt = patient.vascularAccess?.attempt;
+        E.tick(patient, 0.2);
+        if (attempt && !patient.vascularAccess?.attempt && patient.running) {
+          accessFinished = true;
+          checkBudget(patient);
+          if (isCurrentPatient(patient)) {
+            const success = E.accessState(patient).lines.some(line => line.id === attempt.id);
+            toast(success ? '通路已建立' : '置管失败，可重新尝试', !success);
+          }
+        }
+        if (window.CASEGEN) CASEGEN.step(patient, 0.2, E);   // 病理模块的病程推进
       }
       acc -= 0.2;
       if (observation) observationEnd = observationStopReason();
     }
+    if (accessFinished) saveGame();
     for (const { patient, from, hourlyRate } of billedBeds) {
       if (!patient.ins) initInsurance(undefined, patient);
       patient.bedCost = (patient.bedCost || 0) + hourlyRate * (patient.t - from) / 3600;
@@ -2052,11 +2436,11 @@ function pumpSound(ts, warnings, rPeak, inLobby) {
   if (!inLobby && rPeak) SOUND.beat();
 }
 
-function renderHUD() {
+function renderBudget() {
   try {
     /* 兜底：现实模式下任何时候发现没参保，补一份（开局/读档/切床都覆盖） */
-    if (realismRules.insurance && S && !S.ins) initInsurance();
-    const insured = realismRules.insurance && S?.ins;
+    if (insuranceApplies(S) && !S.ins) initInsurance();
+    const insured = insuranceApplies(S) && S.ins;
     const costSheetOpen = S && $('#detail').dataset.view === 'cost' && $('#detail').classList.contains('on');
     const cs = insured || costSheetOpen ? costSummary() : null;
     if (costSheetOpen) updateCostSheet(cs);
@@ -2078,20 +2462,42 @@ function renderHUD() {
       el.style.display = 'none';
     }
   } catch (e) {}
+}
+
+function renderHUD() {
+  renderBedsideInfusions(S);
+  renderBudget();
   renderBedBar();
   $('#clock').textContent = E.fmt(S.t);
   renderVitals();
   renderStates();
   syncEnvSheet();
+  if ($('#sheet').classList.contains('on')) {
+    const panel = $('#sheetTitle').dataset;
+    if (panel.view === 'access') refreshAccessSheet(S);
+    const accessTag = $('#sheetList [data-access-summary]');
+    if (accessTag) {
+      const summary = accessSummary(S);
+      if (accessTag.textContent !== summary) accessTag.textContent = summary;
+    }
+    if (panel.view === 'device') refreshDeviceOrder(S);
+    if (panel.view === 'aortic-order') refreshAorticOrder(S);
+    if (panel.view === 'advanced-care' && (panel.bypass !== String(E.aorticBypassIndicated(S)) ||
+        panel.accessAttempt !== (E.accessState(S).attempt?.id ?? ''))) openAdvancedCare(S);
+    if (panel.view === 'thrombectomy' && (panel.active !== String(PE_INTERVENTION.active(S)) ||
+        panel.canRequest !== String(PE_INTERVENTION.canRequest(S)))) openThrombectomy(S);
+  }
   if ($('#detail').classList.contains('on')) {
     if ($('#detail').dataset.view === 'operation-log') refreshOperationLog(S);
     if ($('#detail').dataset.view === 'infusions') refreshInfusions(S);
   }
-  if ($('#sheetTitle').dataset.view === 'menu' && !realismRules.signedDischarge && $('#sheet').classList.contains('on')) {
+  const dischargeMenu = $('#sheetTitle').dataset.view === 'menu' && $('#sheet').classList.contains('on') && !S.cas.exploration;
+  const dischargeDetail = $('#detail').dataset.view === 'discharge' && $('#detail').classList.contains('on');
+  if (!realismRules.signedDischarge && (dischargeMenu || dischargeDetail)) {
     const assessment = E.dischargeCheck(S);
-    if ($('#sheetTitle').dataset.eligible !== String(assessment.ok) ||
-        $('#sheetTitle').dataset.observation !== String(!isEDIntake(S) && canStartObservation(S, assessment))) openBedsideMenu();
-    if ($('#detail').dataset.view === 'discharge' && $('#detail').classList.contains('on')) refreshDischargeAssessment(S, assessment);
+    if (dischargeMenu && ($('#sheetTitle').dataset.eligible !== String(assessment.ok) ||
+        $('#sheetTitle').dataset.observation !== String(!isEDIntake(S) && canStartObservation(S, assessment)))) openBedsideMenu(assessment);
+    if (dischargeDetail) refreshDischargeAssessment(S, assessment);
   }
   syncBedSeverity();
   if (selected) renderOrganPanel();
@@ -2248,21 +2654,24 @@ function attentionMessage(index, wardReview = false) {
   return `床位 ${index + 1}：${attentionReason(beds[index].S, wardReview)}`;
 }
 
+function setConditionReviewResult(message = '') {
+  const result = $('#conditionReviewResult');
+  result.hidden = !message;
+  result.textContent = message;
+}
+
 function finishReview(event) {
   const minutes = Math.round((S.t - observation.startedAt) / 6) / 10;
-  let patient = S;
+  const patient = event.patient ?? S;
   let message;
-  if (observation.kind === 'glucose') {
+  if (observation.kind === 'glucose' && patient === S) {
     const glucose = E.glucoseReviewStatus(S, observation.glucose).glucose;
     const change = `${observation.glucose.toFixed(1)} → ${glucose == null ? '缺测' : glucose.toFixed(1)} mmol/L`;
     message = `床位 ${activeIdx + 1} 血糖复评 · 已过 ${minutes} 分钟，${change}。${event.message}`;
     S.lastGlucoseReview = message;
   } else {
-    patient = event.patient ?? S;
     message = `病情复评 · 已过 ${minutes} 分钟。${event.message}`;
-    const result = $('#conditionReviewResult');
-    result.hidden = false;
-    result.textContent = message;
+    if (observation.kind === 'ward') setConditionReviewResult(patient === S ? message : '');
   }
   patient.log.push([E.fmt(patient.t), message, event.urgent ? 'warn' : 'info', patient.t, null, true]);
   paused = false;
@@ -2407,12 +2816,12 @@ function closePatientOverlays() {
 
 function focusBed(i) {
   stopObservation();
+  setConditionReviewResult();
   activeIdx = i;
   S = beds[i].S;
   lastCrit = '';
   organBuiltFor = null;
   closePatientOverlays();
-  if (realismRules.insurance && !S.ins) initInsurance();
   drawBody();
   renderAll();
   showAdvice(false);
@@ -2421,6 +2830,7 @@ function focusBed(i) {
 
 function clearActiveBed() {
   stopObservation();
+  setConditionReviewResult();
   activeIdx = 0;
   S = null;
   ecg.clear();
@@ -2456,7 +2866,8 @@ function settleBeds() {
   for (const b of finished) {
     const st = b.S;
     window.SOUND?.stopMonitorAlarm(st);
-    const recap = archiveCase(st, wardCount);
+    E.finishPumps(st);
+    const recap = st.cas.exploration ? {} : archiveCase(st, wardCount);
     if (st === S) {
       review = { st, ...recap };
     } else {
@@ -2475,10 +2886,17 @@ function settleBeds() {
       showLobby();
     } else {
       lastCaseReview = !beds.length;
-      showCaseReview(review.st, review);
+      if (review.st.cas.exploration) {
+        const st = review.st;
+        openDetail('本床探索结束', st.patient.name,
+          [['模拟时间', caseTime(st.t)], ['结束情况', escapeHtml(st.death?.reason || '主动结束')],
+           ['处置参考费用', money(costSummary(st).total)],
+           ['操作记录', buildTimeline(st).map(([time, message]) => escapeHtml(time + ' · ' + message)).join('<br>') || '无操作记录']], '');
+      } else showCaseReview(review.st, review);
     }
   } else {
     activeIdx = beds.findIndex(b => b.S === S);
+    setConditionReviewResult();
     renderBedBar();
     if ($('#sheet').classList.contains('on') && $('#sheetTitle').dataset.view === 'beds') openBeds();
     if ($('#lobby').style.display === 'flex') showLobby();
@@ -2633,6 +3051,7 @@ function renderBedBar() {
 }
 
 function bedSeverity(patient) {
+  if (patient?.cas.exploration) return ' · 无病探索';
   if (!patient?.running) return '';
   if (isEDIntake(patient)) return edAttentionReason(patient) ? ' · 监护告警' : '';
   return isSevere(patient) ? ' · 重症' : '';
@@ -2659,11 +3078,13 @@ function openBeds() {
   rows.push({ sec: '操作' });
   rows.push({ n: '开一个新病例（占用空床）', tag: `${beds.length}/${MAX_BEDS}`, amt: '新建',
               run: () => { closeSheet(); startCase(window.CASEGEN.generate(diffFromLevel())); } });
+  rows.push({ n: '无病探索', tag: '从健康状态开始', amt: '新建', run: () => startCase('exploration') });
   openSheet('病房床位', `${beds.length} / ${MAX_BEDS} 张在用`, rows);
   $('#sheetTitle').dataset.view = 'beds';
 }
 
 function recordDiagnosis(st, dx, suffix = '', outcome) {
+  if (st.cas.exploration) return;
   const rec = window.HANDBOOK.fromCase(st, dx);
   if (!rec) return;
   rec.sessionId = wardRecordId(st) + suffix;
@@ -2676,6 +3097,7 @@ function recordDiagnosis(st, dx, suffix = '', outcome) {
 }
 
 function caseOutcomeLabel(st) {
+  if (st.cas.exploration) return st.running ? '探索中' : '探索结束';
   if (st.dischargeOutcome?.status === 'failed') return '出院判定失败';
   if (st.discharged) return '出院';
   return st.death ? '死亡' : '进行中';
@@ -2687,7 +3109,7 @@ function archiveCase(st, wardCount) {
   const breakdown = E.scoreBreakdown(st);
   const min = Math.round(st.t / 60);
   const name = (st.cas && st.cas.name) || st.caseId;
-  const rules = enabledRules();
+  const rules = enabledRules(st);
   const chart = INTAKE.view(st);
   const settings = {
     admission: st.admissionSettings,
@@ -2740,6 +3162,7 @@ function archiveCase(st, wardCount) {
   const bill = costSummary(st);
   const record = {
     recordId: wardRecordId(st),
+    会诊码: window.SHARE?.make(st),
     时间: new Date().toLocaleString('zh-CN', { hour12: false }),
     病例名: name,
     患者: st.patient.name,
@@ -2760,6 +3183,7 @@ function archiveCase(st, wardCount) {
     } : null,
     评分: breakdown.score,
     计分明细: breakdown,
+    病史复盘: INTAKE.debrief(st),
     检查报告: E.reports(st),
     入院记录: { chief: chart.chief, topics: chart.topics, known: chart.known, inquiries: chart.inquiries, vitals: st.admissionVitals },
     操作日志: buildTimeline(st),
@@ -2826,6 +3250,7 @@ function openCaseRecord(r) {
   if (r.死因) summary.push(['死因', r.死因]);
   if (r.终末血钾 != null) summary.push(['终末血钾', r.终末血钾 + ' mmol/L'], ['终末 pH', r.终末pH]);
   summary.push(...caseSettingsRows(r.设置));
+  for (const note of r.病史复盘 || []) summary.push(['病史复盘', note]);
   const signing = r.签字评估;
   if (signing) {
     const labels = { normal: '符合全部出院条件', penalized: '未完全达标，扣分出院', failed: '仍有重大问题，本例失败' };
@@ -2864,7 +3289,7 @@ function openCaseRecord(r) {
       ${summary.map(([label, value]) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd>`).join('')}</dl></section>
     <section class="case-review-section case-review-score"><h5>评分明细</h5><table>
       <tbody>${scoreRows.map(([label, value]) => `<tr><th scope="row">${escapeHtml(label)}</th><td>${escapeHtml(value)}</td></tr>`).join('')}</tbody>
-      <tfoot><tr><th scope="row">最终得分</th><td>${escapeHtml(r.评分 ?? '—')} / 100</td></tr></tfoot></table>
+      <tfoot><tr><th scope="row">最终得分</th><td>${escapeHtml(r.评分 ?? '—')} / ${escapeHtml(breakdown?.maxScore ?? 100)}</td></tr></tfoot></table>
       ${breakdown ? '' : '<p>旧病历未保存加扣分明细。</p>'}</section>
     <section class="case-review-section case-review-log-panel"><h5 id="caseReviewLogHeading">操作日志${log?.length ? ' · ' + log.length + ' 条' : ''}</h5>
       <div class="case-review-log" tabindex="0" role="region" aria-labelledby="caseReviewLogHeading">${log?.length ?
@@ -2877,6 +3302,20 @@ function openCaseRecord(r) {
       : r.主诉 ? '<section class="case-review-section"><details><summary>接诊病历</summary><p>' + escapeHtml(r.主诉) + '</p>' +
       (r.接诊病历 || []).map(item => '<p>' + escapeHtml(caseTime(item.获取) + ' · ' + item.来源 + ' · ' + item.内容) + '</p>').join('') + '</details></section>' : ''}`;
   detail.querySelector('.card').appendChild(body);
+  appendCaseShare(body, r.会诊码);
+}
+
+function appendCaseShare(container, code) {
+  if (!code) return;
+  const section = document.createElement('details');
+  section.className = 'case-share';
+  section.innerHTML = '<summary>分享本例</summary><p>复制分享码后，对方可在「会诊」中查看结局，或从入院时重新接诊。</p>' +
+    '<textarea readonly aria-label="本例分享码" rows="2" spellcheck="false"></textarea><button type="button" class="pill">复制分享码</button>';
+  const output = section.querySelector('textarea');
+  output.value = code;
+  section.querySelector('button').addEventListener('click', () => copyConsultCode(output));
+  if (container.classList.contains('case-review-body')) container.prepend(section);
+  else container.appendChild(section);
 }
 
 function showCaseReview(st, { record }) {
@@ -2940,8 +3379,7 @@ function isAllNormal(S) {
 }
 
 function ensurePresentation(S) {
-  if (!S || !S.cas) return S;
-  if (!isAllNormal(S)) return S;
+  if (!S?.cas || S.cas.exploration || !isAllNormal(S)) return S;
   /* 最多推进 45 分钟，每步 1 分钟；不致死（若会死就回退到能撑住的那一刻） */
   let guard = 0;
   const start = JSON.parse(JSON.stringify({
@@ -3140,7 +3578,7 @@ function openFeedback() {
 }
 
 /* ---------------- 版本 / 更新检查 ---------------- */
-const APP_VERSION = '1.57';
+const APP_VERSION = '1.57.3';
 const releaseRoot = document.querySelector('meta[name="xuanhu-release-root"]')?.content;
 const releaseBase = releaseRoot ? new URL(releaseRoot, location.href).href.replace(/\/$/, '') : '';
 const platformName = location.protocol === 'file:' ? '离线 HTML' :
@@ -3301,6 +3739,7 @@ async function checkUpdate() {
 
 /* ---------------- 医保说明（给玩家看的） ---------------- */
 function openInsuranceHelp() {
+  if (S?.cas.exploration) return;
   openSheet('医保怎么算', '现实模式', []);
   const list = document.querySelector('#sheetList');
   if (!list) return;
@@ -3421,6 +3860,20 @@ function openOnlineMode() {
 }
 
 /* ---------------- 会诊（分享码） ---------------- */
+async function copyConsultCode(output) {
+  if (!output.value) { toast('先生成会诊码', true); return; }
+  try {
+    await navigator.clipboard.writeText(output.value);
+    toast('分享码已复制');
+  } catch {
+    output.focus();
+    output.select();
+    let copied = false;
+    try { copied = document.execCommand('copy'); } catch {}
+    toast(copied ? '分享码已复制' : '分享码已选中，请手动复制');
+  }
+}
+
 function openConsult() {
   const patient = S;
   if (!window.SHARE) { openDetail('会诊', '', [['状态', '会诊模块未加载']], ''); return; }
@@ -3456,11 +3909,7 @@ function openConsult() {
     out.value = code;
     toast('会诊码已生成（' + code.length + ' 字）');
   });
-  list.querySelector('#cCopy').addEventListener('click', async () => {
-    if (!out.value) { toast('先生成会诊码', true); return; }
-    try { await navigator.clipboard.writeText(out.value); toast('已复制'); }
-    catch (e) { out.select(); document.execCommand && document.execCommand('copy'); toast('已选中，请手动复制'); }
-  });
+  list.querySelector('#cCopy').addEventListener('click', () => copyConsultCode(out));
 
   list.querySelector('#cParse').addEventListener('click', () => {
     const raw = list.querySelector('#cIn').value;
@@ -3471,7 +3920,7 @@ function openConsult() {
     const ed = isEDIntake({ diff: d.d });
     const p = d.p || {};
     const acts = (ed ? [] : d.a || []).map(([kind, , id, dose, infusion]) => {
-      if (kind === 'd' && ['start', 'adjust', 'stop'].includes(infusion?.pumpAction)) {
+      if (kind === 'd' && ['start', 'adjust', 'pause', 'resume', 'stop'].includes(infusion?.pumpAction)) {
         const name = window.SUBSTANCES?.byId(id)?.n || id;
         return E.pumpOrder(name, infusion.pumpAction, dose, infusion.unit);
       }
@@ -3482,13 +3931,15 @@ function openConsult() {
       return (kind === 'd' ? '给药 ' : '操作 ') + id + (dose ? ' ' + dose : '');
     });
     const outcome = d.o === 'death' ? ('死亡' + (d.r ? '（' + d.r + '）' : ''))
-      : d.o === 'failed' ? ('出院判定失败' + (d.r ? '（' + d.r + '）' : '')) : d.o === 'discharge' ? '出院' : '未结束';
+      : d.o === 'failed' ? ('出院判定失败' + (d.r ? '（' + d.r + '）' : '')) : d.o === 'discharge' ? (d.penalized ? '扣分出院' : '出院')
+      : d.o === 'explored' ? '探索结束' : '未结束';
+    const outcomeLine = '<div>结局：' + escapeHtml(outcome) + ' · 用时 ' + escapeHtml(d.t) + ' 分钟' +
+      (Number.isFinite(d.sc) ? ' · 评分 ' + escapeHtml(d.sc) : '') + '</div>';
     pv.innerHTML =
       '<div style="font-size:13px;line-height:1.7">' +
       '<div><b>会诊病例</b></div>' +
       '<div style="color:#8a8078">病人：' + escapeHtml(p.n || '—') + ' · ' + escapeHtml(p.x) + ' · ' + escapeHtml(p.a) + ' 岁 · ' + escapeHtml(p.w) + ' kg</div>' +
-      (ed ? '<div style="color:#8a8078">第 6 级 · 急诊首诊</div>' :
-        '<div style="color:#8a8078">结局：' + escapeHtml(outcome) + ' · 用时 ' + escapeHtml(d.t) + ' 分钟 · 评分 ' + escapeHtml(d.sc) + '</div>' +
+      (ed ? '<div style="color:#8a8078">第 6 级 · 急诊首诊</div>' + (d.o === 'open' ? '' : outcomeLine) : outcomeLine +
         '<div style="margin-top:6px;color:#6b625d">处置 ' + acts.length + ' 条：' + escapeHtml(acts.slice(0, 6).join('；') || '无') + (acts.length > 6 ? ' …' : '') + '</div>') +
       '</div>' +
       '<button id="cTake" class="pill" style="margin-top:10px;padding:10px 16px;cursor:pointer;background:#f7e6e6;color:#a33;font-weight:700">接手这一例</button>';
@@ -3497,7 +3948,7 @@ function openConsult() {
       if (patient !== S || !list.contains(take) || !$('#sheet').classList.contains('on')) return;
       const ns = window.SHARE.rebuild(d, E);
       if (!ns) { toast('无法重建该病例', true); return; }
-      installCase(ns, true, d.d ?? 1);
+      installCase(ensurePresentation(ns), true, d.d ?? 1);
       toast('已接手该会诊病例' + (p.n ? '：' + escapeHtml(p.n) : ''));
     });
   });
@@ -3635,10 +4086,13 @@ function openSoundSettings() {
   slider.focus({ preventScroll: true });
 }
 
-function openBedsideMenu() {
+function openBedsideMenu(assessment) {
   const patient = S;
+  if (isCurrentPatient(patient) && !patient.cas.exploration && !realismRules.signedDischarge) {
+    assessment ??= E.dischargeCheck(patient);
+  }
   const rows = [
-    ...dischargeMenuRows(patient),
+    ...dischargeMenuRows(patient, assessment),
     ...(isCurrentPatient(patient) ? [
       {n:'查看操作日志', tag:'当前床位', amt:'查看', run: () => openOperationLog(patient)},
       {n:'当前输液与泵药', tag:'输注进度与泵速', amt:'查看', run: () => openInfusions(patient)},
@@ -3650,12 +4104,12 @@ function openBedsideMenu() {
     ...(DEBUG_TOOLS ? [{n:'强制移除当前患者（测试用）', tag:'释放当前床位', amt:'', run:confirmRemovePatient}] : []),
     {sec:'设置与工具'},
     {n:'会诊', tag:'分享 / 接手病例', amt:'查看', run: () => openConsult()},
-    {n:'费用与医保', tag: realismRules.insurance ? '查看明细' : '医保规则已关闭', amt:'查看', run: () => openCostSheet()},
+    {n:patient?.cas.exploration ? '处置参考费用' : '费用与医保', tag:patient?.cas.exploration ? '探索无预算上限' : realismRules.insurance ? '查看明细' : '医保规则已关闭', amt:'查看', run: () => openCostSheet()},
     {n:'检查更新', tag:'在线 · v' + APP_VERSION, amt:'查看', run: () => checkUpdate()},
     {n:'反馈问题', tag:'带上记录，一键复制', amt:'反馈', run: () => openFeedback()},
     {n:'关于 · 隐私', tag:'v' + APP_VERSION, amt:'查看', run: () => openAbout()},
     {n:'获取最新版', tag:'下载页 / 联系方式', amt:'查看', run: () => openGetLatest()},
-    {n:'医保说明 / 切换', tag: realismRules.insurance ? ((S && S.ins ? S.ins.t : '未参保') + ' · 可切换') : '看看怎么算', amt:'查看', run: () => openInsuranceHelp()},
+    ...(patient?.cas.exploration ? [] : [{n:'医保说明 / 切换', tag: realismRules.insurance ? ((S && S.ins ? S.ins.t : '未参保') + ' · 可切换') : '看看怎么算', amt:'查看', run: () => openInsuranceHelp()}]),
     {n:'在线版模式', tag:'免安装更新', amt:'设置', run: () => openOnlineMode()},
     ...(IS_WEB || releaseBase ? [{n:'下载离线版', tag:'查看可用版本', amt:'下载', run: openGetLatest}] : []),
     {n:'统计', tag:'出院率 · 常犯错', amt:'查看', run: () => openStats()},
@@ -3683,8 +4137,7 @@ function openBedsideMenu() {
   ];
   openSheet('菜单', patient?.patient.name || '', rows, patient);
   $('#sheetTitle').dataset.view = 'menu';
-  if (isCurrentPatient(patient) && !realismRules.signedDischarge) {
-    const assessment = E.dischargeCheck(patient);
+  if (assessment) {
     $('#sheetTitle').dataset.eligible = String(assessment.ok);
     $('#sheetTitle').dataset.observation = String(!isEDIntake(patient) && canStartObservation(patient, assessment));
   }
@@ -3697,12 +4150,11 @@ function bind() {
   $('#btnAdmission').addEventListener('click', openAdmission);
   $('#sheetClose').addEventListener('click', dismissSheet);
   $('#btnDrug').addEventListener('click', () => openDrugSheet());
-  $('#btnOps').addEventListener('click', () => {
-    if (isCurrentPatient(S)) openSheet('操作', S.patient.name + ' · 急救与介入', actionRows(), S);
-  });
+  $('#btnOps').addEventListener('click', () => openActionSheet(S));
   $('#btnBody').addEventListener('click', () => openChecks(S));
   $('#btnBlood').addEventListener('click', openReports);
-  $('#btnMenu').addEventListener('click', openBedsideMenu);
+  $('#btnMenu').addEventListener('click', () => openBedsideMenu());
+  $('#bedsideInfusionDetails').addEventListener('click', () => openInfusions(S));
   $('#mask').addEventListener('click', dismissSheet);
   $('#detailX').addEventListener('click', closeDetail);
   $('#detail').addEventListener('click', e => { if (e.target.id === 'detail') closeDetail(); });
@@ -3714,6 +4166,7 @@ function bind() {
       if (observation) stopObservation();
       paused = !paused;
       syncSpeedUI();
+      renderBedsideInfusions(S);
       return;
     }
     if (p.id === 'conditionWait') { startConditionReview(); return; }
@@ -3742,7 +4195,7 @@ const CASE_DIFFICULTIES = [
   ['危重', '双病理叠加 + 基础病'],
   ['极危', '三病理叠加 + 特殊体质'],
   ['噩梦', '三病理 + 双体质，交接线索有限'],
-  ['急诊首诊', '沿用 5 级病情，主动问诊、查体和检查取证'],
+  ['急诊首诊', '自主取证；患者可能漏述，误操作和手术失败会影响病程'],
 ];
 function caseDiffRows() {
   return CASE_DIFFICULTIES.map(([name, desc], i) => ({
@@ -3762,9 +4215,10 @@ function diffFromLevel() {
   return caseDiff;
 }
 function prepareCase(st, intakeDifficulty = caseDiff) {
-  const rules = enabledRules();
+  const rules = enabledRules(st);
   st.admissionSettings = { level, realism: rules.length > 0, rules };
   st.usedRealismRules = [...rules];
+  st.realismBonusRules = st.cas.exploration ? [] : [...rules];
   const { hr, sys, dia, temp, rr, spo2, gcs } = E.snapshot(st);
   st.admissionVitals = { t: st.t, hr, sys, dia, temp, rr, spo2, gcs, vent: !!st.vent, rhythm: st.rhythm };
   INTAKE.init(st, st.diff ?? intakeDifficulty);
@@ -3902,7 +4356,7 @@ function startCase(spec, replace, intakeDifficulty = caseDiff, insurance) {
     return;
   }
   const st = ensurePresentation(E.create(spec));
-  if (insurance) st.ins = { ...insurance };
+  if (insurance && !st.cas.exploration) st.ins = { ...insurance };
   installCase(st, replace, intakeDifficulty);
   showAdmissionIntro(st);
 }
@@ -3972,6 +4426,7 @@ function pickCase() {
   ];
   let idx = 0;
   for (const c of Object.values(E.CASES)) {
+    if (c.exploration) continue;
     idx += 1;
     /* 病名会剧透，这里只给年龄性别 */
     rows.push({ n: '教学病例 ' + idx, tag: c.age + '岁 ' + c.sex, amt: '',
@@ -3998,7 +4453,8 @@ function restoreRealismRules(saved) {
 
 function openRealismSettings() {
   const entries = Object.entries(REALISM_RULES);
-  openSheet('现实模式', '独立开关，即时应用到全病房及新接诊患者', entries.map(([key, rule]) => ({
+  const subtitle = `设置即时生效。新接诊病例中，每项全程开启的规则加 ${REALISM_BONUS.points} 分。`;
+  openSheet('现实模式', subtitle, entries.map(([key, rule]) => ({
     n: rule.name, tag: rule.note, amt: realismRules[key] ? '已开启' : '已关闭',
     run: () => {
       if (!hasCurrentWard()) return;
@@ -4013,9 +4469,12 @@ function openRealismSettings() {
         syncSpeedUI();
       }
       for (const { S: patient } of beds) {
-        if (!patient.running) continue;
+        if (!patient.running || (key === 'insurance' && patient.cas.exploration)) continue;
         patient.usedRealismRules ??= [];
         if (realismRules[key] && !patient.usedRealismRules.includes(key)) patient.usedRealismRules.push(key);
+        if (!realismRules[key] && Array.isArray(patient.realismBonusRules)) {
+          patient.realismBonusRules = patient.realismBonusRules.filter(ruleKey => ruleKey !== key);
+        }
         patient.log.push([E.fmt(patient.t), (realismRules[key] ? '开启' : '关闭') + '规则 · ' + rule.name, 'info', patient.t, null, true]);
       }
       if (key === 'insurance' && realismRules.insurance && S && !S.ins) initInsurance();
@@ -4036,7 +4495,7 @@ function openRealismSettings() {
 /* ---------------- 医保与费用 ---------------- */
 
 function initInsurance(forceType, patient = S) {
-  if (!realismRules.insurance || !patient) return;
+  if (!insuranceApplies(patient)) return;
   FINANCE.initInsurance(patient, forceType);
 }
 
@@ -4049,13 +4508,13 @@ function costSummary(patient = S, additionalCost = 0, coverage) {
 }
 
 function estimateSelfPay(patient, amount, coverage) {
-  if (!patient || !realismRules.insurance) return null;
+  if (!insuranceApplies(patient)) return null;
   if (!patient.ins) initInsurance(undefined, patient);
   return Math.round((costSummary(patient, amount, coverage).selfPay - costSummary(patient).selfPay) * 100) / 100;
 }
 
 function checkBudget(patient = S) {
-  if (!realismRules.insurance || !patient?.ins || patient._refused) return;
+  if (!insuranceApplies(patient) || !patient.ins || patient._refused) return;
   const c = costSummary(patient);
   if (!patient._overWarned && c.selfPay > c.cap) {
     patient._overWarned = 1;
@@ -4071,13 +4530,13 @@ function checkBudget(patient = S) {
 
 function openCostSheet() {
   if (!S) return;
-  if (realismRules.insurance && !S.ins) initInsurance();
+  if (insuranceApplies(S) && !S.ins) initInsurance();
   const c = costSummary();
-  const ins = realismRules.insurance && S.ins;
+  const ins = insuranceApplies(S) && S.ins;
   const rows = [
     ['总费用', '<span id="billTotal"></span>'],
     [S.drugCostPartial ? '药费含血制品（更新后）' : '药费（含血液制品）', '<span id="billDrugs"></span>'],
-    ['其中床位费', '<span id="billBed"></span>'],
+    ...(S.cas.exploration ? [] : [['其中床位费', '<span id="billBed"></span>']]),
   ];
   if (S.deviceCost) rows.push(['器械费', '<span id="billDevices"></span>'],
     ['启动与耗材费', '<span id="billDeviceSetup"></span>'], ['运行费', '<span id="billDeviceRunning"></span>']);
@@ -4093,7 +4552,7 @@ function openCostSheet() {
       ['起付线 / 封顶', '¥' + ins.ded + ' / ¥' + ins.cap],
     );
   }
-  openDetail('费用与医保', ins ? '医保与自付' : '医保规则已关闭', rows, '');
+  openDetail(S.cas.exploration ? '处置参考费用' : '费用与医保', S.cas.exploration ? '无病探索 · 无预算上限' : ins ? '医保与自付' : '医保规则已关闭', rows, '');
   $('#detail').dataset.view = 'cost';
   updateCostSheet(c);
 }
@@ -4101,7 +4560,7 @@ function openCostSheet() {
 function updateCostSheet(c) {
   $('#billTotal').textContent = money(c.total);
   $('#billDrugs').textContent = money(S.drugCost || 0);
-  $('#billBed').textContent = money(S.bedCost || 0);
+  if ($('#billBed')) $('#billBed').textContent = money(S.bedCost || 0);
   if ($('#billDevices')) {
     $('#billDevices').textContent = money(S.deviceCost || 0);
     $('#billDeviceSetup').textContent = money(S.deviceSetupCost || 0);
@@ -4127,7 +4586,7 @@ function isSevere(S) {
 
 function severeCondition(st, pressure, includeVentilation = true) {
   if (st.rhythm !== 'sinus') return st.rhythm === 'vf' ? '室颤' : st.rhythm === 'asystole' ? '心静止' : '心律异常';
-  if (st.gcs < 12) return '意识障碍';
+  if (consciousnessStatus(st.gcs) === 'crit') return '意识障碍';
   if ((pressure.map ?? 90) < 65) return '平均动脉压过低';
   if (st.spo2 < 90) return '血氧过低';
   if (st.hr > 130 || st.hr < 45) return '心率异常';
@@ -4147,6 +4606,8 @@ function renderPatient() {
 }
 
 function renderAll() {
+  renderBedsideInfusions(S);
+  renderBudget();
   renderPatient();
   mountBedBar();
   renderBedBar();
@@ -4167,6 +4628,29 @@ function renderAll() {
 
 /* 更新公告：每次发版在这里加一条（新的放最前面） */
 const RELEASES = [
+  { v: '1.57.3', notes: [
+    '病床主界面可查看本床输液进度、剩余时间和持续泵速。生理盐水等静滴及血制品按模拟时间输入，提前结束可查看已输量。',
+    '每床共用一条血管通路。在操作中选择并确认置管，建好后回药库开药。更换方式时原通路保留至置管成功，出院无需拔管。',
+    '新增艾司洛尔短效静脉泵入，支持调速、暂停和恢复。新增氯胺酮静脉镇静镇痛，可在插管或胸腔引流前单独开立。',
+    '新接诊病例的医保、真实出院和禁用暂停，每项全程开启可在结算时额外获得 15 分。重大问题签字失败仍为 0 分。',
+  ] },
+  { v: '1.57.2', notes: [
+    '病情变化中断快进时立即刷新临床状态。意识异常持续显示 GCS，急诊首诊注明首测或上次查体。',
+    '所有收开机费的设备均可试撤，保留试撤前读数，恢复时沿用同一次开机计费。',
+    '无病探索免家庭预算和床位费，可自由使用药品和设备，在菜单查看处置参考费用。',
+    '血常规首查、复查和旧报告复阅均标出血红蛋白偏低或偏高，重症监护快照同步显示。',
+    '床位释放或切换时清理上一床的复评提示，急诊出院评估随病情刷新。',
+    '修正部分合并病例在治疗后持续被乳酸、肝肾功能或留观计时拦截的问题。',
+    '肝素和溶栓后的凝血影响会随药效消退；肺栓塞介入后若再次出现重症，可结合新造影和循环情况复评介入。',
+  ] },
+  { v: '1.57.1', notes: [
+    '结算页可分享本例；新归档的病历也可再次复制分享码，在「会诊」预览或重新接诊。',
+    'VA-ECMO 可试撤并恢复原支持。普通肝素可按 U/h 持续泵入，凝血报告可对照 aPTT 和抗 Xa 活性。',
+    '出院评估纳入乳酸，肝损后的乳酸清除会随病情恢复。血钠纠正过快后可查看神经留观剩余时间。',
+    '大厅新增独立的无病探索床位。急诊首诊开放可执行的误操作、手术风险与病史复盘，可连续开检查和给药。',
+    '新增高处坠落伤、主动脉 CTA 和两条夹层路径：A 型弓部受累在手术室控温及灌注达标后置换，复杂 B 型稳定后行 TEVAR。另增床旁亚低温设备。',
+    '降低贵药相关病例频率，增加可走支持治疗路径的变体。',
+  ] },
   { v: '1.57', notes: [
     '术语表扩到 450+ 条：新增疾病 37、体征 82、查体与检查 36，药物覆盖全部 190 种',
     '术语表可按分类筛选、支持中文名与英文 id 搜索（如 meropenem）',
@@ -4322,7 +4806,7 @@ function bindLobby() {
   lobby.querySelector('.lobby-release summary').textContent = '更新记录 · v' + release.v;
   lobby.querySelector('.lobby-release ul').innerHTML = release.notes.map(n => `<li>${escapeHtml(n)}</li>`).join('');
   lobby.querySelector('[data-act="download"]').hidden = !IS_WEB && !releaseBase;
-  const actions = {
+    const actions = {
     handbook: openHandbook, records: openRecords, stats: openStats, chart: openChart, consult: openConsult,
     ach: openAchievements, about: openAbout, download: openGetLatest, sound: openSoundSettings,
     diff: () => openSheet('难度设置', '病例与指导', difficultyRows()),
@@ -4335,6 +4819,8 @@ function bindLobby() {
     if (!button || button.disabled || !hasCurrentSaveEpoch()) return;
     if (button.hasAttribute('data-new')) {
       startCase(CASEGEN.generate(diffFromLevel()));
+    } else if (button.hasAttribute('data-explore')) {
+      startCase('exploration');
     } else if (button.dataset.mode) {
       if (button.dataset.mode === 'night') toggleNight(); else openRealismSettings();
       if ($('#sheet').classList.contains('on')) {
@@ -4369,6 +4855,9 @@ function showLobby() {
     <button type="button" class="bed empty" data-new="${full ? 0 : 1}" ${full ? 'disabled' : ''}>
       <span class="no">${full ? '满' : '+'}</span>
       <span class="nm">${full ? '床位已满' : '接诊新患者'}<span class="meta">${beds.length} / ${MAX_BEDS} 张床在用</span></span>
+    </button>
+    <button type="button" class="bed empty" data-explore ${full ? 'disabled' : ''}>
+      <span class="no">＋</span><span class="nm">无病探索<span class="meta">从健康状态开始 · 自由处置 · 无预算上限</span></span>
     </button>`;
   list.querySelectorAll('[data-bed]').forEach(row => {
     const patient = beds[+row.dataset.bed].S;

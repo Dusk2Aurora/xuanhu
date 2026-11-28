@@ -2,6 +2,8 @@
 (function (root) {
 'use strict';
 
+const EMERGENCY_CASES = root.EMERGENCY_CASES || (typeof module !== 'undefined' && module.exports ? require('./emergency-cases.js') : null);
+
 const EXAM_GROUPS = [
   { id: 'neuro', name: '意识与神经' },
   { id: 'resp', name: '气道与呼吸' },
@@ -22,7 +24,8 @@ const EXAMS = {
   airway: { group: 'resp', name: '观察气道与呼吸', desc: '观察胸廓起伏、呼吸频率及气道分泌物。' },
   lungs: { group: 'resp', name: '双肺听诊', desc: '比较双侧呼吸音与附加音。' },
   circulation: { group: 'circ', name: '循环与末梢灌注', desc: '检查脉搏、末梢灌注、颈静脉及心音，并复核模拟血管收缩驱动。' },
-  legs: { group: 'circ', name: '比较双下肢', desc: '检查双下肢是否有不对称肿胀或水肿。' },
+  bilateral_bp: { group: 'circ', name: '双臂血压', desc: '分侧记录上臂袖带血压，结合症状和脉搏复核分支灌注。' },
+  legs: { group: 'circ', name: '比较双下肢', desc: '检查双下肢有无不对称肿胀、水肿或末梢灌注异常。' },
   abdomen: { group: 'abd', name: '腹部查体', desc: '检查腹部压痛及耻骨上区膨隆。' },
   urine: { group: 'abd', name: '复核导尿与尿量', desc: '留置导尿后记录当前尿量，结合膀胱充盈程度评估少尿。' },
   skin: { group: 'skin', name: '皮肤与伤口检查', desc: '观察皮色、皮肤湿度和外露伤口。' },
@@ -40,7 +43,7 @@ const TESTS = {
   bmp: { group: 'blood', name: '电解质+肾功', min: 35, cost: 180, fields: ['k', 'na', 'cl', 'ca', 'cr', 'bun'], desc: '查电解质、肌酐和尿素氮。' },
   cbc: { group: 'blood', name: '血常规', min: 25, cost: 60, fields: ['hb', 'wbc', 'plt'], desc: '查血红蛋白、白细胞和血小板。' },
   lac: { group: 'blood', name: '乳酸', min: 10, cost: 50, fields: ['lac'], desc: '评估乳酸积累及复苏后的变化。' },
-  coag: { group: 'targeted', name: '凝血功能', min: 25, cost: 110, fields: ['coag', 'inr', 'thrombinTime', 'fibrinogen'], desc: '测凝血指数、INR、凝血酶时间与纤维蛋白原。' },
+  coag: { group: 'targeted', name: '凝血功能', min: 25, cost: 110, fields: ['coag', 'inr', 'thrombinTime', 'fibrinogen', 'aptt', 'heparinAntiXa'], desc: '测凝血指数、INR、凝血酶时间和纤维蛋白原。可用 aPTT 和抗 Xa 观察普通肝素的抗凝效应。' },
   digoxin_level: { group: 'targeted', name: '游离地高辛浓度', min: 20, cost: 160, fields: ['digoxinLevel'], desc: '针对地高辛暴露，有助于解释缓慢心律、传导异常与高钾。' },
   methotrexate_level: { group: 'targeted', name: '甲氨蝶呤浓度（色谱）', min: 25, cost: 230, fields: ['mtxLevel'], desc: '结合输注至采样的间隔与肌酐评估延迟清除，可在酶解救援后复查。' },
   troponin: { group: 'targeted', name: '高敏肌钙蛋白 I', min: 30, cost: 170, fields: ['troponin'], desc: '评估心肌损伤，可复查采样比较变化。' },
@@ -57,7 +60,13 @@ const TESTS = {
   echo: { group: 'imaging', name: '床旁心脏超声', min: 5, cost: 150, fields: [], desc: '观察心包积液和左右心室表现。' },
   fast: { group: 'imaging', name: '创伤床旁超声（FAST）', min: 5, cost: 150, fields: [], desc: '观察腹腔、盆腔有无游离液体。' },
   cthead: { group: 'imaging', name: '头颅 CT 平扫', min: 25, cost: 360, fields: [], desc: '评估颅内急性出血和占位效应。' },
-  ctpa: { group: 'imaging', name: 'CT 肺动脉造影', min: 30, cost: 650, fields: [], desc: '检查肺动脉有无充盈缺损。' },
+  ctpa: { group: 'imaging', name: 'CT 肺动脉造影', min: 30, cost: 650, fields: ['pulmonaryClotBurden'], desc: '检查肺动脉有无充盈缺损。' },
+  aorta_cta: { group: 'imaging', name: '主动脉 CTA', min: 8, cost: 880, fields: ['ascendingAortaDissection', 'aorticArchInvolvement', 'descendingAortaDissection', 'descendingAortaMalperfusion'],
+    desc: '急诊评估主动脉升段、弓部、降段及分支灌注。报告时间为模拟值。' },
+  trauma_ct: { group: 'imaging', name: '创伤评估 CT（多部位）', min: 12, cost: 960, fields: ['bluntMultisystemTrauma'],
+    desc: '初步复苏后评估多部位损伤，观察胸腹脏器、脊柱及骨盆。报告时间为模拟值。',
+    canOrder: S => S.rhythm === 'sinus' && S.map >= 65 && S.spo2 >= 90 && S.tensionPTX <= 0.20,
+    unavailable: '病情暂不适合转运做创伤 CT，请先处理呼吸和循环问题。' },
   pelvicus: { group: 'imaging', name: '妇产科盆腔超声', min: 15, cost: 130, fields: [], desc: '观察妊娠位置及盆腔游离液体。' },
   bladderus: { group: 'imaging', name: '床旁膀胱扫描', min: 3, cost: 75, fields: [], desc: '检查膀胱是否明显充盈。' },
 };
@@ -130,18 +139,34 @@ function bedside(S, type, E) {
       }
       break;
     }
+    case 'bilateral_bp': {
+      if (S.rhythm !== 'sinus') {
+        rows = [abnormal('双臂血压', '无可用的脉搏血压')];
+        break;
+      }
+      Object.assign(values, EMERGENCY_CASES.bilateralPressure(S, E.bp(S)));
+      const { leftSys, leftDia, rightSys, rightDia, armSysDifference } = values;
+      rows = [row('左上臂', `${leftSys}/${leftDia} mmHg`), row('右上臂', `${rightSys}/${rightDia} mmHg`),
+        row('双臂收缩压差', `${armSysDifference} mmHg`, armSysDifference > 20 && '异常'),
+        row('结果说明', '双臂血压接近时，仍需结合症状及影像判断有无主动脉夹层。')];
+      break;
+    }
     case 'legs': {
       const right = withTag(S, 'pe') && S.clot >= 0.25;
       const edema = S.interstitium >= 12.5 || (withTag(S, 'aki') && S.renalFactor < 0.2) ||
         (withTag(S, 'preeclampsia') && !S.delivered);
+      const reduced = S.aorticLegMalperfusion >= 0.25 && S.rhythm === 'sinus';
+      if (S.rhythm === 'sinus') values.rightFootPerfusionReduced = Number(reduced);
       rows = [row('双下肢对比', right ? '右下肢比左侧明显肿胀' : '未见明显不对称肿胀', right && '异常'),
+        row('足部末梢灌注', reduced ? '右足偏凉，足背搏动较左侧弱' : S.rhythm === 'sinus'
+          ? '左右足部灌注无明显差异' : '暂无可比较的脉搏', reduced && '异常'),
         row('水肿', edema ? '可见双侧下肢水肿' : '未见明显双侧水肿', edema && '异常')];
       break;
     }
     case 'abdomen': {
       const tender = [];
       if (withTag(S, 'pancreatitis')) tender.push('上腹部');
-      if (activeBleed(S, 'spleen')) tender.push('左上腹');
+      if (activeBleed(S, 'spleen') || activeBleed(S, EMERGENCY_CASES.FALL_SITE)) tender.push('左上腹');
       if (activeBleed(S, 'ectopic')) tender.push('下腹部');
       if (retention(S)) tender.push('耻骨上区');
       rows = [row('压痛', S.gcs <= 8 ? '意识受损，压痛反应难以可靠评估' :
@@ -200,7 +225,7 @@ const METRICS = {
   ca: ['离子钙', 'mmol/L', 1.12, 1.32],
   cr: ['肌酐', 'µmol/L'],
   bun: ['尿素氮', 'mmol/L'],
-  hb: ['血红蛋白', 'g/L'],
+  hb: ['血红蛋白', 'g/L', 120, 160],
   wbc: ['白细胞', '×10⁹/L', 4, 10],
   plt: ['血小板', '×10⁹/L', 100, 300],
   glu: ['血糖', 'mmol/L', 3.9],
@@ -211,6 +236,8 @@ const METRICS = {
   inr: ['国际标准化比值（INR）', '', null, 1.2],
   thrombinTime: ['凝血酶时间（TT）', 's', null, 21],
   fibrinogen: ['纤维蛋白原', 'g/L', 1.7],
+  aptt: ['活化部分凝血活酶时间（aPTT）', 's'],
+  heparinAntiXa: ['抗 Xa 活性（普通肝素）', 'IU/mL'],
   digoxinLevel: ['游离地高辛', 'ng/mL', null, 2],
   mtxLevel: ['血浆甲氨蝶呤', 'µmol/L'],
   hepato: ['肝损伤指数', '（模拟值）', null, 0.25],
@@ -275,14 +302,21 @@ function targetedSample(S, type, sample, E) {
       return labRows(type, sample);
     case 'coag': {
       const fibrinogen = S.fibrinogen ?? 2.6;
-      sample.coag = Number.isFinite(S.coag) ? rounded(S.coag, 2) : null;
+      const antiXa = E.heparinActivity(S) * 1.4;
+      sample.coag = rounded(E.coagulation(S), 2);
       sample.inr = rounded(1 + 4.8 * (root.SUBSTANCES?.warfarinEffect(S) || 0) + 2 * (S.hepatotox || 0), 2);
       sample.thrombinTime = rounded(17 + 81 * (S.dabigatranLoad || 0) + 9 * Math.max(0, 1.7 - fibrinogen), 1);
       sample.fibrinogen = rounded(fibrinogen, 2);
-      return labRows(type, sample);
+      sample.aptt = rounded(29 + 64 * antiXa + 18 * (S.hepatotox || 0) + 10 * (S.dabigatranLoad || 0), 1);
+      sample.heparinAntiXa = rounded(antiXa, 2);
+      const rows = labRows(type, sample);
+      const pump = S.pumps?.heparin;
+      if (pump?.rate > 0) rows.push(row('采样时普通肝素泵速', `${pump.rate} U/h`));
+      else if (pump?.pausedRate > 0) rows.push(row('采样时普通肝素泵速', '已暂停'));
+      return rows;
     }
     case 'liver':
-      sample.coag = Number.isFinite(S.coag) ? rounded(S.coag, 2) : null;
+      sample.coag = rounded(E.coagulation(S), 2);
       return [...labRows(type, sample), row('结果说明', '肝损伤指数升高提示损伤加重，凝血功能指数下降提示凝血异常加重。为便于复查，保留模拟指数。')];
     case 'digoxin_level':
       sample.digoxinLevel = rounded(6.1 * (S.digoxinLoad || 0), 2);
@@ -350,14 +384,63 @@ function imagingRows(S, type, sample) {
         row('右室', S.pvr >= 5.5 ? '右室压力负荷增高' : '未见明显右室压力负荷征象'),
       ];
     case 'fast': {
-      const sites = [['脾肾间隙', 'spleen'], ['盆腔', 'ectopic']];
-      return sites.map(([label, site]) => internalFluid(S, site) ? abnormal(label, '见游离液体') : row(label, '未见明确游离液体'));
+      const fallFluid = activeBleed(S, EMERGENCY_CASES.FALL_SITE) || (
+        S.fallTraumaHemostasisAt != null && S.t - S.fallTraumaHemostasisAt < 900);
+      return [row('脾肾间隙', internalFluid(S, 'spleen') || fallFluid ? '见游离液体' : '未见明确游离液体',
+        (internalFluid(S, 'spleen') || fallFluid) && '异常'),
+        row('盆腔', internalFluid(S, 'ectopic') ? '见游离液体' : '未见明确游离液体', internalFluid(S, 'ectopic') && '异常')];
     }
     case 'cthead':
       return [S.hematoma > 0.12 ? abnormal('颅内', '左颞部颅骨内板下见双凸形高密度影') : row('颅内', '未见明确急性出血影'),
         row('占位效应', S.hematoma > 0.3 && S.icp >= 0.6 ? '可见邻近脑组织受压' : '未见明显占位效应')];
-    case 'ctpa':
-      return [(S.clot || 0) > 0.08 ? abnormal('肺动脉', '可见肺动脉充盈缺损') : row('肺动脉', '未见明确充盈缺损')];
+    case 'ctpa': {
+      const clot = S.clot || 0;
+      sample.pulmonaryClotBurden = clot;
+      return [clot > 0.08 ? abnormal('肺动脉', '可见肺动脉充盈缺损') : row('肺动脉', '未见明确充盈缺损')];
+    }
+    case 'aorta_cta': {
+      const dissection = S.aorticDissectionLoad > 0;
+      const ascending = dissection && withTag(S, 'aorticDissection');
+      const descending = dissection && withTag(S, 'aorticDissectionB');
+      const arch = ascending && !!S.aorticArchInvolved;
+      const malperfusion = descending && S.aorticLegMalperfusion >= 0.25;
+      Object.assign(sample, { ascendingAortaDissection:Number(ascending), aorticArchInvolvement:Number(arch),
+        descendingAortaDissection:Number(descending), descendingAortaMalperfusion:Number(malperfusion) });
+      if (S.aorticSurgeryCompletedAt != null) {
+        return [row('升主动脉与主动脉弓', '置换术后改变，受检修复段未见明显异常。')];
+      }
+      if (S.tevarCompletedAt != null) {
+        return [row('降主动脉', '可见胸主动脉腔内修复术后改变，远端供血改善。')];
+      }
+      if (descending) {
+        return [row('升主动脉', '未见内膜片，升主动脉未受累。'),
+          abnormal('降主动脉', '近端降主动脉出现真假腔，夹层向远端延伸，符合 Stanford B 型。'),
+          malperfusion ? abnormal('远端灌注', '夹层压迫真腔，右侧髂动脉灌注减低。影像评估具备腔内修复条件。')
+            : row('远端灌注', '受检分支未见明显灌注不足。')];
+      }
+      if (!ascending) return [row('主动脉', '受检主动脉未见明确夹层内膜片。')];
+      const arm = S.aorticDissectionArm;
+      const branch = arm < 0 ? '左锁骨下动脉开口受累。' : arm > 0 ? '头臂干开口受累。' : null;
+      return [abnormal('升主动脉', '内膜片累及升主动脉，显示真腔及假腔，符合 Stanford A 型夹层。'),
+        arch ? abnormal('主动脉弓', '夹层延伸至主动脉弓。') : row('主动脉弓', '未见明显受累。'),
+        branch ? abnormal('弓部分支', branch) : row('弓部分支', '上肢供血分支未见明显受累。'),
+        row('建议', '急诊心外科评估。')];
+    }
+    case 'trauma_ct': {
+      const fall = withTag(S, EMERGENCY_CASES.FALL_SITE);
+      sample.bluntMultisystemTrauma = Number(fall);
+      if (!fall) {
+        const findings = [];
+        if (S.tensionPTX > 0) findings.push(abnormal('胸部', '左侧胸腔积气。'));
+        if (internalFluid(S, 'spleen')) findings.push(abnormal('腹部', '脾损伤伴腹腔积液。'));
+        if (S.hematoma > 0.12) findings.push(abnormal('颅脑', '左颞部见急性硬膜外血肿。'));
+        return findings.length ? findings : [row('受检部位', '未见明确急性创伤性改变。')];
+      }
+      return [row('胸部', S.chestTubePlaced ? '左侧肋骨骨折，胸腔引流后肺已复张。' : '左侧肋骨骨折，伴左侧胸腔积气。', '异常'),
+        row('腹部', activeBleed(S, EMERGENCY_CASES.FALL_SITE) ? '脾裂伤伴腹腔积血，可见造影剂外渗。' : '脾损伤止血后改变，未见明确活动性造影剂外渗。', '异常'),
+        abnormal('胸腰段脊柱', '胸腰交界处见轻度压缩性骨折，未见明显椎管受压。'),
+        row('颅脑及骨盆', '未见明确急性颅内出血或骨盆骨折。')];
+    }
     case 'pelvicus': {
       const latePregnancy = withTag(S, 'preeclampsia') && !S.delivered;
       if (latePregnancy) Object.assign(sample, { pregnant: 1, gestationalWeeks: 34 });
@@ -374,7 +457,7 @@ function imagingRows(S, type, sample) {
   }
 }
 
-const API = { EXAM_GROUPS, TEST_GROUPS, EXAMS, TESTS, bedside, labRows, ecgRows, targetedSample, imagingRows, advanceTroponin };
+const API = { EXAM_GROUPS, TEST_GROUPS, EXAMS, TESTS, bedside, valueRow, labRows, ecgRows, targetedSample, imagingRows, advanceTroponin };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 root.LIFE_EXAMS = API;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

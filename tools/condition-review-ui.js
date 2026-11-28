@@ -60,16 +60,16 @@ async function startWaiting(page, selector = '#conditionWait') {
   assert.equal(await page.locator(selector).innerText(), '结束等待');
 }
 
-async function assertReviewFinished(page, reason, { bed = 0, glucoseOnly = false } = {}) {
+async function assertReviewFinished(page, reason, { bed = 0, glucoseOnly = false, toastOnly = glucoseOnly } = {}) {
   const stopped = await state(page);
   assert.equal(stopped.speedLabel, '快进 20×');
   assert.equal(stopped.pauseLabel, '暂停');
   assert.equal(stopped.selectedSpeed, '1');
-  assert.match(glucoseOnly ? stopped.toast : stopped.result, reason);
+  assert.match(toastOnly ? stopped.toast : stopped.result, reason);
   assert.equal(stopped.reviewLogs.flat().length, 1);
   assert.match(stopped.reviewLogs[bed][0], glucoseOnly ? /血糖复评/ : /病情复评/);
   assert.match(stopped.reviewLogs[bed][0], reason);
-  if (!glucoseOnly) assert.ok(await page.locator('#conditionReviewResult').isVisible());
+  if (!toastOnly) assert.ok(await page.locator('#conditionReviewResult').isVisible());
   const later = await assertClockAdvance(page, stopped, 0.4);
   assert.deepEqual(later.reviewLogs, stopped.reviewLogs);
   assert.equal(later.result, stopped.result);
@@ -197,7 +197,7 @@ async function testGlucoseReview(browser) {
       game.beds[1].S.rhythm = 'vf';
       window.advanceSimulation();
     });
-    const stopped = await assertReviewFinished(page, /床位 2：室颤/, { glucoseOnly: true });
+    const stopped = await assertReviewFinished(page, /床位 2：室颤/, { bed: 1, toastOnly: true });
     assert.deepEqual(stopped.clocks, [0, 0]);
     assert.doesNotMatch(stopped.toast, /已进入本病例目标/);
   });
@@ -219,9 +219,10 @@ async function testGlucoseReview(browser) {
     });
     await startWaiting(page, '#glucoseWait');
     await page.evaluate(() => window.advanceSimulation());
-    const stopped = await assertReviewFinished(page, /床位 2 的血常规已回报/, { glucoseOnly: true });
+    const stopped = await assertReviewFinished(page, /床位 2 的血常规已回报/, { bed: 1, toastOnly: true });
     assert.deepEqual(stopped.reports, [undefined, true]);
     assert.deepEqual(stopped.clocks, [0.2, 0.2]);
+    assert.equal(await page.locator('#glucoseReviewResult').isVisible(), false);
   });
 
   for (const selector of ['#glucoseWait', '#ff']) {
@@ -234,6 +235,49 @@ async function testGlucoseReview(browser) {
 }
 
 async function testConditionReview(browser) {
+  async function openNeuroExam(page) {
+    await page.locator('#btnBody').click();
+    await page.locator('#sheetList').getByText('床旁查体', { exact: true }).click();
+    await page.locator('#sheetList').getByText('意识与抽搐评估', { exact: true }).click();
+  }
+  await withWard(browser, async page => {
+    await startWaiting(page);
+    await page.evaluate(() => {
+      window.__LIFE_GAME.S.gcs = 9;
+      window.advanceSimulation(10);
+    });
+    assert.match((await state(page)).result, /床位\s*1.*意识障碍/);
+    await page.locator('#pause').click();
+    const states = page.locator('#states');
+    assert.match(await states.innerText(), /意识障碍.*GCS 9/);
+    assert.doesNotMatch(await states.innerText(), /生命体征平稳/);
+    await page.locator('#toast.on').waitFor({ state: 'detached' });
+    assert.match(await states.innerText(), /意识障碍.*GCS 9/);
+    await page.evaluate(() => { window.__LIFE_GAME.S.gcs = 15; });
+    await openNeuroExam(page);
+    assert.doesNotMatch(await states.innerText(), /意识障碍|意识减退/);
+  });
+
+  await withWard(browser, async page => {
+    await page.evaluate(() => {
+      const { S, beds, switchBed } = window.__LIFE_GAME;
+      S.intake = { ...S.intake, difficulty: 6 };
+      S.admissionVitals = { t: 0, gcs: 15 };
+      S.gcs = 9;
+      switchBed(beds[1].S);
+      switchBed(S);
+    });
+    await page.locator('#pause').click();
+    const states = page.locator('#states');
+    assert.doesNotMatch(await states.innerText(), /GCS|意识障碍/);
+    await openNeuroExam(page);
+    assert.match(await states.innerText(), /意识障碍.*上次查体 GCS 9/);
+    await page.locator('#detailX').click();
+    await page.evaluate(() => { window.__LIFE_GAME.S.gcs = 15; });
+    await page.locator('#sheetList').getByText('意识与抽搐评估', { exact: true }).click();
+    assert.doesNotMatch(await states.innerText(), /GCS|意识障碍/);
+  });
+
   await withWard(browser, async page => {
     assert.equal(await page.locator('#opTitle').inputValue(), 'heart');
     assert.equal(await page.locator('.top #conditionWait').innerText(), '等病情变化');
@@ -265,6 +309,10 @@ async function testConditionReview(browser) {
     await page.locator('#toast.on').waitFor({ state: 'detached' });
     assert.ok(await page.locator('#conditionReviewResult').isVisible());
     assert.equal((await state(page)).result, stopped.result);
+    await page.locator('#btnLobby').click();
+    await page.locator('#lobby [data-bed="1"]').click();
+    assert.equal(await page.locator('#conditionReviewResult').isVisible(), false);
+    assert.equal((await state(page)).result, '');
   });
 
   await withWard(browser, async page => {
@@ -273,15 +321,15 @@ async function testConditionReview(browser) {
       window.__LIFE_GAME.beds[1].S.hr += 25;
       window.advanceSimulation();
     });
-    const stopped = await assertReviewFinished(page, /心率/, { bed: 1 });
-    assert.match(stopped.result, /床位\s*2/);
+    const stopped = await assertReviewFinished(page, /床位\s*2.*心率/, { bed: 1, toastOnly: true });
+    assert.equal(stopped.result, '');
     assert.deepEqual(stopped.clocks, [0, 0]);
 
     await page.locator('#btnLobby').click();
     await page.locator('#lobby [data-bed="1"]').click();
     assert.equal(await page.evaluate(() => window.__LIFE_GAME.activeIdx), 1);
-    assert.ok(await page.locator('#conditionReviewResult').isVisible());
-    assert.equal((await state(page)).result, stopped.result);
+    assert.equal(await page.locator('#conditionReviewResult').isVisible(), false);
+    assert.equal((await state(page)).result, '');
   });
 
   await withWard(browser, async page => {
@@ -302,7 +350,7 @@ async function testConditionReview(browser) {
       beds[1].S.rhythm = 'vf';
       window.advanceSimulation();
     });
-    const stopped = await assertReviewFinished(page, /床位\s*2.*室颤/, { bed: 1 });
+    const stopped = await assertReviewFinished(page, /床位\s*2.*室颤/, { bed: 1, toastOnly: true });
     assert.deepEqual(stopped.clocks, [0, 0]);
   });
 
@@ -323,9 +371,10 @@ async function testConditionReview(browser) {
     });
     await startWaiting(page);
     await page.evaluate(() => window.advanceSimulation());
-    const stopped = await assertReviewFinished(page, /床位\s*2.*血常规.*回报/, { bed: 1 });
+    const stopped = await assertReviewFinished(page, /床位\s*2.*血常规.*回报/, { bed: 1, toastOnly: true });
     assert.deepEqual(stopped.reports, [undefined, true]);
     assert.deepEqual(stopped.clocks, [0.2, 0.2]);
+    assert.equal(await page.locator('#conditionReviewResult').isVisible(), false);
   });
 
   for (const selector of ['#conditionWait', '#ff']) {

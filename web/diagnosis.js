@@ -14,6 +14,8 @@
 (function (root) {
 'use strict';
 
+const EMERGENCY_CASES = root.EMERGENCY_CASES || (typeof module !== 'undefined' && module.exports ? require('./emergency-cases.js') : null);
+
 const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
 const num = v => (typeof v === 'number' && isFinite(v)) ? v : null;
 const round2 = x => Math.round(x * 100) / 100;
@@ -165,6 +167,38 @@ function myxedemaPattern(c) {
  * priority 只在分数接近时用于排序，不改变分数本身。
  * ------------------------------------------ */
 const RULES = [
+  {
+    id:'aorticDissection', name:'急性 Stanford A 型主动脉夹层', priority:97, tags:['aorticDissection', 'circulation'],
+    diff:['急性冠脉综合征', '肺栓塞', '心包压塞'],
+    test(c) {
+      if (EMERGENCY_CASES.hasEvidence(c.S, 'aorta_cta', 'ascendingAortaDissection')) {
+        const evidence = ['主动脉 CTA 见升主动脉内膜片及真假腔'];
+        if (EMERGENCY_CASES.hasEvidence(c.S, 'aorta_cta', 'aorticArchInvolvement')) evidence.push('夹层延伸至主动脉弓');
+        return { score:0.99, evidence };
+      }
+      return null;
+    },
+  },
+  {
+    id:'aorticDissectionB', name:'复杂 Stanford B 型主动脉夹层', priority:97, tags:['aorticDissectionB', 'circulation'],
+    diff:['急性下肢动脉闭塞', '其他主动脉急症', '非血管性急性背痛'],
+    test(c) {
+      if (!EMERGENCY_CASES.tevarEvidence(c.S)) return null;
+      return { score:0.99, evidence:['主动脉 CTA 证实降主动脉真假腔，升主动脉未受累', '远端分支灌注减低'] };
+    },
+  },
+  {
+    id:'fallTrauma', name:'高处坠落伤 / 胸腹多发伤', priority:97, tags:['fallTrauma', 'bleeding', 'trauma'],
+    diff:['单纯胸部外伤', '腹腔内出血', '脊柱损伤'],
+    test(c) {
+      if (EMERGENCY_CASES.hasEvidence(c.S, 'trauma_ct', 'bluntMultisystemTrauma')) {
+        return { score:0.99, evidence:['创伤 CT 记录胸部、脾脏及胸腰段脊柱损伤'] };
+      }
+      const fall = [c.S.intake?.chief, ...(c.S.intake?.known || [])].some(fact => /坠落/.test(fact?.text || ''));
+      if (!fall || !(c.S.tensionPTX > 0 || c.S.bleedingSites?.fallTrauma > 0)) return null;
+      return { score:0.68, evidence:['已取得坠落伤病史', '呼吸或循环存在创伤性异常'] };
+    },
+  },
   ...[
     ['warfarinBleed', '华法林相关大出血', c => c.flag('warfarinLoad') > 0.35, '华法林抗凝负荷持续'],
     ['dabigatranBleed', '达比加群相关大出血', c => c.flag('dabigatranLoad') > 0.35, '直接凝血酶抑制作用持续'],

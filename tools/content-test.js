@@ -17,6 +17,9 @@ const E = require('../prototype/engine.js');
 try { const _E = require('../prototype/engine.js'); _E.setIdentity && _E.setIdentity({ name:'测试患者', sex:'男', age:45, weight:70, height:172 }); } catch (e) {}
 const G = require('../prototype/generator.js');
 const A = require('../prototype/achievements.js');
+const share = require('../prototype/share.js');
+const emergency = require('../prototype/emergency-cases.js');
+require('../prototype/diagnosis.js');
 
 const DT = 10;              // 每步 10 秒
 const MAX_MIN = 360;        // 最长观察 6 小时
@@ -41,30 +44,94 @@ const o2 = S => {
   if (!S.vent && S.spo2 >= 96 && (S.shunt || 0) < 0.28) E.ACTIONS.oxygen_off.apply(S);
 };
 
+function step(S) {
+  E.tick(S, DT);
+  G.step(S, DT, E);
+  E.pollTests(S);
+}
+
+function standardBleedingCare(S) {
+  if (S.admissionMedicationHeldAt == null) E.ACTIONS.pause_admission_medication.apply(S);
+  if (!S.tests.coag) E.orderTest(S, 'coag');
+  if (S.bleedingSites.bleed > 0 && S.map >= 65) {
+    const endoscopy = E.ACTIONS.endoscopy;
+    const before = S.cost;
+    endoscopy.apply(S);
+    if (S.cost === before && S.log.at(-1)?.[2] === 'good') S.cost += endoscopy.cost;
+  }
+}
+
 /* ---------- 各模块的规范治疗路径 ---------- */
 const TREAT = {
   warfarinBleed(S) {
+    if (S.standardRescueCare) {
+      if (!S.given?.some(o => o.id === 'vitamin_k')) E.give(S, 'vitamin_k');
+      return standardBleedingCare(S);
+    }
     if (!S.given?.some(o => o.id === 'pcc4')) { E.give(S, 'pcc4'); E.give(S, 'vitamin_k'); }
     TREAT.bleed(S);
   },
   dabigatranBleed(S) {
+    if (S.standardRescueCare) return standardBleedingCare(S);
     if (!S.given?.some(o => o.id === 'idarucizumab')) E.give(S, 'idarucizumab');
     TREAT.bleed(S);
   },
   fibrinogenBleed(S) {
-    if (!S.given?.some(o => o.id === 'fibrinogenConcentrate')) E.give(S, 'fibrinogenConcentrate');
+    if (!S.given?.some(o => o.id === 'cryoprecipitate')) E.give(S, 'cryoprecipitate');
     TREAT.bleed(S);
   },
   digoxinTox(S) {
+    if (S.standardRescueCare) {
+      if (S.admissionMedicationHeldAt == null) E.ACTIONS.pause_admission_medication.apply(S);
+      if (!S.tests.ecg) E.orderTest(S, 'ecg');
+      if (!S.tests.digoxin_level) E.orderTest(S, 'digoxin_level');
+      return;
+    }
     if (!S.given?.some(o => o.id === 'digoxinFab')) E.give(S, 'digoxinFab');
   },
   mtxDelayed(S) {
+    if (S.standardRescueCare) {
+      if (!S.tests.methotrexate_level) E.orderTest(S, 'methotrexate_level');
+      if (!S.given?.some(o => o.id === 'ringer')) E.give(S, 'ringer', 500);
+      if (S.t % 3600 === 0) E.give(S, 'leucovorin');
+      return;
+    }
     if (!S.given?.some(o => o.id === 'glucarpidase')) {
       E.give(S, 'nacl', 500);
       E.give(S, 'glucarpidase');
     }
     const enzyme = S.given?.find(o => o.id === 'glucarpidase');
     if (enzyme && S.t >= enzyme.t + 121 * 60 && !S.given.some(o => o.id === 'leucovorin')) E.give(S, 'leucovorin');
+  },
+  aorticDissection(S) {
+    if (!S.tests.aorta_cta) {
+      E.examine(S, 'bilateral_bp');
+      E.orderTest(S, 'aorta_cta');
+      E.give(S, 'labetalol');
+    }
+    if (emergency.aorticBypassIndicated(S) && !S.advancedCare.aorticBypass) E.advancedDeviceAction(S, 'aorticBypass', true);
+    if (emergency.aorticSurgeryStatus(S) === 'ready') E.ACTIONS.aortic_replacement.apply(S);
+  },
+  aorticDissectionB(S) {
+    if (!S.tests.aorta_cta) {
+      E.examine(S, 'legs');
+      E.orderTest(S, 'aorta_cta');
+      E.give(S, 'labetalol');
+    }
+    if (emergency.tevarStatus(S) === 'ready') E.ACTIONS.tevar.apply(S);
+  },
+  fallTrauma(S) {
+    if (S.fallTraumaSpineProtectedAt == null) {
+      E.ACTIONS.oxygen.apply(S);
+      E.ACTIONS.needle.apply(S);
+      E.ACTIONS.chestTube.apply(S);
+      E.ACTIONS.spinal_motion_restriction.apply(S);
+      E.orderTest(S, 'fast');
+      E.give(S, 'prbc');
+    }
+    if (S.tests.fast.done && S.bleedingSites.fallTrauma > 0) E.ACTIONS.trauma_hemostasis.apply(S);
+    if (!S.tests.trauma_ct) E.orderTest(S, 'trauma_ct');
+    if (S.tests.fast.done) o2(S);
   },
   highK(S, t) {
     if (!S._p) { S._p = 1; E.give(S, 'calcium', 10); E.give(S, 'insulin', 10); E.give(S, 'dextrose50', 25); }
@@ -159,8 +226,10 @@ const TREAT = {
   },
   htnEmergency(S) {
     if (!S._p) { S._p = 1; E.give(S, 'nitroprusside', 0.5); E.give(S, 'labetalol', 10); }
-    if ((S._sys || 0) > 160 && !has(S, 'nitroprusside')) E.give(S, 'nitroprusside', 0.5);
-    if ((S._sys || 0) > 160 && !has(S, 'labetalol')) E.give(S, 'labetalol', 10);
+    const systolic = bp(S).sys;
+    if (systolic > 160 && !E.pumpRate(S, 'nitroprusside')) E.give(S, 'nitroprusside', 0.5);
+    if (systolic <= 150 && E.pumpRate(S, 'nitroprusside')) E.stopPump(S, 'nitroprusside');
+    if (systolic > 160 && !has(S, 'labetalol')) E.give(S, 'labetalol', 10);
   },
   hyponatremia(S) {
     /* 病因处理优先：停噻嗪 + 限水，否则补多少钠都会被稀释回去 */
@@ -233,7 +302,7 @@ const TREAT = {
 
   tca(S) {
     S._bicN = S._bicN || 0;
-    if (S._bicN < 4 && (S.tca || 0) > 0.25) { S._bicN++; E.give(S, 'bicarb', 150); }
+    if (S._bicN < 4 && (S.tca || 0) > 0.25) { S._bicN++; E.give(S, 'bicarb', 150, '静推'); }
     if (S.gcs <= 8) E.ACTIONS.intubate.apply(S);
   },
 
@@ -335,9 +404,7 @@ function runOne(mod, seed, mode) {
 
   while (S.running && S.t < maxSec) {
     if (mode === 'treat') treat(S, S.t);
-    E.tick(S, DT);
-    G.step(S, DT, E);                    // 与 game.js 主循环一致：先 tick 再推进病程
-    E.pollTests(S);
+    step(S);
     if (!S.death && E.dischargeCheck(S).ok) {
       E.endCase(S, 'discharge', '达到出院标准');
       break;
@@ -372,7 +439,207 @@ function traceOne(mod, mode, seed) {
   return r;
 }
 
+/* 重大急症要经过检查、处置和观察，5 版重放仍使用原病理池。 */
+function checkEmergencyCases() {
+  for (const [id, seed, test] of [
+    ['aorticDissection', 308, 'aorta_cta'], ['aorticDissectionB', 67, 'aorta_cta'], ['fallTrauma', 43, 'trauma_ct'],
+  ]) {
+    const spec = G.generate(6, seed);
+    assert.deepEqual(spec.cases, [id]);
+    assert.notDeepEqual(G.generateVersion(6, seed, 5).cases, [id]);
+    const original = E.create(spec);
+    const parsed = share.parse(share.make(original));
+    assert.ok(parsed.ok);
+    const rebuilt = share.rebuild(parsed.data, E);
+    assert.deepEqual(rebuilt.cas.init, spec.init);
+    assert.deepEqual(rebuilt.cas.admission, spec.admission);
+    assert.ok(Object.hasOwn(E.TESTS, test));
+    assert.equal(E.dischargeCheck(original).ok, false);
+  }
+
+  const arms = new Set();
+  for (const seed of SEEDS.concat([2, 3, 5, 8, 13, 21, 34, 55])) {
+    const S = E.create(G.generate(2, seed, ['aorticDissection']));
+    const report = E.examine(S, 'bilateral_bp');
+    assert.match(report.rows.at(-1).value, /仍需结合症状及影像/);
+    S.intake = { chief:{ text:'突发剧烈胸背痛' } };
+    assert.notEqual(global.DIAGNOSIS.classify(S).primaryId, 'aorticDissection');
+    const { leftSys, rightSys, armSysDifference } = report.values;
+    assert.equal(armSysDifference, Math.abs(leftSys - rightSys));
+    arms.add(armSysDifference <= 10 ? 0 : Math.sign(leftSys - rightSys));
+  }
+  assert.deepEqual(arms, new Set([-1, 0, 1]));
+
+  const negative = E.create(G.generate(2, 101, ['fallTrauma']));
+  E.orderTest(negative, 'aorta_cta');
+  assert.equal(E.orderTest(negative, 'trauma_ct'), null);
+  assert.equal(negative.tests.trauma_ct, undefined);
+  assert.equal(negative.cost, E.TESTS.aorta_cta.cost);
+
+  const S = E.create(G.generate(2, 101, ['aorticDissection']));
+  const aorta = E.ACTIONS.aortic_replacement;
+  const tevar = E.ACTIONS.tevar;
+  aorta.apply(S);
+  assert.equal(S.aorticSurgeryStartedAt, undefined);
+  assert.equal(E.advancedDeviceAction(S, 'aorticBypass', true).ok, false);
+  TREAT.aorticDissection(S);
+  while (!S.tests.aorta_cta.done) step(S);
+  const report = E.reports(S, 'aorta_cta').at(-1);
+  assert.equal(report.values.ascendingAortaDissection, 1);
+  assert.equal(report.values.aorticArchInvolvement, 1);
+  assert.equal(report.values.descendingAortaDissection, 0);
+  const incomplete = { ...S, log:[], diagnosticReports:[{ ...report, values:{ ascendingAortaDissection:1 } }] };
+  assert.equal(emergency.aorticSurgeryStatus(incomplete), 'unconfirmed');
+  aorta.apply(incomplete);
+  assert.equal(incomplete.aorticSurgeryStartedAt, undefined);
+  assert.equal(emergency.aorticSurgeryStatus(S), 'preparation');
+  const originalCost = S.cost;
+  aorta.apply(S);
+  tevar.apply(S);
+  assert.equal(S.aorticSurgeryStartedAt, undefined);
+  assert.equal(S.tevarStartedAt, undefined);
+  assert.equal(S.cost, originalCost);
+  assert.equal(E.advancedDeviceAction(S, 'aorticBypass', true).ok, true);
+  assert.equal(E.aorticBypassReady(S), false);
+  while (S.running && S.t < 45 * 60 && !E.aorticBypassReady(S)) step(S);
+  const device = E.advancedDevice(S, 'aorticBypass');
+  assert.equal(device.ready, true);
+  assert.equal(device.stableSeconds, device.stableSecondsRequired);
+  const interventionCost = S.cost;
+  aorta.apply(S);
+  const startedAt = S.aorticSurgeryStartedAt;
+  assert.ok(Number.isFinite(startedAt));
+  assert.equal(S.cost - interventionCost, aorta.cost);
+  assert.equal(E.advancedDeviceAction(S, 'aorticBypass', false).ok, false);
+  aorta.apply(S);
+  assert.equal(S.aorticSurgeryStartedAt, startedAt);
+  assert.equal(S.cost - interventionCost, aorta.cost);
+  while (S.aorticSurgeryCompletedAt == null && S.running) step(S);
+  assert.equal(S.aorticDissectionLoad, 0);
+  assert.equal(E.dischargeCheck(S).ok, false);
+  assert.equal(global.DIAGNOSIS.classify(S).primaryId, 'aorticDissection');
+  aorta.apply(S);
+  assert.equal(S.aorticSurgeryStartedAt, startedAt);
+  assert.equal(emergency.aorticSurgeryStatus(S), 'complete');
+
+  const B = E.create(G.generate(2, 101, ['aorticDissectionB']));
+  const beforeLegs = E.examine(B, 'legs');
+  assert.equal(beforeLegs.values.rightFootPerfusionReduced, 1);
+  TREAT.aorticDissectionB(B);
+  while (!B.tests.aorta_cta.done) step(B);
+  const descending = E.reports(B, 'aorta_cta').at(-1);
+  assert.equal(descending.values.ascendingAortaDissection, 0);
+  assert.equal(descending.values.descendingAortaDissection, 1);
+  assert.equal(descending.values.descendingAortaMalperfusion, 1);
+  assert.equal(emergency.tevarStatus(B), 'stabilizing');
+  assert.equal(E.advancedDeviceAction(B, 'aorticBypass', true).ok, false);
+  aorta.apply(B);
+  tevar.apply(B);
+  assert.equal(B.tevarStartedAt, undefined);
+  assert.equal(B.aorticSurgeryStartedAt, undefined);
+  while (B.running && B.t < 45 * 60 && emergency.tevarStatus(B) !== 'ready') step(B);
+  assert.equal(emergency.tevarCirculation(B).ready, true);
+  const tevarCost = B.cost;
+  tevar.apply(B);
+  assert.equal(emergency.tevarStatus(B), 'running');
+  tevar.apply(B);
+  assert.equal(B.cost - tevarCost, tevar.cost);
+  while (B.running && B.tevarCompletedAt == null) step(B);
+  assert.equal(B.aorticDissectionLoad, 0);
+  assert.equal(E.examine(B, 'legs').values.rightFootPerfusionReduced, 0);
+  assert.equal(E.dischargeCheck(B).ok, false);
+  assert.equal(global.DIAGNOSIS.classify(B).primaryId, 'aorticDissectionB');
+  tevar.apply(B);
+  assert.equal(emergency.tevarStatus(B), 'complete');
+  assert.equal(B.cost - tevarCost, tevar.cost);
+
+  const uncomplicated = E.create(G.generate(2, 101, ['aorticDissectionB']));
+  uncomplicated.aorticLegMalperfusion = 0;
+  E.orderTest(uncomplicated, 'aorta_cta');
+  while (!uncomplicated.tests.aorta_cta.done) step(uncomplicated);
+  assert.equal(E.reports(uncomplicated, 'aorta_cta').at(-1).values.descendingAortaMalperfusion, 0);
+  assert.equal(emergency.tevarEvidence(uncomplicated), false);
+  tevar.apply(uncomplicated);
+  assert.equal(uncomplicated.tevarStartedAt, undefined);
+}
+
+function checkStandardRescueCare() {
+  const rescueCases = new Set(['warfarinBleed', 'dabigatranBleed', 'digoxinTox', 'mtxDelayed', 'fibrinogenBleed']);
+  let oldCount = 0, currentCount = 0, affordableCount = 0;
+  for (let difficulty = 1; difficulty <= 6; difficulty++) {
+    for (let seed = 0; seed < 1000; seed++) {
+      oldCount += Number(G.generateVersion(difficulty, seed, 5).cases.some(id => rescueCases.has(id)));
+      const current = G.generate(difficulty, seed);
+      if (!current.cases.some(id => rescueCases.has(id))) continue;
+      assert.equal(current.cases.length, 1);
+      currentCount++;
+      affordableCount += Number(current.init.standardRescueCare || current.cases.includes('fibrinogenBleed'));
+    }
+  }
+  assert.ok(currentCount >= 60 && currentCount <= 180 && currentCount < oldCount * 0.25);
+  assert.ok(affordableCount > currentCount * 0.65);
+  for (const [id, standardSeed, edSeed, avoidedDrug] of [
+    ['warfarinBleed', 268, 107, 'pcc4'], ['dabigatranBleed', 67, 916, 'idarucizumab'],
+    ['digoxinTox', 170, 210, 'digoxinFab'], ['mtxDelayed', 232, 231, 'glucarpidase'],
+    ['fibrinogenBleed', 43, 407, 'fibrinogenConcentrate'],
+  ]) for (const [difficulty, seed] of [[1, standardSeed], [6, edSeed]]) {
+    const spec = G.generate(difficulty, seed);
+    const S = E.create(spec, spec.patient);
+    assert.deepEqual(S.cas.cases, [id]);
+    if (id !== 'fibrinogenBleed') {
+      assert.equal(S.standardRescueCare, true);
+      assert.equal(global.MENTOR.evaluate(S, 'drug', avoidedDrug).ok, false);
+    }
+    assert.equal(E.dischargeCheck(S).ok, false);
+    while (S.running && S.t < MAX_MIN * 60 && !E.dischargeCheck(S).ok) {
+      TREAT[id](S, S.t);
+      step(S);
+    }
+    assert.equal(E.dischargeCheck(S).ok, true, S.cas.name + ' 应可使用常规支持路径出院');
+    assert.ok(S.given.every(order => order.id !== avoidedDrug));
+    const avoidedCost = substances.byId(avoidedDrug).cost;
+    if (id === 'fibrinogenBleed') {
+      const cryo = S.given.find(order => order.id === 'cryoprecipitate');
+      assert.ok(cryo?.cost > 0 && cryo.cost < avoidedCost);
+    } else {
+      assert.ok(S.cost < avoidedCost, S.cas.name + ' 的常规支持费用应低于一份特效药');
+    }
+  }
+}
+
+function checkCombinedDischarge() {
+  const runCare = (S, limit) => {
+    while (S.running && S.t < limit && !E.dischargeCheck(S).ok) {
+      for (const id of S.cas.cases) TREAT[id](S, S.t);
+      step(S);
+    }
+    assert.equal(E.dischargeCheck(S).ok, true, E.dischargeCheck(S).reasons.join('；'));
+  };
+
+  const pancreatic = E.create(G.generate(3, 101, ['pancreatitis', 'liverFailure']));
+  runCare(pancreatic, 3 * 3600);
+  assert.ok(pancreatic.lactProd < 0.07, '补液恢复灌注后胰腺炎的乳酸驱动回落');
+
+  const chronic = G.generate(3, 547);
+  assert.deepEqual(chronic.cases, ['apap', 'ptx']);
+  const treated = E.create(chronic);
+  runCare(treated, 3 * 3600);
+  assert.ok(treated.cr > 130 && treated.cr <= chronic.apapRenalDischargeLimit);
+  assert.ok(chronic.observations({ ...treated, t: 7200 - 1e-8 }).length === 0, '留观结束按模拟时钟精度判断');
+
+  const rising = { ...treated, cr: treated.cr + 10 };
+  assert.ok(E.dischargeCheck(rising).reasons.some(reason => reason.includes('肌酐回升')));
+  const legacy = JSON.parse(JSON.stringify({ ...treated, cas: undefined, akiObservation: undefined }));
+  const restored = Object.assign(E.create(chronic), legacy);
+  E.restoreDischargeObservation(restored, legacy);
+  assert.match(E.dischargeCheck(restored).reasons.join('；'), /肾功能需连续留观 30/);
+  runCare(restored, treated.t + 3600);
+}
+
 if (require.main === module) {
+  checkEmergencyCases();
+  checkStandardRescueCare();
+  checkCombinedDischarge();
   for (const sub of substances.ALL) {
     const exposure = sub.cls === '病毒' || sub.cls === '细菌';
     assert.ok(Number.isFinite(sub.cost) && (exposure ? sub.cost === 0 : sub.cost > 0),

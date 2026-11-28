@@ -151,13 +151,14 @@ function tick(S, dtMin) {
   if (!S.traits || !S.traits.length) return;
   /* 过敏性休克：血管扩张 + 气道痉挛，肾上腺素可逆转 */
   if (S.anaphyl > 0) {
-    const epi = (S.pk || []).some(p => p.id === 'epi' && (S.t - p.t) < 20 * 60);
-    if (epi) S.anaphyl = Math.max(0, S.anaphyl - 0.06 * dtMin);
-    else S.anaphyl = Math.min(1, S.anaphyl + 0.002 * dtMin);
+    const epi = (S.pk || []).some(p => p.id === 'epi' && !p.infusionMinutes && (S.t - p.t) < 20 * 60)
+      ? 1 : root.LIFE?.infusedDrugActivity(S, 'epi', 20) || 0;
+    S.anaphyl = clamp(S.anaphyl + (0.002 - 0.062 * epi) * dtMin, 0, 1);
   }
   if (S.bronchospasm > 0) {
-    const beta = (S.pk || []).some(p => ['salbutamol','epi','salmeterol'].includes(p.id) && (S.t - p.t) < 60 * 60);
-    S.bronchospasm = Math.max(0, S.bronchospasm - (beta ? 0.02 : 0.002) * dtMin);
+    const beta = (S.pk || []).some(p => ['salbutamol','epi','salmeterol'].includes(p.id) && !p.infusionMinutes && (S.t - p.t) < 60 * 60)
+      ? 1 : Math.max(root.LIFE?.infusedDrugActivity(S, 'salbutamol', 60) || 0, root.LIFE?.infusedDrugActivity(S, 'epi', 60) || 0);
+    S.bronchospasm = Math.max(0, S.bronchospasm - (0.002 + 0.018 * beta) * dtMin);
   }
   if (S.hemolysis > 0) {
     /* 溶血丢的是红细胞质量（v0.3：hb 是 rbcMass/vol 的导出量，不再直接写 hb） */

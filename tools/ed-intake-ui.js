@@ -75,6 +75,8 @@ async function main() {
     await page.locator('#btnBody').click();
     await choose(group);
     await choose(glucose);
+    assert.match(await rows.innerText(), /待出报告/);
+    await close();
     await page.locator('#btnBlood').click();
     assert.match(await page.locator('#dKv').innerText(), /待回报/);
     const lungSummary = page.locator('#dKv > dt').filter({ hasText: lung }).locator('xpath=following-sibling::dd[1]//summary').first();

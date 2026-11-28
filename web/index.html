@@ -190,7 +190,6 @@ button { color: inherit; }
 }
 .seg .pill { min-height: 28px; padding: 2px 7px; background: transparent; border-color: transparent; cursor: pointer; }
 .seg .pill.on { background: var(--card); border-color: var(--line); color: var(--accent); font-weight: 700; }
-.seg .pill.ff.on { background: var(--accent); color: var(--accent-on); border-color: var(--accent); }
 
 .stage {
   display: grid;
@@ -915,7 +914,7 @@ button.drow:disabled { opacity: .7; cursor: default; }
       <button class="pill on" type="button" data-s="1" aria-pressed="true">1×</button>
       <button class="pill" type="button" data-s="4" aria-pressed="false">4×</button>
       <button class="pill" type="button" data-s="16" aria-pressed="false">16×</button>
-      <button class="pill ff" id="ff" type="button" aria-pressed="false">快进 20×</button>
+      <button class="pill" id="ff" type="button" data-s="32" aria-pressed="false">32×</button>
       <button class="pill" id="conditionWait" type="button" aria-pressed="false" title="推进全病房，直到出现明显变化、检查回报或达到 6 个模拟小时">等病情变化</button>
     </div>
   </header>

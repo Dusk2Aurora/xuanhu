@@ -319,8 +319,10 @@ async function testNoPause(page) {
   await page.locator('#speed [data-s="4"]').click();
   await assertWardElapsed(page, 1.6);
   await fastForward.click();
-  await assertWardElapsed(page, 8.4);
+  assert.equal(await fastForward.innerText(), '32×');
+  await assertWardElapsed(page, 13.4);
   await fastForward.click();
+  assert.equal(await fastForward.getAttribute('aria-pressed'), 'true');
   await page.evaluate(() => {
     const { E, S } = window.__LIFE_GAME;
     E.orderTest(S, 'cbc');

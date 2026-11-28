@@ -62,7 +62,7 @@ async function startWaiting(page, selector = '#conditionWait') {
 
 async function assertReviewFinished(page, reason, { bed = 0, glucoseOnly = false, toastOnly = glucoseOnly } = {}) {
   const stopped = await state(page);
-  assert.equal(stopped.speedLabel, '快进 20×');
+  assert.equal(stopped.speedLabel, '32×');
   assert.equal(stopped.pauseLabel, '暂停');
   assert.equal(stopped.selectedSpeed, '1');
   assert.match(toastOnly ? stopped.toast : stopped.result, reason);
@@ -108,7 +108,7 @@ async function testPause(browser) {
     await pause.click();
     const stopped = await state(page);
     assert.equal(stopped.pauseLabel, '继续');
-    assert.equal(stopped.speedLabel, '快进 20×');
+    assert.equal(stopped.speedLabel, '32×');
     await assertClockAdvance(page, stopped, 0);
 
     await page.locator('#btnMenu').click();
@@ -132,7 +132,7 @@ async function testPause(browser) {
       await page.locator('#pause').click();
       const stopped = await state(page);
       assert.equal(stopped.pauseLabel, '继续');
-      assert.equal(stopped.speedLabel, '快进 20×');
+      assert.equal(stopped.speedLabel, '32×');
       assert.deepEqual(stopped.clocks, waiting.clocks);
       await assertClockAdvance(page, stopped, 0);
 
@@ -206,7 +206,7 @@ async function testGlucoseReview(browser) {
     await page.evaluate(() => { window.__LIFE_GAME.beds[1].S.rhythm = 'vf'; });
     await page.locator('#glucoseWait').click();
     const refused = await state(page);
-    assert.equal(refused.speedLabel, '快进 20×');
+    assert.equal(refused.speedLabel, '32×');
     assert.match(refused.toast, /床位 2：室颤.*请先处理/);
     assert.deepEqual(refused.reviewLogs, [[], []]);
   });
@@ -291,7 +291,7 @@ async function testConditionReview(browser) {
       window.advanceSimulation();
     });
     const waiting = await state(page);
-    assert.equal(waiting.speedLabel, '结束等待');
+    assert.equal(waiting.speedLabel, '结束等待', waiting.result || waiting.toast);
     assert.ok(waiting.clocks.every(seconds => seconds > 20));
     assert.deepEqual(waiting.reviewLogs, [[], []]);
 
@@ -358,7 +358,7 @@ async function testConditionReview(browser) {
     await page.evaluate(() => { window.__LIFE_GAME.beds[1].S.rhythm = 'vf'; });
     await page.locator('#conditionWait').click();
     const refused = await state(page);
-    assert.equal(refused.speedLabel, '快进 20×');
+    assert.equal(refused.speedLabel, '32×');
     assert.match(refused.toast, /床位\s*2.*室颤.*请先处理/);
     assert.deepEqual(refused.reviewLogs, [[], []]);
   });

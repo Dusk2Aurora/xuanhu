@@ -22,7 +22,7 @@ let activeIdx = 0;
 let selected = 'heart';
 let lastTs = 0, acc = 0, hudAcc = 0, saveAcc = 0, signsAcc = 0;
 const ecg = new EcgMonitor();
-let speed = 1, ff = false;
+let speed = 1;
 let observation = null;
 const GLUCOSE_REVIEW_MINUTES = 30;
 const MAX_OBSERVATION_SECONDS = 6 * 3600;
@@ -2352,7 +2352,7 @@ function loop(ts) {
     }));
     let observationEnd = observationStopReason();
     const adv = observationEnd ? 0 : !observation
-      ? dt * (ff ? 20 : speed) * (nightMode ? 1.3 : 1)
+      ? dt * speed * (nightMode ? 1.3 : 1)
       : Math.min(dt * 1200, 20);
     acc += adv;
     let accessFinished = false;
@@ -2558,17 +2558,19 @@ function checkCrucial() {
   const key = isEDIntake(S) ? s.rhythm : `${s.rhythm}|${s.k > 7.2}|${s.sys < 70}`;
   if (key !== lastCrit) {
     lastCrit = key;
-    if (s.rhythm === 'vf') { ff = false; speed = 1; syncSpeedUI(); toast('室颤！立即除颤', true); }
-    else if (s.rhythm === 'asystole') { ff = false; speed = 1; syncSpeedUI(); toast('心静止', true); }
+    if (s.rhythm === 'vf') { resetSpeed(); toast('室颤！立即除颤', true); }
+    else if (s.rhythm === 'asystole') { resetSpeed(); toast('心静止', true); }
   }
 }
+function resetSpeed() {
+  if (observation) acc = 0;
+  observation = null;
+  speed = 1;
+  syncSpeedUI();
+}
 function syncSpeedUI() {
-  if (!ff && observation) {
-    observation = null;
-    acc = 0;
-  }
   $('#speed').querySelectorAll('.pill[data-s]').forEach(x => {
-    const active = !paused && !ff && +x.dataset.s === speed;
+    const active = !paused && (observation ? x.id === 'ff' : +x.dataset.s === speed);
     x.classList.toggle('on', active);
     x.setAttribute('aria-pressed', active);
   });
@@ -2579,10 +2581,8 @@ function syncSpeedUI() {
   pauseButton.classList.toggle('on', paused);
   pauseButton.setAttribute('aria-pressed', String(paused));
   const f = $('#ff');
-  f.classList.toggle('on', ff && !paused);
-  f.setAttribute('aria-pressed', String(ff && !paused));
   f.textContent = observation?.kind === 'steady' ? '结束留观' :
-    observation ? '结束等待' : ff && !paused ? '20× 快进中' : '快进 20×';
+    observation ? '结束等待' : f.dataset.s + '×';
   const wardWait = $('#conditionWait');
   const waiting = observation?.kind === 'ward';
   wardWait.textContent = waiting ? '结束等待' : '等病情变化';
@@ -2598,9 +2598,7 @@ function stopObservation() {
     toast(finishReview({ message: '已手动结束等待' }));
     return;
   }
-  ff = false;
-  speed = 1;
-  syncSpeedUI();
+  resetSpeed();
 }
 
 function edAttentionReason(st) {
@@ -2723,9 +2721,7 @@ function finishReview(event) {
   }
   patient.log.push([E.fmt(patient.t), message, event.urgent ? 'warn' : 'info', patient.t, null, true]);
   paused = false;
-  ff = false;
-  speed = 1;
-  syncSpeedUI();
+  resetSpeed();
   saveGame();
   return message;
 }
@@ -2769,7 +2765,6 @@ function startObservation() {
 function beginObservation(config) {
   observation = config;
   acc = 0;
-  ff = true;
   paused = false;
   closeSheet();
   syncSpeedUI();
@@ -2884,9 +2879,7 @@ function clearActiveBed() {
   ecg.clear();
   silenceMonitor();
   paused = false;
-  ff = false;
-  speed = 1;
-  syncSpeedUI();
+  resetSpeed();
   closePatientOverlays();
   renderAll();
 }
@@ -4215,15 +4208,9 @@ function bind() {
       return;
     }
     if (p.id === 'conditionWait') { startConditionReview(); return; }
-    if (p.id === 'ff') {
-      if (observation) { stopObservation(); return; }
-      ff = paused || !ff;
-      paused = false;
-      syncSpeedUI(); return;
-    }
+    if (p.id === 'ff' && observation) { stopObservation(); return; }
     if (observation) stopObservation();
     paused = false;
-    ff = false;
     speed = +p.dataset.s; syncSpeedUI();
   });
 }
@@ -4507,7 +4494,6 @@ function openRealismSettings() {
       if (key === 'noPause') {
         if (realismRules.noPause && paused) {
           paused = false;
-          ff = false;
           speed = 1;
           acc = 0;
         }

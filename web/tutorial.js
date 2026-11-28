@@ -119,7 +119,7 @@ const PAGES = [
   {
     id: 'time', title: '时间与多床', html: `
       <div class="tut-h">时间是最贵的资源</div>
-      <div class="tut-row"><b>倍速</b><span>1× 正常；4×、16× 加速；「快进 20×」最快，但病情也更快恶化。</span></div>
+      <div class="tut-row"><b>倍速</b><span>1× 为正常速度，4×、16×、32× 依次加快。病情也会同步变化。</span></div>
       <div class="tut-row"><b>等病情变化</b><span>全病房快进，任一床出现明显变化或危急就自动停下并恢复 1×。安全的等待方式。</span></div>
       <div class="tut-row"><b>暂停</b><span>冻结所有床位，用来思考或查术语表。「禁用暂停」规则下不可用。</span></div>
       <div class="tut-row"><b>多床</b><span>最多 4 张床同步流逝。底部胶囊切换；某床出院或死亡，床位自动空出。</span></div>

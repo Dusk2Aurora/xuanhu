@@ -89,6 +89,44 @@ for (const S of [standard, stacked]) {
 assert.ok(stacked.renalFactor < standard.renalFactor - 0.03, '多袋输注后的过量暴露损伤肾清除');
 assert.ok(stacked.icp < standard.icp && stacked.icp >= 0);
 
+const legacyMannitol = E.create(fixtures[0][1], patient);
+const untreatedIcp = E.create(fixtures[0][1], patient);
+legacyMannitol.icp = untreatedIcp.icp = 0.8;
+const mannitol = SUBSTANCES.byId('mannitol');
+legacyMannitol.pk.push({ id: mannitol.id, n: mannitol.n, t: 0, route: mannitol.route, onset: mannitol.onset,
+  dur: mannitol.dur, eff: { icp: mannitol.eff.icp }, scale: 1 });
+advance(legacyMannitol, 20);
+advance(untreatedIcp, 20);
+assert.equal(legacyMannitol.icp, untreatedIcp.icp, '旧版即刻结算的甘露醇读档后保持既有降压效果');
+
+const oliguria = { id: 'diuresis-volume-balance', init: { ...CASEGEN.BASE, vol: 3.4, renalFactor: 0.05 } };
+for (const [id, dose, legacyVolumeEffect] of [
+  ['furosemide', 40, -0.45], ['spironolactone', 20, -0.2], ['hydrochlorothiazide', 25, -0.35],
+]) {
+  const control = E.create(oliguria, patient);
+  const treated = E.create(oliguria, patient);
+  for (const S of [control, treated]) S.tags.push('aki', 'bph');
+  assert.equal(E.give(treated, id, dose), dose);
+  const legacy = { ...JSON.parse(JSON.stringify(treated)), cas: treated.cas };
+  legacy.pk[0].eff.vol = legacyVolumeEffect;
+  E.restorePatient(legacy);
+  const states = [control, treated, legacy];
+  const urine = states.map(() => 0);
+  for (let minute = 0; minute < 90; minute++) {
+    states.forEach((S, index) => {
+      urine[index] += S.uo;
+      E.tick(S, 60);
+    });
+  }
+  const extraLiters = (urine[1] - urine[0]) / 1000;
+  assert.ok(extraLiters > 0 && extraLiters < 0.01 && states.every(S => S.running), `${id} 少尿时仅有少量额外尿量`);
+  assert.ok(Math.abs(control.vol - treated.vol - extraLiters * 0.4) < 1e-9 &&
+    Math.abs(control.interstitium - treated.interstitium - extraLiters * 0.6) < 1e-9,
+    `${id} 少尿时的血浆和组织间液损失与额外尿量一致`);
+  assert.deepEqual([legacy.vol, legacy.interstitium, urine[2]], [treated.vol, treated.interstitium, urine[1]],
+    `${id} 读档后继续按实际尿量改变容量`);
+}
+
 const [coldPatient, warmPatient] = [E.create('exploration'), E.create('exploration')];
 coldPatient.temp = 29.5;
 E.tick(coldPatient, 60);

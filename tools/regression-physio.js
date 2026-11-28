@@ -15,6 +15,20 @@ const out = [];
 function check(name, ok, detail) { out.push({ name, ok, detail }); }
 
 {
+  const bed = E.create({ id: 'lavage-feedback', init: { ...G.BASE } });
+  E.ACTIONS.lavage.apply(bed);
+  const noToxin = bed.log.at(-1)[2] === 'warn';
+  bed.tca = 0.4;
+  E.ACTIONS.lavage.apply(bed);
+  const removed = Math.abs(bed.tca - 0.15) < 1e-9 && bed.log.at(-1)[2] === 'good';
+  bed.t = 3601;
+  E.ACTIONS.lavage.apply(bed);
+  check('洗胃回执区分无可清除毒物、已清除和超过时间窗', noToxin && removed &&
+    Math.abs(bed.tca - 0.15) < 1e-9 && bed.log.at(-1)[1].includes('超过'),
+    '窗口内有毒物才提示清除；超过一小时保留原毒物负荷');
+}
+
+{
   const makeBed = () => E.create({ id: 'oxygen-flow-test', init: { ...G.BASE } });
   const low = makeBed(), high = makeBed(), rapid = makeBed();
   rapid.rr = 35;
@@ -849,7 +863,7 @@ for (const id of ['hyperkalemia', 'dka', 'bleed', 'sepsis', 'opioid']) {
     return bed;
   };
   const furo = make({ weight: 56 });
-  Object.assign(furo, { k: 4.9, hco3: 16, cr: 280, renalFactor: 0.062, diuresis: 7.2 });
+  Object.assign(furo, { k: 4.9, hco3: 16, cr: 280, renalFactor: 0.062, diuresis: 8 });
   advance(furo, 9 * 60);
   const inducedUrine = furo.uo * 60;
   // 复放反馈中的床旁读数，56 kg 病例的总尿量也已越过 0.5 mL/kg/h。
@@ -1334,11 +1348,12 @@ for (const id of ['hyperkalemia', 'dka', 'bleed', 'sepsis', 'opioid']) {
   const completion = /胎盘已娩出/;
   const afterBirth = E.dischargeCheck(restored);
   const atBoundary = restored.deliveryAt === E.DELIVERY_DURATION && restored.delivered &&
-    restored.svr === Math.max(18, control.svr - 3) && restored.plt > bed.plt &&
+    restored.svr === control.svr && restored.plt > bed.plt &&
     restored.deliveryRecord?.maternal.includes('SpO₂') && restored.deliveryRecord.newborn.includes('新生儿科') &&
     afterBirth.reasons.some(reason => reason.includes('产后观察'));
   attempt(restored);
   advance(restored, 0.2);
+  advance(control, 0.2);
   check('分娩按模拟时间完成一次并开始产后观察', stayedPaused && stillPending && atBoundary &&
     restored.cost === action.cost && restored.log.filter(([, msg]) => completion.test(msg)).length === 1,
     '暂停期间冻结，临界点前重载，完成后再次执行');
@@ -1352,6 +1367,13 @@ for (const id of ['hyperkalemia', 'dka', 'bleed', 'sepsis', 'opioid']) {
     E.conditionReviewChange(restored, beforeDelivery) === '分娩已完成，胎盘已娩出，进入产后观察' &&
     E.conditionReviewChange(restored, E.conditionReviewBaseline(restored)) === null,
     '临界点前继续等待，分娩完成触发一次');
+
+  for (let minute = 0; minute < 5; minute++) {
+    advance(restored, 60);
+    advance(control, 60);
+  }
+  check('产后血管阻力随病程逐步下降', restored.svrDrive < control.svrDrive && restored.svr < control.svr,
+    '分娩当刻血管阻力连续，五分钟后低于未分娩对照');
 
   const legacy = Object.assign(makeBed(), { t: 700, delivered: true, deliveryAt: 90, cost: action.cost });
   const legacyPlt = legacy.plt;

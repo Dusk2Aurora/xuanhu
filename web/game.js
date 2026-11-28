@@ -3428,26 +3428,23 @@ function isAllNormal(S) {
 
 function ensurePresentation(S) {
   if (!S?.cas || S.cas.exploration || !isAllNormal(S)) return S;
-  /* 最多推进 45 分钟，每步 1 分钟；不致死（若会死就回退到能撑住的那一刻） */
-  let guard = 0;
-  const start = JSON.parse(JSON.stringify({
-    k: S.k, na: S.na, glu: S.glu, vol: S.vol, hr: S.hr, gcs: S.gcs,
-    lac: S.lac, temp: S.temp, t: S.t,
-  }));
-  while (guard < 45 && isAllNormal(S) && !S.death && S.running) {
-    guard++;
-    try { E.tick(S, 60); } catch (e) { break; }
-    try { if (window.CASEGEN) CASEGEN.step(S, 60, E); } catch (e) { break; }
+  /* 病例和体质定义含回调。保留定义，只在副本上推进病人状态。 */
+  try {
+    const { cas, traits, ...state } = S;
+    const preview = { ...structuredClone(state), cas };
+    if (traits) preview.traits = [...traits];
+    for (let minute = 0; minute < 45 && preview.running && !preview.death && isAllNormal(preview); minute++) {
+      E.tick(preview, 60);
+      window.CASEGEN?.step(preview, 60, E);
+    }
+    if (preview.running && !preview.death) {
+      if (preview.tl) preview.tl.length = 0;
+      preview.log = [];
+      S = preview;
+    }
+  } catch (e) {
+    console.warn('[presentation] 病程预热失败，使用原接诊状态', e);
   }
-  if (S.death) {
-    /* 预热把病人推死了：退回初始值，改成小幅恶化（保证"已发病"但还救得回来） */
-    S.death = null; S.running = true;
-    S.k = start.k; S.na = start.na; S.glu = start.glu; S.vol = start.vol;
-    S.hr = start.hr; S.gcs = Math.min(start.gcs, 14);
-    S.lac = Math.max(start.lac, 2.8); S.temp = Math.max(start.temp, 37.9);
-  }
-  if (S.tl) S.tl.length = 0;   /* 预热过程不写时间轴，避免玩家看到"凭空"的记录 */
-  S.log = [];
   /* 开局是否已是重症：决定要不要弹"转入重症"（开局即重症不弹） */
   try { S._wasSevere = (isEDIntake(S) ? edAttentionReason(S) : isSevere(S)) ? 1 : 0; } catch (e) { S._wasSevere = 0; }
   /* 给 1.5 秒缓冲，避免刚创建就弹 */
@@ -4678,6 +4675,8 @@ function renderAll() {
 const RELEASES = [
   { v: '1.57.6', notes: [
     '处置扣分可从操作日志和结算核对。透析显示运行进度，开颅依据已回报的影像与查体。',
+    '利尿后的体液损失按实际尿量结算。过敏和支气管痉挛影响氧合，肾上腺素的缓解效果随剂量变化。',
+    '修正部分药物在慢代谢患者的作用时长、重复联合用药的相互作用，以及高渗高血糖病例的产糖。',
     '呼吸机可逐床调节频率、流量和氧浓度。肺水消退后，无效通气的比例会随病情回落。',
     '修正颅压对意识的重复影响、诱因解除后的室颤风险和部分药物的剂量反应。钙异常可在心电图和查体中观察。',
   ] },

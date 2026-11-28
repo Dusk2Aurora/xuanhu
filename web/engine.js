@@ -112,6 +112,7 @@ const BASE_DEAD_SPACE = 0.33;
 
 /* 药物"体征类"效应键：这些键走瞬时浓度（S.mod），不走累计积分 */
 const MOD_KEYS = ['hr', 'svr', 'sv', 'rr', 'spo2', 'temp', 'gcs'];
+const DIURETICS_WITH_LEGACY_VOLUME_EFFECT = new Set(['furosemide', 'spironolactone', 'hydrochlorothiazide']);
 const THYROID_THERAPY = new Set(['propylthiouracil', 'methimazole', 'hydrocortisone', 'dexamethasone', 'propranolol']);
 const COOLING_TARGET = 38.5;
 const WARMING_TARGET = 36.1;
@@ -621,7 +622,7 @@ const ACTIONS = {
         return;
       }
       let cleared = 0;
-      S.tca = Math.max(0, (S.tca || 0) - 0.25); cleared++;
+      if (S.tca > 0) { S.tca = Math.max(0, S.tca - 0.25); cleared++; }
       if (S.tox && S.tox.benzo > 0) { S.tox.benzo = Math.max(0, S.tox.benzo - 2); cleared++; }
       if (S.tox && S.tox.apap > 0) { S.tox.apap = Math.max(0, S.tox.apap - 500); cleared++; }
       if (cleared) S.log.push(['操作', '洗胃 → 清除部分未吸收毒物', 'good']);
@@ -929,7 +930,7 @@ const ACTIONS = {
 
 /* ---------------- 状态默认值 ---------------- */
 function makeInsult() {
-  return { hypox: 0, dysoxia: 0, acid: 0, hypercapnia: 0, shock: 0, hyperthermia: 0, hypogly: 0, icp: 0, coma: 0 };
+  return { hypox: 0, dysoxia: 0, acid: 0, hypercapnia: 0, shock: 0, hyperthermia: 0, hypogly: 0, icp: 0, hyperosmol: 0 };
 }
 function makeEnv() { return { heat: 0, cold: 0, exercise: 0, sleep: 0, cooling: 0, warming: 0 }; }
 function makeMod() { return { hr: 0, svr: 0, sv: 0, rr: 0, spo2: 0, temp: 0, gcs: 0 }; }
@@ -948,6 +949,8 @@ function restorePatient(S, saved = S) {
   ADVANCED.restore(S);
   restoreVascularAccess(S, saved.vascularAccess);
   if (S.traits && root.TRAITS) root.TRAITS.restore(S);
+  /* 旧版高渗病例保存的 0.05 是增量。以重建病例的总肝糖输出为下限。 */
+  if (S.tags?.includes('hhs')) S.glucoseIn = Math.max(S.glucoseIn || 0, S.cas?.init?.glucoseIn || 0);
   /* 旧版把肝损峰值和抽搐病程写进乳酸生成量。恢复病例基线，保留已积累的乳酸。 */
   if (!saved.lactateKineticsVersion && (saved.hepatotox > 0 || S.tags?.includes('seizure'))) {
     const baseline = S.cas?.init?.lactProd ?? 0.015;
@@ -1021,7 +1024,7 @@ function create(caseId, identity = IDENTITY) {
     vt: 450, vdvt: BASE_DEAD_SPACE, deadSpaceModelVersion: 1, vco2: 200,
     renalFactor: 1, crProd: 1.0, diuresis: 0,
     insulinLoad: 0, glucoseIn: 0,
-    fatigue: 0, compReserve: 1, workOfBreathing: 0,
+    fatigue: 0, compReserve: 1,
     waterClear: 1,               // 自由水清除能力（SIADH 时下调）
     insult: makeInsult(),
     _naPrev: null,
@@ -1147,6 +1150,7 @@ function applyDelta(S, key, d) {
     case 'infection': S.infection = clamp((S.infection || 0) + d, 0, 1); break;
     case 'infectionExposure': S.infectionExposure = clamp((S.infectionExposure || 0) + d, 0, 1); break;
     case 'tca': S.tca = clamp((S.tca || 0) + d, 0, 1); break;
+    case 'icp': S.icp = clamp((S.icp || 0) + d, 0, 2.2); break;
     case 'arrhythmiaRisk': S._vfRisk = Math.max(0, (S._vfRisk || 0) + d); break;
     case 'wbc': S.wbc = clamp((S.wbc ?? 7) + d, 0.2, 120); break;
     case 'plt': S.plt = clamp((S.plt ?? 240) + d, 1, 1500); break;
@@ -2020,6 +2024,7 @@ function pumpEffect(S, drugId) {
 }
 
 const EFFECT_DECAY_MINUTES = 90;
+const DIURESIS_DECAY_MINUTES = 60;
 const KETONE_PRODUCTION_REFERENCE = 0.25;
 
 function insulinActivity(S) {
@@ -2098,7 +2103,7 @@ function give(S, drugId, dose, route, bill = true) {
       const perKg = /\/kg/.test(s.unit || '');
       const wScale = perKg && s.id !== 'ketamine' ? (S.weight || 70) / 70 : 1;
       const scale = (d / (refDose || 1)) * wScale;
-      const pkMul = S.pkScale || 1;
+      const pkMul = root.TRAITS?.pkDurationMultiplier?.(S, s.id) || S.pkScale || 1;
       S.pk = S.pk || [];
       S.given = S.given || [];
       if (BENZODIAZEPINES.has(s.id) && benzodiazepineExposure(S).load <= 0.1) {
@@ -2152,10 +2157,9 @@ function give(S, drugId, dose, route, bill = true) {
       }
       if (s.id === 'calcium' || s.id === 'calcium_cl') S.caProtectUntil = S.t + (s.dur || 45) * 60;
       if (s.id === 'insulin' && !infusionMinutes) S.eff.insulin = Math.min(3.5, S.eff.insulin + d / 10);
-      if (s.id === 'mannitol' && !infusionMinutes) S.icp = Math.max(0, (S.icp || 0) - 0.30 * d / 250);
       /* 苯二氮卓：终止癫痫发作（但也会压低意识——这是本病例的教学点） */
       if ((s.id === 'diazepam' || s.id === 'lorazepam' || s.id === 'midazolam') && (S.seizure || 0) > 0)
-        S.seizure = Math.max(0, (S.seizure || 0) - 0.55 * (d / 10));   // 渗透性脱水
+        S.seizure = Math.max(0, (S.seizure || 0) - 0.55 * (d / 10));
       /* 碳酸氢钠：三环类中毒的解毒机制（碱化血液 + 钠负荷，窄化 QRS） */
       if (s.id === 'bicarb' && !infusionMinutes && S.tca > 0) applyDelta(S, 'tca', -0.12 * scale);
       /* 儿茶酚胺的"在体"标记：供除颤成功率等旧逻辑使用（SVR 走 S.mod.svr 的乘法路径） */
@@ -2382,7 +2386,6 @@ function finishDelivery(S) {
   if (S.t < dueAt - 1e-7) return;
   S.delivered = true;
   S.deliveryAt = dueAt;
-  S.svr = Math.max(18, (S.svr || 26) - 3);
   const pressure = bp(S);
   const saturation = pulseOximetry(S);
   const maternal = `胎盘已娩出，母体进入产后观察。血压 ${pressure.sys}/${pressure.dia} mmHg，SpO₂ ${saturation == null ? '无信号' : saturation + '%'}`;
@@ -2544,6 +2547,7 @@ function advancePhysiology(S, dtSec) {
       const effectScale = pumpEffectScale(p.scale * active);
       for (const key in p.eff) {
         if (key === 'coag' && temporaryCoagulation) continue;
+        if (key === 'icp' && !p.doseEffectsOnDelivery) continue;
         if (MOD_KEYS.includes(key)) {
           const effect = p.eff[key] * effectScale;
           if (key === 'temp' && effect < 0 && ['NSAID', '解热镇痛', '糖皮质激素'].includes(sub?.cls)) feverReduction -= effect;
@@ -2553,8 +2557,7 @@ function advancePhysiology(S, dtSec) {
           const continuousEffect = key === 'seizure' || (p.doseEffectsOnDelivery && key === 'infection') ||
             root.SUBSTANCES?.isRescueInfusionEffect?.(key);
           const fraction = p.doseEffectsOnDelivery && DELIVERY_EFFECTS.has(key) ? delivered : continuousEffect ? supplied : released;
-          if (key === 'icp' && p.doseEffectsOnDelivery) S.icp = clamp((S.icp || 0) + p.eff[key] * p.scale * fraction, 0, 2.2);
-          else applyDelta(S, key, p.eff[key] * p.scale * fraction);
+          applyDelta(S, key, p.eff[key] * p.scale * fraction);
         }
       }
       concOf[p.n] = Math.max(concOf[p.n] || 0, p.scale * active);
@@ -2587,6 +2590,8 @@ function advancePhysiology(S, dtSec) {
     recordAdverseExposure(adverseExposures, sub, p.scale * cMod);
     for (const key in p.eff) {
       if (key === 'coag' && temporaryCoagulation) continue;
+      // 旧档中的利尿剂按实际尿量扣容量，甘露醇静滴的即时降颅压效应已经结算。
+      if ((key === 'vol' && DIURETICS_WITH_LEGACY_VOLUME_EFFECT.has(p.id)) || (key === 'icp' && p.id === 'mannitol')) continue;
       if (MOD_KEYS.includes(key)) {
         /* Emax 饱和：E = Emax·D/(EC50+D)，取 EC50=3 使 D=1 时等于原有效应。
            替代线性放大——原来给 10 倍剂量就是 10 倍效应，10 mg 吗啡能把人打死。 */
@@ -2618,27 +2623,26 @@ function advancePhysiology(S, dtSec) {
   }
   if (S.tca > 0 && !S.tags.includes('tca')) S.tca *= Math.exp(-dtMin / 30);
   applyAdverseEffects(S, adverseExposures, drugMod, dtMin);
-  /* —— 药物相互作用（PK 驱动）：两种药同时在体内才有效应，浓度降下来效应随之消退 ——
-     w = min(浓度A, 浓度B)；体征类叠加到 drugMod，电解质/凝血类按 30 min 时间常数累积，
-     使"两药同时处于有效浓度"期间的总增量≈原来的单次量。 */
+  /* 药物相互作用：体征随当前重叠浓度变化，其他效应按每段重叠暴露累计并封顶。 */
   try {
     if (root.SUBSTANCES) {
       const TBL = root.SUBSTANCES.INTERACTIONS || [];
       for (const it of TBL) {
         if (isHeparinAspirinInteraction(it)) continue;
-        const ca = concOf[it.a] || 0, cb = concOf[it.b] || 0;
-        if (ca <= 0.02 || cb <= 0.02) continue;
-        const w = Math.min(1, Math.min(ca, cb));
-        /* 饱和累加：无论共存 30 分钟还是 4 小时，总增量都只等于设计的一份 */
-        const acc = (S._ixAcc = S._ixAcc || {});
         const key = it.a + '|' + it.b;
-        const prevAcc = acc[key] || 0;
-        const nextAcc = Math.min(1, prevAcc + w * dtMin / 30);
-        acc[key] = nextAcc;
-        const step = nextAcc - prevAcc;
-        for (const k in (it.eff || {})) {
-          if (MOD_KEYS.includes(k)) drugMod[k] = (drugMod[k] || 0) + it.eff[k] * nextAcc;
-          else applyDelta(S, k, it.eff[k] * step);
+        const overlap = Math.min(1, concOf[it.a] || 0, concOf[it.b] || 0);
+        if (overlap <= 0.02) {
+          if (S._ixAcc) delete S._ixAcc[key];
+          continue;
+        }
+        const previous = S._ixAcc?.[key] || 0;
+        const total = Math.min(1, previous + overlap * dtMin / 30);
+        for (const [effect, amount] of Object.entries(it.eff)) {
+          if (MOD_KEYS.includes(effect)) drugMod[effect] += amount * overlap;
+          else {
+            (S._ixAcc ||= {})[key] = total;
+            applyDelta(S, effect, amount * (total - previous));
+          }
         }
       }
     }
@@ -2664,7 +2668,8 @@ function advancePhysiology(S, dtSec) {
   }
   const insulinEffect = insulinActivity(S);
   S.insulinLoad = (S.insulinLoad || 0) * Math.exp(-dtMin / 25);
-  S.diuresis = Math.max(0, (S.diuresis || 0) - 0.02 * dtMin);
+  // 用模拟时间常数衰减利尿效应，缓慢释放的口服利尿剂也能逐步起效。
+  S.diuresis = (S.diuresis || 0) * Math.exp(-dtMin / DIURESIS_DECAY_MINUTES);
 
   /* ---------- 2. 体液分布：血浆 / 组织间液 / 肺水 ---------- */
   /* 组织间液经淋巴回流清除（替代原来"容量只有血管一个房室"的设定） */
@@ -2707,7 +2712,6 @@ function advancePhysiology(S, dtSec) {
   S.cvp = (S.cvp0 == null ? 4 : S.cvp0) + 10 * (S.tamponade || 0) + 4 * (S.tensionPTX || 0);
   const mapNow = computeMap(S);
   S.map = Math.round(mapNow);
-  const coNow = S.hr * S.sv / 1000;
 
   /* ---------- 4. 肾脏：GFR、尿量、肌酐一阶滞后 ---------- */
   const renalPerf = clamp(mapNow / 85, 0.12, 1.25);
@@ -2784,7 +2788,7 @@ function advancePhysiology(S, dtSec) {
   /* 基础（胰岛素非依赖）摄取：脑组织每天约耗糖 120 g，折合约 0.10 mmol/min */
   const basalUptake = 0.10;
   const uptake = basalUptake + 0.0248 * S.glu * insEff * (1 + Math.max(0, S.glu - 10) * 0.085);
-  const gprBase = S.tags.includes('dka') ? 0.32 : 0.14;
+  const gprBase = S.glucoseIn || (S.tags.includes('dka') ? 0.32 : 0.14);
   /* 低血糖时升糖受"胰岛素过多"压制（替代原来模块里硬把 glu 封顶在 2.8） */
   const gpr = S.glu < 3.6
     ? 0.32 * clamp(0.30 + (1 - insEff) * 1.2, 0, 1.7)
@@ -2797,7 +2801,7 @@ function advancePhysiology(S, dtSec) {
   S.shuntSrc.ptx = 0.31 * pleuralLoad;   // 塌陷肺仍有部分血流通过
   let shuntSum = 0;
   for (const k in S.shuntSrc) shuntSum += S.shuntSrc[k];
-  const oxygenationModifier = clamp(-(S.mod.spo2 || 0) * 0.018, -0.12, 0.25);
+  const oxygenationModifier = clamp(-((S.mod.spo2 || 0) + tm.spo2) * 0.018, -0.12, 0.25);
   S.shunt = clamp(shuntSum + oxygenationModifier, 0, 0.35);
   /* 根据当前各病理负荷估算死腔，肺水回落时有效肺泡通气随之恢复。 */
   const vdvtEff = effectiveDeadSpace(S);
@@ -2831,7 +2835,6 @@ function advancePhysiology(S, dtSec) {
                          + 0.5 * Math.max(0, vdvtEff - 0.33)
                           + 0.6 * Math.max(0, S.lungWater - 0.30) + 0.55 * pleuralLoad
                           + 0.50 * (S.cprTrauma || 0), 0, 1.6);
-  S.workOfBreathing = workLoad;
   if (workLoad > 0.25) S.fatigue = clamp(S.fatigue + (0.005 + 0.020 * workLoad) * dtMin, 0, 1);
   else S.fatigue = Math.max(0, S.fatigue - 0.010 * dtMin);
   const fatigueF = 1 - 0.55 * S.fatigue;
@@ -2900,7 +2903,6 @@ function advancePhysiology(S, dtSec) {
   const kHr = S.k > 5.5 ? -clamp((S.k - 5.5) * 13, 0, 55) : 0;
   /* 高钾心电图：K>5.5 T 波高尖 → K>6.5 QRS 增宽 → K>7.5 正弦波 */
   S.qrsWide = Math.max(S.k > 6.2 ? clamp((S.k - 6.2) / 2.6, 0, 1) : 0, clamp(S.tca || 0, 0, 1));
-  S.prLong  = S.k > 6.0 ? clamp((S.k - 6.0) / 3.0, 0, 1) : 0;
   const hrTarget = clamp(78 + symp * 32 + 14 * stimulus + (S.hrDrive || 0) - 47 * (S.digoxinLoad || 0) + (S.mod.hr || 0) + toxHr + envHr + wdHr
                          - 55 * (S.cholinergic || 0) + clamp((S.temp - 37) * 8, 0, 26) + kHr - 32 * thyroidDepression
                           - 5 * coolingDepth - clamp(((S.icp || 0) - 0.60) * 70, 0, 40) + (S.flushHr || 0), 28, 200);
@@ -3125,7 +3127,6 @@ function advancePhysiology(S, dtSec) {
   ins.dysoxia      += Math.pow(S.coHb || 0, 2) * 1.2 * dtMin;   // CO 中毒：按碳氧血红蛋白平方累积（累积暴露）
   ins.icp          += Math.max(0, (S.icp || 0) - 0.55) * dtMin;
   ins.hyperosmol   += ((S.glu || 0) > 35 && (S.gcs || 15) <= 9) ? dtMin * 0.5 : 0;   // 高渗性昏迷
-  ins.coma = 0; /* 昏迷不是死亡判据，只用作出院/插管指征 */
   if (S.rhythm === 'sinus' && S.map < 30) S.severeHypotensionSince ??= S.t;
   else S.severeHypotensionSince = null;
 
@@ -3172,7 +3173,7 @@ function advancePhysiology(S, dtSec) {
                      map: Math.round(S.map), vol: r2(S.vol), do2c: Math.round(S.do2Crit),
                      ins: r2(S.insult.hypox + S.insult.dysoxia + S.insult.acid + S.insult.hypercapnia
                              + S.insult.shock + S.insult.hyperthermia + S.insult.hypogly
-                             + S.insult.icp + S.insult.coma) });
+                             + S.insult.icp + S.insult.hyperosmol) });
     if (S.history.length > 720) S.history.shift();
   if (S.log.length > 600) S.log.splice(1, S.log.length - 600);
   }
@@ -3954,7 +3955,6 @@ function pollTests(S) {
     }
     order.done = true;
     delete order.sample;
-    S.lastLabAt = S.t;
     S.log.push([fmt(S.t), `${TESTS[id].name} 结果已出`, 'good', S.t, reportId]);
   }
 }

@@ -71,12 +71,11 @@ const TRAITS = [
   },
   {
     id: 'slow_cyp', n: 'CYP2C19 慢代谢', short: '慢代谢',
-    desc: '氯吡格雷需经 CYP2C19 活化，慢代谢者药效显著降低',
+    desc: '氯吡格雷活化减少，地西泮、奥美拉唑和苯妥英钠作用延长',
     init: {},
+    pkDurationScale: { diazepam: 1.8, omeprazole: 1.8, phenytoin: 1.8 },
     onDrug(S, sub) {
-      if (sub.n === '氯吡格雷') { S.clopidogrelResist = true; return 'resist'; }
-      /* 慢代谢还会让部分药物蓄积 */
-      if (['奥美拉唑', '地西泮', '苯妥英钠'].includes(sub.n)) { S.pkScaleUser = 1.8; }
+      if (sub.id === 'clopidogrel') { S.clopidogrelResist = true; return 'resist'; }
       return null;
     },
   },
@@ -112,6 +111,10 @@ function setTraits(S, traits) {
   S.pkScale = traits.reduce((scale, t) => scale * (t.pkScale || 1), 1);
 }
 
+function pkDurationMultiplier(S, drugId) {
+  return (S.traits || []).reduce((scale, trait) => scale * (trait.pkDurationScale?.[drugId] || 1), S.pkScale || 1);
+}
+
 /* 旧版种子的入院数值包含当时抽到的所有体质加值。 */
 function applyInit(S, traits, legacy = false) {
   const sampled = traits || [];
@@ -120,7 +123,6 @@ function applyInit(S, traits, legacy = false) {
     const d = t.init || {};
     for (const k in d) {
       const v = d[k];
-      if (k === 'pkScaleUser') { S.pkScaleUser = v; continue; }
       if (['vol','k','na','glu','cr','hb','hr','svr','rr','spo2','temp','gcs','uo','insulinBase','lactProd'].includes(k)) {
         S[k] = (typeof S[k] === 'number') ? S[k] + v : v;
       }
@@ -148,16 +150,14 @@ function onDrug(S, sub, dose) {
 
 /* 每帧：体质带来的持续后果 */
 function tick(S, dtMin) {
-  if (!S.traits || !S.traits.length) return;
   /* 过敏性休克：血管扩张 + 气道痉挛，肾上腺素可逆转 */
   if (S.anaphyl > 0) {
-    const epi = (S.pk || []).some(p => p.id === 'epi' && !p.infusionMinutes && (S.t - p.t) < 20 * 60)
-      ? 1 : root.LIFE?.infusedDrugActivity(S, 'epi', 20) || 0;
-    S.anaphyl = clamp(S.anaphyl + (0.002 - 0.062 * epi) * dtMin, 0, 1);
+    const epi = root.LIFE?.drugActivity(S, 'epi', 20) || 0;
+    S.anaphyl = clamp(S.anaphyl + (0.002 - 0.16 * epi) * dtMin, 0, 1);
   }
   if (S.bronchospasm > 0) {
-    const beta = (S.pk || []).some(p => ['salbutamol','epi','salmeterol'].includes(p.id) && !p.infusionMinutes && (S.t - p.t) < 60 * 60)
-      ? 1 : Math.max(root.LIFE?.infusedDrugActivity(S, 'salbutamol', 60) || 0, root.LIFE?.infusedDrugActivity(S, 'epi', 60) || 0);
+    const beta = Math.max(root.LIFE?.drugActivity(S, 'salbutamol', 60) || 0,
+      root.LIFE?.drugActivity(S, 'epi', 60) || 0, root.LIFE?.drugActivity(S, 'salmeterol', 60) || 0);
     S.bronchospasm = Math.max(0, S.bronchospasm - (0.002 + 0.018 * beta) * dtMin);
   }
   if (S.hemolysis > 0) {
@@ -174,7 +174,7 @@ function modifiers(S) {
   return m;
 }
 
-const API = { TRAITS, applyInit, forPatient, restore, onDrug, tick, modifiers, byId };
+const API = { TRAITS, applyInit, forPatient, restore, onDrug, tick, modifiers, pkDurationMultiplier, byId };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 root.TRAITS = API;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

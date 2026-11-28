@@ -610,7 +610,7 @@ const MODULES = [
            hb:145, wbc:9.5, plt:250, temp:36.6, gcs:11,
            hr:108, sv:58, svr:14, rr:22, pao2:92, paco2:38, spo2:97, uo:1.2,
            contractility:0.90, insulinBase:0.55 },
-    drivers:{ kProd:0.011, lactProd:0.02 },
+    drivers:{ kProd:0.011, lactProd:0.02, glucoseIn:0.19 },  // 基础肝糖输出 0.14 mmol/min，加高渗病例的 0.05
     history:[
       [null, '家属转述', '近几天饮水少。'],
       [null, '家属转述', '逐渐出现乏力、嗜睡，送医前反应明显变差。'],
@@ -625,7 +625,6 @@ const MODULES = [
     },
     hint:'高渗状态先补液：血糖降太快会导致脑水肿，血钠也要慢慢降。',
     advance(S) {
-      S.glucoseIn = 0.05;
       /* 意识与容量恢复后可恢复饮水，补足后续尿液自由水丢失。 */
       S.freeWaterRate = S.gcs >= 13 && S.vol >= 4.2 ? S.uo * 0.00035 : 0;
     },

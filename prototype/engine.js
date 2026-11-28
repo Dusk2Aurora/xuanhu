@@ -2087,7 +2087,7 @@ function give(S, drugId, dose, route, bill = true) {
         if (!(Number.isFinite(rate) && rate > 0) || rate > (pumpRoute.maxDose ?? Infinity)) return null;
         return changePump(S, s, pumpRoute, rate);
       }
-      if (!selectedRoute && s.routes?.some(rt => rt.pumpHalfLife || rt.infusionMinutes || rt.infusionMinutesPerUnit)) return null;
+      if (!selectedRoute && route && route !== s.route) return null;
       const timedRoute = selectedRoute?.infusionMinutes || selectedRoute?.infusionMinutesPerUnit;
       const d = dose ?? (selectedRoute?.d ?? s.dose);
       if (s.id === 'ketamine' && (!selectedRoute || !(Number.isFinite(d) && d > 0))) return null;
@@ -2184,7 +2184,7 @@ function give(S, drugId, dose, route, bill = true) {
   const d = (dose == null ? D.defaultDose : dose);
   const timedRoute = Object.hasOwn(LEGACY_INFUSIONS, drugId) ? LEGACY_INFUSIONS[drugId] : null;
   const selectedRoute = route || D.routes[0];
-  if (timedRoute && !D.routes.includes(selectedRoute)) return null;
+  if (!D.routes.includes(selectedRoute)) return null;
   const scheduled = timedRoute?.r === selectedRoute || (drugId === 'insulin' && selectedRoute === '泵入');
   if ((scheduled || drugId === 'norepi' || drugId === 'bicarb') && !(Number.isFinite(d) && d > 0)) return null;
   const infusionMinutes = scheduled ? timedRoute.infusionMinutes ?? d * timedRoute.infusionMinutesPerUnit : undefined;

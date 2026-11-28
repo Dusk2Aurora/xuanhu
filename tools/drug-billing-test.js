@@ -29,6 +29,18 @@ for (const id of ['naloxone', 'calcium', 'esmolol', 'insulin']) {
   }
 }
 
+// An unsupported route must never reach PK, billing or the medication history.
+{
+  const S = bed();
+  const initial = JSON.stringify(S);
+  for (const sub of SUB.ALL) {
+    assert.equal(E.give(S, sub.id, sub.dose, '未收录途径'), null, sub.id);
+  }
+  assert.equal(JSON.stringify(S), initial);
+  assert.equal(E.give(S, 'water', 1, '静推'), null);
+  assert.equal(E.give(S, 'water', 1, '口服'), 1);
+}
+
 for (const sub of SUB.ALL) {
   for (const route of sub.routes || []) {
     if (!/静滴|静脉滴注|输液|挂液|输血|输注|泵入/.test(route.r)) continue;

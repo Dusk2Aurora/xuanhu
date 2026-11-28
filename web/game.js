@@ -3616,7 +3616,7 @@ function openFeedback() {
 }
 
 /* ---------------- 版本 / 更新检查 ---------------- */
-const APP_VERSION = '1.57.6';
+const APP_VERSION = '1.57.7';
 const releaseRoot = document.querySelector('meta[name="xuanhu-release-root"]')?.content;
 const releaseBase = releaseRoot ? new URL(releaseRoot, location.href).href.replace(/\/$/, '') : '';
 const platformName = location.protocol === 'file:' ? '离线 HTML' :
@@ -4659,6 +4659,9 @@ function renderAll() {
 
 /* 更新公告：每次发版在这里加一条（新的放最前面） */
 const RELEASES = [
+  { v: '1.57.7', notes: [
+    '病床顶栏的最高倍速从 20× 调整为 32×，与 1×、4×、16× 使用相同的选择方式。',
+  ] },
   { v: '1.57.6', notes: [
     '处置扣分可从操作日志和结算核对。透析显示运行进度，开颅依据已回报的影像与查体。',
     '利尿后的体液损失按实际尿量结算。过敏和支气管痉挛影响氧合，肾上腺素的缓解效果随剂量变化。',

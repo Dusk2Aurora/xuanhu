@@ -694,7 +694,8 @@ const ACTIONS = {
   },
   surgery: {
     name: '急诊手术止血', cost: 1800,
-    desc: '内出血的确定性处理；需要在容量复苏的同时进行。',
+    scope: '脾破裂、宫外孕破裂或肢体创伤出血',
+    desc: '控制脾破裂、宫外孕破裂或肢体创伤的活动性出血，同时进行容量复苏。',
     apply: (S) => {
       const sites = ['trauma', 'ectopic', 'spleen'].filter(site => S.bleedingSites[site] > 0);
       if (sites.length) {
@@ -703,7 +704,7 @@ const ACTIONS = {
         S.surgicalHemostasisAt = S.t;
         S.log.push(['操作', '急诊手术 → 出血点已控制', 'good']);
       } else {
-        S.log.push(['操作', '未发现需要手术的活动性出血，急诊手术未启动', 'warn']);
+        S.log.push(['操作', '急诊手术止血未启动。本术式处理脾破裂、宫外孕破裂或肢体创伤出血。坠落多发伤的腹腔出血见「创伤手术止血」。', 'warn']);
         S.score -= 4;
       }
     },

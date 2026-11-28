@@ -56,6 +56,45 @@ for (const [mode, fixture] of fixtures) {
     `${mode} 输注应增加体液`);
 }
 
+// 去除抽签差异，比较同一例室颤在药物起效前后的除颤结果。
+function shockWith(prescriptionTime, dose, atMinute) {
+  const S = E.create(fixtures[0][1], patient);
+  if (dose > 0) {
+    S.t = prescriptionTime * 60;
+    E.give(S, 'amiodarone', dose, '静推');
+  }
+  S.t = atMinute * 60;
+  S.rhythm = 'vf';
+  const random = Math.random;
+  try {
+    Math.random = () => 0.60;
+    E.ACTIONS.defib.apply(S);
+  } finally { Math.random = random; }
+  return S.rhythm;
+}
+assert.equal(shockWith(0, 0, 5), 'vf');
+assert.equal(shockWith(5, 150, 5), 'vf', '刚下医嘱时药效尚未建立');
+assert.equal(shockWith(0, 15, 5), 'vf', '过小剂量不产生完整除颤加成');
+assert.equal(shockWith(0, 150, 5), 'sinus');
+
+const standard = E.create('exploration');
+const stacked = E.create('exploration');
+standard.icp = stacked.icp = 1.1;
+for (const S of [standard, stacked]) {
+  const bags = S === standard ? 1 : 5;
+  for (let i = 0; i < bags; i++) E.give(S, 'mannitol', 250, '静滴');
+  assert.equal(S.icp, 1.1, '开单时还未送药');
+  advance(S, 30);
+}
+assert.ok(stacked.renalFactor < standard.renalFactor - 0.03, '多袋输注后的过量暴露损伤肾清除');
+assert.ok(stacked.icp < standard.icp && stacked.icp >= 0);
+
+const [coldPatient, warmPatient] = [E.create('exploration'), E.create('exploration')];
+coldPatient.temp = 29.5;
+E.tick(coldPatient, 60);
+E.tick(warmPatient, 60);
+assert.ok(coldPatient.vo2 < warmPatient.vo2 && coldPatient.hr < warmPatient.hr && coldPatient._vfRisk > 0);
+
 for (const exposure of SUBSTANCES.ALL.filter(item => item.kind === 'virus')) {
   assert.equal(exposure.cost, 0, `${exposure.n} 为模拟暴露`);
   const [exposed, control] = compare('exploration', exposure.id, 240);

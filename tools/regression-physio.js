@@ -111,6 +111,48 @@ function check(name, ok, detail) { out.push({ name, ok, detail }); }
     report.base + report.items.reduce((n, item) => n + item.delta, 0) === 20 &&
     report.items.some(item => item.label.includes('重复处置') && item.delta === -6),
     '骤停、死亡、费用、带教及旧记录');
+
+  const patient = E.create('hyperkalemia');
+  patient.t = E.orderTest(patient, 'cthead');
+  E.pollTests(patient);
+  E.ACTIONS.defib.apply(patient);
+  E.ACTIONS.craniotomy.apply(patient);
+  const { cas, ...state } = patient;
+  const saved = JSON.parse(JSON.stringify(state));
+  const restored = Object.assign(E.create(cas), saved);
+  E.restorePatient(restored, saved);
+  const actionScore = E.scoreBreakdown(restored);
+  check('无指征的除颤和开颅各计一次处置扣分', actionScore.score === 92 &&
+    actionScore.items.length === 2 && actionScore.items.every(item => item.label.includes('处置扣分')) &&
+    restored.log.slice(-2).map(entry => entry[6]).join() === '3,5',
+    '已取得无血肿的头颅 CT；结算与处置日志同为 -3 及 -5');
+
+  const legacyED = { ...s, score: 77, intake: { difficulty: 6 } };
+  check('旧急诊床位结算仅保留公开的结局和费用项', E.finalScore(legacyED) === 32 &&
+    !E.scoreBreakdown(legacyED).items.some(item => item.label.includes('带教扣分')),
+    '旧普通床位的已记带教扣分照常结算');
+}
+
+{
+  require('../prototype/mentor.js');
+  const M = globalThis.MENTOR;
+  const bph = E.create(G.generate(1, 123, ['bph']));
+  bph.k = 8.6;
+  const nonRenal = E.create(G.generate(1, 123, ['dka']));
+  nonRenal.k = 7;
+  const supported = [bph, nonRenal].every(patient => M.evaluate(patient, 'action', 'dialysis').ok &&
+    M.hints(patient).some(hint => hint.id === 'dialysis'));
+  E.ACTIONS.dialysis.apply(bph);
+  const stable = E.create({ id: 'dialysis-stable-test', init: { ...G.BASE } });
+  check('透析点评按当前血钾及肾功能评估', supported && !M.hints(bph).some(hint => hint.id === 'dialysis') &&
+    M.evaluate(stable, 'action', 'dialysis').ok === false,
+    '前列腺增生及其他病因的重度高钾均支持评估，正在透析时不再重复提示');
+
+  stable.vol = 5.6;
+  check('常用晶体液按实际下单剂量评估补液风险', ['nacl', 'ringer'].every(id =>
+    M.evaluate(stable, 'drug', id, { dose: 500 }).ok === false &&
+    M.evaluate(stable, 'drug', id, { dose: 50 }).ok === null),
+    '容量已足时区分成袋补液和小量给液；药物库的实际医嘱 ID 接入带教');
 }
 
 {
@@ -1011,11 +1053,17 @@ for (const id of ['hyperkalemia', 'dka', 'bleed', 'sepsis', 'opioid']) {
 
 {
   const makeBed = () => E.create({ id: 'ventilator-test', init: { ...G.BASE } });
-  const intubate = () => {
+  const intubate = (init = {}) => {
     const bed = makeBed();
+    Object.assign(bed, init);
     bed.gcs = 8;
     E.ACTIONS.intubate.apply(bed);
     return bed;
+  };
+  const settle = (...beds) => {
+    for (let elapsed = 0; elapsed < 10 * 60; elapsed += 2) {
+      for (const bed of beds) E.tick(bed, 2);
+    }
   };
   const low = intubate();
   const baseline = intubate();
@@ -1032,28 +1080,53 @@ for (const id of ['hyperkalemia', 'dka', 'bleed', 'sepsis', 'opioid']) {
   check('呼吸机流量限幅，仅有效变更记录，其他床独立', limited && !redundant && invalid && !off &&
     low.log.length === before + 1 && low.log.at(-1)[1].endsWith('10 L/min') && low.fio2 === fio2 &&
     minimum.flow === initial.minFlow && minimum.deliveredTidalVolume === 200 && minimum.deliveryTime === 1.2 &&
-    initial.active && initial.flow === 45 && initial.targetTidalVolume === 450 &&
+    initial.active && initial.rate === 14 && initial.fio2 === 0.6 && initial.flow === 45 &&
+    initial.targetTidalVolume === 450 &&
     E.ventilatorSettings(baseline).flow === initial.flow && E.ventilatorSettings(roomAir).flow === initial.flow,
     '有效范围 10–120 L/min，新床默认 45 L/min');
 
   E.setVentilatorFlow(low, 15);
   E.setVentilatorFlow(high, 1e4);
   const maximum = E.ventilatorSettings(high);
-  for (let elapsed = 0; elapsed < 10 * 60; elapsed += 2) {
-    for (const bed of [low, baseline, high]) E.tick(bed, 2);
-  }
-  check('低吸气流量限制实际送气，高流量只缩短送气时长', E.ventilatorSettings(low).deliveredTidalVolume === 300 &&
+  settle(low, baseline, high);
+  check('低吸气流量限制送气，高流量延长呼气并维持目标潮气量', E.ventilatorSettings(low).deliveredTidalVolume === 300 &&
     maximum.flow === initial.maxFlow && maximum.deliveredTidalVolume === initial.deliveredTidalVolume &&
-    maximum.deliveryTime < initial.deliveryTime && low.rr === 14 && baseline.rr === 14 && high.rr === 14 &&
-    low.paco2 - baseline.paco2 > 15 && high.paco2 === baseline.paco2 && high.pao2 === baseline.pao2,
+    maximum.deliveryTime < initial.deliveryTime && maximum.expiratoryTime > initial.expiratoryTime &&
+    low.rr === 14 && baseline.rr === 14 && high.rr === 14 &&
+    low.paco2 - baseline.paco2 > 15 && Math.abs(high.paco2 - baseline.paco2) < 1,
     `PaCO₂：15 L/min ${low.paco2.toFixed(1)}、45 L/min ${baseline.paco2.toFixed(1)}、120 L/min ${high.paco2.toFixed(1)} mmHg`);
+
+  const obstruction = { airwayResistance: 0.75, vdvt: 0.53 };
+  const obstructed = intubate(obstruction);
+  const longerExhalation = intubate(obstruction);
+  E.setVentilatorSettings(obstructed, { rate: 20 });
+  E.setVentilatorSettings(longerExhalation, { rate: 20, flow: 120 });
+  settle(obstructed, longerExhalation);
+  check('阻塞气道时缩短吸气可以改善有效通气', obstructed.paco2 - longerExhalation.paco2 > 2 &&
+    E.ventilatorSettings(obstructed).deliveredTidalVolume === E.ventilatorSettings(longerExhalation).deliveredTidalVolume,
+    `同为 450 mL，PaCO₂ ${obstructed.paco2.toFixed(1)} → ${longerExhalation.paco2.toFixed(1)} mmHg`);
+
+  const slowRate = intubate(), fastRate = intubate(), higherOxygen = intubate();
+  const rejected = !E.setVentilatorSettings(slowRate, { rate: 20, fio2: NaN }) && slowRate.rr === 14;
+  E.setVentilatorSettings(slowRate, { rate: 6, fio2: 0.21 });
+  E.setVentilatorSettings(fastRate, { rate: 22, fio2: 0.21 });
+  E.setVentilatorSettings(higherOxygen, { rate: 6, fio2: 0.42 });
+  settle(slowRate, fastRate, higherOxygen);
+  check('机控频率更新床旁 RR，低氧时固定所设 FiO₂', rejected && slowRate.rr === 6 && fastRate.rr === 22 &&
+    slowRate.paco2 - fastRate.paco2 > 20 && slowRate.spo2 < 92 && slowRate.fio2 === 0.21 &&
+    higherOxygen.rr === 6 && higherOxygen.fio2 === 0.42 && higherOxygen.pao2 - slowRate.pao2 > 25 &&
+    high.rr === 14 && high.fio2 === 0.6,
+    `RR 6 时 SpO₂ ${slowRate.spo2.toFixed(1)}%，FiO₂ 保持 21%；调高浓度时 PaO₂ ${slowRate.pao2.toFixed(1)} → ${higherOxygen.pao2.toFixed(1)} mmHg`);
 
   const samplePaCO2 = Math.round(low.paco2);
   const samplePaO2 = Math.round(low.pao2);
   const ready = E.orderTest(low, 'abg');
+  E.setVentilatorSettings(low, { rate: 12, fio2: 0.30 });
   const saved = JSON.parse(JSON.stringify(low));
   const legacySaved = JSON.parse(JSON.stringify(saved));
   delete legacySaved.ventFlow;
+  delete legacySaved.ventRate;
+  delete legacySaved.ventFio2;
   const restored = Object.assign(makeBed(), saved);
   E.restoreCardiorespiratory(restored, saved);
   const savedSetting = E.ventilatorSettings(restored);
@@ -1063,11 +1136,14 @@ for (const id of ['hyperkalemia', 'dka', 'bleed', 'sepsis', 'opioid']) {
   const sample = E.testValue(restored, 'abg');
   const legacy = Object.assign(makeBed(), legacySaved);
   E.restoreCardiorespiratory(legacy, legacySaved);
-  check('恢复机械通气流量及待出血气，旧档使用默认流量', savedSetting.active && savedSetting.flow === 15 &&
+  const legacySettings = E.ventilatorSettings(legacy);
+  check('恢复逐床呼吸机设置及待出血气，旧档保留吸入氧浓度', savedSetting.active && savedSetting.flow === 15 &&
+    savedSetting.rate === 12 && savedSetting.fio2 === 0.30 &&
     sample?.paco2 === samplePaCO2 && sample.pao2 === samplePaO2 &&
-    Math.round(restored.paco2) < samplePaCO2 && E.ventilatorSettings(legacy).flow === initial.flow &&
+    Math.round(restored.paco2) < samplePaCO2 && legacySettings.flow === initial.flow &&
+    legacySettings.rate === initial.rate && legacySettings.fio2 === 0.30 &&
     E.ventilatorSettings(low).flow === 15 && !E.testValue(low, 'abg'),
-    '档内流量分床保留，已取样血气仍显示原 PaCO₂、PaO₂');
+    '设置分床保留，已取样血气仍显示原 PaCO₂、PaO₂');
 
   const readyToWean = { gcs: 15, map: 85, spontaneousRr: 16, spontaneousCO2: 40 };
   for (const bed of [low, baseline]) {
@@ -1079,9 +1155,20 @@ for (const id of ['hyperkalemia', 'dka', 'bleed', 'sepsis', 'opioid']) {
   E.tick(low, 2);
   E.tick(control, 2);
   check('撤机后回到自主呼吸，保留本床参数供再次插管', !stopped.active && !baseline.vent &&
-    stopped.flow === 15 && stopped.deliveredTidalVolume === null && stopped.deliveryTime === null &&
+    stopped.flow === 15 && stopped.rate === 12 && stopped.fio2 === 0.30 &&
+    stopped.deliveredTidalVolume === null && stopped.deliveryTime === null &&
     low.paco2 === control.paco2 && low.rr === control.rr,
     '停机时不同机控流量设定的自主通气结果一致');
+}
+
+{
+  const chronic = G.generate(3, 17);
+  const compensated = E.create(chronic);
+  const acute = E.create({ ...chronic, init: { ...chronic.init, chronicPaco2: undefined } });
+  check('合并慢性高碳酸时只按既往 PaCO₂ 补足肾代偿', compensated.chronicPaco2 === 46 &&
+    Math.abs(compensated.hco3 - acute.hco3 - 2.1) < 0.02 &&
+    compensated.ph > acute.ph && compensated.paco2 > 60 && compensated.ph < 7.25,
+    `急性 PaCO₂ ${compensated.paco2.toFixed(1)} mmHg，既往 46 mmHg，HCO₃⁻ ${acute.hco3.toFixed(1)} → ${compensated.hco3.toFixed(1)} mmol/L`);
 }
 
 {
@@ -1386,6 +1473,114 @@ for (const id of ['hyperkalemia', 'dka', 'bleed', 'sepsis', 'opioid']) {
       bed.running && bed.heatstrokeCooled && bed.hepatotox >= 0.25 && E.dischargeCheck(bed).ok,
       `6 小时乳酸 ${bed.lac.toFixed(1)} mmol/L`);
   }
+}
+
+{
+  const makeBed = (init = {}) => E.create({ id: 'critical-course-test', init: { ...G.BASE, ...init } });
+  const advance = (bed, seconds, updateCase = false) => {
+    for (let elapsed = 0; elapsed < seconds && bed.running; elapsed += 10) {
+      const step = Math.min(10, seconds - elapsed);
+      E.tick(bed, step);
+      if (updateCase) G.step(bed, step, E);
+    }
+  };
+
+  const mildPressure = makeBed({ icp: 0.3 });
+  const higherPressure = makeBed({ icp: 0.8 });
+  const mixedCauses = makeBed({ icp: 0.8, glu: 2.4 });
+  check('颅压仅计一次，合并低血糖仍会加重意识障碍', mildPressure.gcs === 15 && higherPressure.gcs === 9 && mixedCauses.gcs === 6,
+    `轻度颅压、高颅压和合并低血糖 GCS ${mildPressure.gcs}/${higherPressure.gcs}/${mixedCauses.gcs}`);
+
+  const highPotassium = makeBed();
+  highPotassium.k = 7.42;
+  advance(highPotassium, 3 * 60);
+  const riskBeforeCorrection = highPotassium._vfRisk;
+  highPotassium.k = 4.5;
+  advance(highPotassium, 15 * 60);
+  check('高钾纠正后，已积累的室颤风险逐渐降低', riskBeforeCorrection > 0.5 && highPotassium.rhythm === 'sinus' &&
+    Math.abs(highPotassium._vfRisk / riskBeforeCorrection - 0.5) < 0.01,
+    `风险 ${riskBeforeCorrection.toFixed(2)} → ${highPotassium._vfRisk.toFixed(2)}`);
+
+  const toxic = makeBed({ tca: 0.8 });
+  advance(toxic, 60);
+  const firstVF = toxic.events.filter(event => event.id === 'vf').length;
+  const random = Math.random;
+  try {
+    Math.random = () => 0;
+    E.ACTIONS.defib.apply(toxic);
+  } finally {
+    Math.random = random;
+  }
+  const restoredSinus = toxic.rhythm === 'sinus' && toxic._vfRisk === 0;
+  advance(toxic, 60);
+  check('持续致颤因素可再次触发室颤，每次发作各有一次报警', firstVF === 1 && restoredSinus &&
+    toxic.rhythm === 'vf' && toxic.arrests === 2 && toxic.events.filter(event => event.id === 'vf').length === 2,
+    `重复发作 ${toxic.arrests} 次，风险在复律时重置`);
+
+  const untreated = E.create(G.generate(2, 43, ['stemi']));
+  const revascularized = E.create(untreated.cas);
+  for (const bed of [untreated, revascularized]) advance(bed, 60 * 60, true);
+  const riskAtHour = untreated._vfRisk;
+  E.ACTIONS.pci.apply(revascularized);
+  for (const bed of [untreated, revascularized]) advance(bed, 10 * 60, true);
+  const stillRising = untreated._vfRisk > riskAtHour && revascularized._vfRisk < riskAtHour;
+  for (let minutes = 70; minutes < 150 && untreated.rhythm === 'sinus' && untreated.running; minutes++) advance(untreated, 60, true);
+  check('超过一小时的活动性 STEMI 仍能诱发室颤，PCI 后风险回落', stillRising && untreated.rhythm === 'vf' &&
+    untreated.t > 60 * 60 && revascularized.rhythm === 'sinus', `首次室颤在第 ${Math.round(untreated.t / 60)} 分钟`);
+
+  const circulation = makeBed();
+  circulation.t = 120;
+  const volume = circulation.vol;
+  circulation.vol = 1;
+  E.tick(circulation, 1);
+  const firstTransient = circulation.map < 30 && !circulation.death;
+  advance(circulation, 30);
+  circulation.vol = volume;
+  E.tick(circulation, 1);
+  const timerCleared = circulation.severeHypotensionSince == null && !circulation.death;
+  circulation.vol = 1;
+  E.tick(circulation, 1);
+  advance(circulation, 59);
+  const secondWindow = !circulation.death;
+  E.tick(circulation, 1.1);
+  check('极低血压从实际发生时计时，恢复后重新计时', firstTransient && timerCleared && secondWindow &&
+    circulation.death?.reason === '低血容量性休克失代偿', `复发并持续符合时间条件后的结局 ${circulation.death?.reason}`);
+}
+
+{
+  const edema = E.create(G.generate(1, 112, ['edema']));
+  edema.lungWater = 0.95;
+  E.tick(edema, 1);
+  const wetDeadSpace = E.effectiveDeadSpace(edema);
+  const wetRoomAir = E.roomAirSaturation(edema);
+  edema.lungWater = 0.12;
+  E.tick(edema, 1);
+  const dryDeadSpace = E.effectiveDeadSpace(edema);
+  check('肺水消退后死腔回落并改善室内空气氧合', wetDeadSpace > 0.45 && dryDeadSpace === 0.33 &&
+    E.roomAirSaturation(edema) > wetRoomAir + 5,
+    `Vd/VT ${wetDeadSpace.toFixed(2)} → ${dryDeadSpace.toFixed(2)}`);
+
+  const comorbidity = G.generate(3, 2);
+  const mixed = E.create(comorbidity);
+  mixed.tags = [...mixed.tags, 'pe'];
+  Object.assign(mixed, { lungWater: 0.12, asthmaResistance: 0.85, clot: 0.9 });
+  const asthmaLimit = E.effectiveDeadSpace(mixed);
+  mixed.asthmaResistance = 0.1;
+  const embolismLimit = E.effectiveDeadSpace(mixed);
+  mixed.clot = 0.1;
+  const chronicLimit = E.effectiveDeadSpace(mixed);
+  const legacy = { ...mixed, vdvt: 0.72 };
+  delete legacy.deadSpaceModelVersion;
+  const restored = Object.assign(E.create(comorbidity), legacy);
+  E.restoreCardiorespiratory(restored, legacy);
+  const legacyLimit = E.effectiveDeadSpace(restored);
+  const current = { ...restored, vdvt: 0.45 };
+  const reopened = Object.assign(E.create(comorbidity), current);
+  E.restoreCardiorespiratory(reopened, current);
+  check('哮喘和肺栓塞改善后保留 COPD 底值，旧档清除肺水峰值', comorbidity.init.vdvt === 0.42 &&
+    Math.abs(asthmaLimit - 0.67) < 0.002 && Math.abs(embolismLimit - 0.645) < 0.002 && chronicLimit === 0.42 &&
+    legacyLimit === 0.42 && restored.deadSpaceModelVersion === 1 && E.effectiveDeadSpace(reopened) === 0.45,
+    `哮喘 ${asthmaLimit.toFixed(2)}，肺栓塞 ${embolismLimit.toFixed(3)}，COPD ${chronicLimit.toFixed(2)}`);
 }
 
 const fails = out.filter(x => !x.ok);

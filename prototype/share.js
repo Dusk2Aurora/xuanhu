@@ -68,7 +68,7 @@
     const failed = review?.status === 'failed';
     const reason = S.death?.reason || (failed ? review.majorReasons?.[0] : '');
     const finished = !!(S.death || S.discharged || failed);
-    const score = finished && typeof root.LIFE?.finalScore === 'function'
+    const score = typeof root.LIFE?.finalScore === 'function'
       ? root.LIFE.finalScore(S) : (S.finalScore ?? S.score ?? 100);
     const payload = {
       v: V,

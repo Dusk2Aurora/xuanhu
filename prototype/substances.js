@@ -218,7 +218,7 @@ const EXTRA = [
   ['arginine_hcl',     '盐酸精氨酸',   '酸化药',   20, 'g',      68, { e:{hco3:-4.0}, adverse:{threshold:1.5, eff:{k:+0.8}}, note:'纠正重症碱中毒；过量可升高血钾。' }],
   ['acetazolamide',    '乙酰唑胺',     '利尿脱水', 250,'mg',     18, { r:'口服', e:{hco3:-2.0, uo:+0.8, k:-0.2}, note:'用于碱中毒；留意酸中毒和低血钾。' }],
   ['hypertonic_saline','3% 高渗盐水',  '高渗液',   150,'mL',     42, { e:{vol:+0.35, na:+7}, note:'低钠血症纠正；速度过快致渗透性脱髓鞘' }],
-  ['mannitol',         '甘露醇',       '利尿脱水', 250,'mL',     38, { r:'静滴', e:{uo:+1.4, gcs:+1, icp:-0.30}, note:'降颅压，渗透性利尿' }],
+  ['mannitol',         '甘露醇',       '利尿脱水', 250,'mL',     38, { r:'静滴', e:{uo:+1.4, icp:-0.30}, adverse:{threshold:2, eff:{cr:+25}}, note:'渗透性利尿，随输注降低颅压；反复输注蓄积可加重肾损伤。' }],
 
   /* 血管活性 / 强心 */
   ['nitroprusside',    '硝普钠',       '血管活性', 0.5,'μg/kg/min', 72, { on:1, du:10, e:{svr:-4.0, hr:+4}, adverse:{threshold:4, eff:{lac:+4}}, note:'快速扩血管；监测低血压，高剂量可致氰化物毒性。' }],
@@ -403,6 +403,7 @@ const ROUTE_MAP = {
   nitroglycerin:[{ r:'舌下', d:0.5,on:2,  du:30  }, { r:'泵入', d:5,  on:2,  du:120, infusionMinutes:30 }],
   dexamethasone:[{ r:'静推', d:8,  on:30, du:300 }, { r:'口服', d:8,  on:45, du:360 }],
   omeprazole: [{ r:'静推', d:80, on:15, du:360 }, { r:'口服', d:40, on:60, du:480 }],
+  labetalol: [{ r:'静推', d:10, on:4, du:180 }, { r:'口服', d:100, on:90, du:480 }],
   ranitidine: null,
   acetaminophen:[{ r:'口服', d:500,on:30, du:240 }, { r:'栓剂', d:500,on:20, du:240 }],
   ceftriaxone:[{ r:'静滴', d:2,  on:20, du:120 }, { r:'肌注', d:1,  on:30, du:180 }],

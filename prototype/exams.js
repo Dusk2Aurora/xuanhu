@@ -3,6 +3,7 @@
 'use strict';
 
 const EMERGENCY_CASES = root.EMERGENCY_CASES || (typeof module !== 'undefined' && module.exports ? require('./emergency-cases.js') : null);
+const ECG = root.LIFE_ECG || (typeof module !== 'undefined' && module.exports ? require('./ecg.js') : null);
 
 const EXAM_GROUPS = [
   { id: 'neuro', name: '意识与神经' },
@@ -19,7 +20,7 @@ const TEST_GROUPS = [
 ];
 
 const EXAMS = {
-  neuro: { group: 'neuro', name: '意识与抽搐评估', desc: '评估意识水平，观察是否仍有抽搐。' },
+  neuro: { group: 'neuro', name: '意识与抽搐评估', desc: '评估意识水平，观察抽搐、痉挛与肢体活动。' },
   pupils: { group: 'neuro', name: '检查双侧瞳孔', desc: '比较两侧瞳孔大小与对光反应。' },
   airway: { group: 'resp', name: '观察气道与呼吸', desc: '观察胸廓起伏、呼吸频率及气道分泌物。' },
   lungs: { group: 'resp', name: '双肺听诊', desc: '比较双侧呼吸音与附加音。' },
@@ -37,7 +38,7 @@ const ABG_FIELDS = ['ph', 'paco2', 'pao2', 'hco3', 'lac', 'k'];
 const TESTS = {
   glucose: { group: 'urgent', name: '指尖血糖', min: 1, cost: 10, fields: ['glu'], desc: '快速筛查血糖异常，可复测变化。' },
   ketones: { group: 'urgent', name: '床旁血酮', min: 3, cost: 30, fields: [], desc: '记录模拟的定性血酮结果，结合血糖、血气与渗透压鉴别。' },
-  ecg: { group: 'urgent', name: '12 导联心电图', min: 5, cost: 40, fields: ['ecg'], desc: '记录节律、传导和 ST–T 改变。' },
+  ecg: { group: 'urgent', name: '12 导联心电图', min: 5, cost: 40, fields: ['ecg'], desc: '记录节律、传导、QT 间期和 ST–T 改变。' },
   poct_abg: { group: 'urgent', name: '床旁快速血气', min: 2, cost: 350, fields: ABG_FIELDS, desc: '用床旁设备快速取得动脉血气，评估氧合、通气和酸碱状态。' },
   abg: { group: 'blood', name: '动脉血气', min: 8, cost: 120, fields: ABG_FIELDS, desc: '评估氧合、通气和酸碱状态。' },
   bmp: { group: 'blood', name: '电解质+肾功', min: 35, cost: 180, fields: ['k', 'na', 'cl', 'ca', 'cr', 'bun'], desc: '查电解质、肌酐和尿素氮。' },
@@ -59,7 +60,8 @@ const TESTS = {
   lungus: { group: 'imaging', name: '床旁肺超声', min: 3, cost: 100, fields: [], desc: '观察肺滑动和 B 线，辅助辨别气胸与肺间质水肿。' },
   echo: { group: 'imaging', name: '床旁心脏超声', min: 5, cost: 150, fields: [], desc: '观察心包积液和左右心室表现。' },
   fast: { group: 'imaging', name: '创伤床旁超声（FAST）', min: 5, cost: 150, fields: [], desc: '观察腹腔、盆腔有无游离液体。' },
-  cthead: { group: 'imaging', name: '头颅 CT 平扫', min: 25, cost: 360, fields: [], desc: '评估颅内急性出血和占位效应。' },
+  cthead: { group: 'imaging', name: '头颅 CT 平扫', min: 8, cost: 360, fields: ['epiduralHematomaVolume'],
+    desc: '急诊评估颅内出血和占位效应。报告时间为模拟值。' },
   ctpa: { group: 'imaging', name: 'CT 肺动脉造影', min: 30, cost: 650, fields: ['pulmonaryClotBurden'], desc: '检查肺动脉有无充盈缺损。' },
   aorta_cta: { group: 'imaging', name: '主动脉 CTA', min: 8, cost: 880, fields: ['ascendingAortaDissection', 'aorticArchInvolvement', 'descendingAortaDissection', 'descendingAortaMalperfusion'],
     desc: '急诊评估主动脉升段、弓部、降段及分支灌注。报告时间为模拟值。' },
@@ -94,6 +96,10 @@ function bedside(S, type, E) {
         : S.gcs >= 9 ? '唤醒困难或答非所问' : '意识明显受损';
       rows = [row('意识反应', response, S.gcs < 15 && '异常'), row('GCS', S.gcs + ' 分'),
         row('肢体活动', movement || '检查时未见抽搐', movement && '异常')];
+      if (S.rhythm === 'sinus' && !movement) {
+        if (S.ca <= 0.90) rows.push(abnormal('神经肌肉', '可见间歇性手足痉挛'));
+        else if (S.ca >= 1.65 && S.gcs >= 13) rows.push(abnormal('神经肌肉', '双侧近端肢体抗阻力量减弱'));
+      }
       break;
     }
     case 'pupils': {
@@ -101,6 +107,7 @@ function bedside(S, type, E) {
       const opioid = !antagonist && Math.max(S.opioidDepress || 0, (S._opioidTone || 0) / 4) >= 0.45;
       const miosis = opioid || cholinergic(S) >= 0.4;
       const brainCompression = S.hematoma > 0.25 && S.icp >= 0.6;
+      values.anisocoria = brainCompression ? 1 : 0;
       const baseline = miosis ? '明显缩小' : '大小未见明显异常';
       rows = [row('左侧瞳孔', brainCompression ? '散大，对光反应迟钝' : baseline, (brainCompression || miosis) && '异常'),
         row('右侧瞳孔', baseline, miosis && '异常')];
@@ -271,6 +278,8 @@ function ecgRows(sample) {
   if (sample.rhythm !== 'sinus') return rows;
   rows.push(row('心率', sample.hr + ' 次/分'));
   if (sample.digoxin >= 0.35) rows.push(abnormal('房室传导', '房室传导延迟，伴间发室性早搏'));
+  const qtShift = ECG.calciumQtShift(sample.ca);
+  const qtFinding = qtShift >= 0.03 ? '延长，以 ST 段延长为主' : qtShift <= -0.03 ? '缩短，以 ST 段缩短为主' : null;
   if (Number.isFinite(sample.qrsWide) && Number.isFinite(sample.stemi) && Number.isFinite(sample.tca)) {
     const wide = Math.max(sample.qrsWide, sample.tca, (sample.k - 6.2) / 2.6);
     const waves = [];
@@ -278,8 +287,10 @@ function ecgRows(sample) {
     if (sample.k >= 5.8) waves.push('T 波高尖');
     if (sample.tca >= 0.4) waves.push('aVR 导联可见突出的终末 R 波');
     rows.push(row('QRS 波群', wide >= 0.3 ? '增宽' : '无明显增宽', wide >= 0.3 && '异常'));
-    rows.push(row('波形所见', waves.join('；') || '未见上述波形异常', waves.length > 0 && '异常'));
+    if (waves.length) rows.push(abnormal('波形所见', waves.join('；')));
+    else if (!qtFinding) rows.push(row('波形所见', '未见上述波形异常'));
   }
+  if (qtFinding) rows.push(abnormal('QT 间期', qtFinding));
   return rows;
 }
 
@@ -390,9 +401,14 @@ function imagingRows(S, type, sample) {
         (internalFluid(S, 'spleen') || fallFluid) && '异常'),
         row('盆腔', internalFluid(S, 'ectopic') ? '见游离液体' : '未见明确游离液体', internalFluid(S, 'ectopic') && '异常')];
     }
-    case 'cthead':
-      return [S.hematoma > 0.12 ? abnormal('颅内', '左颞部颅骨内板下见双凸形高密度影') : row('颅内', '未见明确急性出血影'),
+    case 'cthead': {
+      // 病例的血肿负荷为无量纲状态，按本模拟的比例换算为影像估计体积。
+      const volume = S.hematoma > 0.12 ? Math.round(S.hematoma * 60) : 0;
+      sample.epiduralHematomaVolume = volume;
+      return [volume ? abnormal('颅内', '左颞部颅骨内板下见双凸形高密度影') : row('颅内', '未见明确急性出血影'),
+        ...(volume ? [row('硬膜外血肿体积', `${volume} mL`)] : []),
         row('占位效应', S.hematoma > 0.3 && S.icp >= 0.6 ? '可见邻近脑组织受压' : '未见明显占位效应')];
+    }
     case 'ctpa': {
       const clot = S.clot || 0;
       sample.pulmonaryClotBurden = clot;

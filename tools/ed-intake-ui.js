@@ -99,8 +99,36 @@ async function main() {
     await page.locator('#detailX').click();
     await page.locator('#btnMenu').click();
     assert.match(await rows.getByRole('button').first().innerText(), /出院/);
+    await close();
+
+    const scoreBefore = await page.evaluate(() => {
+      const { S, E } = window.__LIFE_GAME;
+      S.rhythm = 'sinus';
+      S._vfRisk = 0;
+      return E.finalScore(S);
+    });
+    await page.locator('#btnOps').click();
+    await choose('电除颤');
+    assert.match(await page.locator('#toast').innerText(), /扣 5 分/);
+    assert.deepEqual(await page.evaluate(() => {
+      const { S, E } = window.__LIFE_GAME;
+      return [E.finalScore(S), S.penalties ?? 0, S.log.some(row => row[1].startsWith('带教点评：'))];
+    }), [scoreBefore - 5, 0, false]);
+    await close();
+    await page.locator('#btnMenu').click();
+    await choose('查看操作日志');
+    assert.match(await page.locator('#dKv').innerText(), /误用非同步电击.*扣 5 分/);
+    await page.evaluate(() => {
+      const { S, E } = window.__LIFE_GAME;
+      E.endCase(S, 'death', '测试结局');
+      window.tickWard();
+    });
+    const score = page.locator('.case-review-score');
+    assert.match(await score.getByRole('row', { name: /处置扣分.*误用非同步电击/ }).innerText(), /−5/);
+    assert.equal(await score.getByRole('row', { name: /带教扣分/ }).count(), 0);
+    assert.match(await page.locator('.case-review-log').innerText(), /误用非同步电击.*扣 5 分/);
     assert.deepEqual(errors, []);
-    console.log('Emergency intake, interview, examination, test ordering, report reload and discharge menu passed.');
+    console.log('Emergency intake, report reload, discharge menu and visible action deductions passed.');
   } finally {
     await browser.close();
   }

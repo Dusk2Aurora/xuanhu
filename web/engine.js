@@ -1208,10 +1208,46 @@ function infusionDetails(dose, unit, minutes) {
   return `总量 ${dose} ${unit}，输注 ${minutes} 分钟`;
 }
 
+function infusionProgress(S, order) {
+  const minutes = order?.infusionMinutes;
+  if (!(minutes > 0)) return null;
+  const totalDose = order.dose ?? order.d;
+  const stoppedAt = order.stoppedAt ?? null;
+  const completedAt = order.t + minutes * 60;
+  const elapsedMinutes = clamp(((stoppedAt ?? S.t) - order.t) / 60, 0, minutes);
+  const running = S.running !== false && stoppedAt === null && S.t >= order.t && S.t < completedAt;
+  return { running, elapsedMinutes, deliveredDose: totalDose * (elapsedMinutes / minutes), totalDose,
+           remainingMinutes: stoppedAt === null ? minutes - elapsedMinutes : 0, stoppedAt, completedAt };
+}
+
+function stopInfusion(S, order) {
+  if (!S.pk?.includes(order)) return false;
+  const progress = infusionProgress(S, order);
+  if (!progress?.running) return false;
+  let given = S.given?.[order.givenIndex];
+  if (!given) {
+    // 旧存档没有给药记录索引，同一时刻的相同医嘱按开单顺序匹配。
+    const matches = p => p.id === order.id && p.t === order.t && p.route === order.route &&
+      p.infusionMinutes === order.infusionMinutes && (p.dose ?? p.d) === order.dose;
+    given = S.given?.filter(matches)[S.pk.filter(matches).indexOf(order)];
+  }
+  order.stoppedAt = S.t;
+  if (given) given.stoppedAt = S.t;
+  const amount = Number(progress.deliveredDose.toPrecision(6));
+  const sequence = given ? `医嘱 #${S.given.indexOf(given) + 1}，` : '';
+  const label = `停止${order.route} ${order.n}（${sequence}已输 ${amount} / ${progress.totalDose} ${order.unit}）`;
+  S.log.push([fmt(S.t), label, 'good', S.t, null, true]);
+  return true;
+}
+
+function infusionDeliveredMinutes(order) {
+  return order.stoppedAt == null ? order.infusionMinutes : (order.stoppedAt - order.t) / 60;
+}
+
 // 恒速输入和一阶清除后剩余的比例，以本次医嘱的总量为 1。
-function infusionActivity(elapsed, duration, ke) {
-  const supplied = clamp(elapsed, 0, duration);
-  const timeAfter = Math.max(0, elapsed - duration);
+function infusionActivity(elapsed, duration, ke, deliveredMinutes) {
+  const supplied = clamp(elapsed, 0, deliveredMinutes);
+  const timeAfter = Math.max(0, elapsed - deliveredMinutes);
   return -Math.expm1(-ke * supplied) * Math.exp(-ke * timeAfter) / (ke * duration);
 }
 
@@ -1305,7 +1341,7 @@ function changePump(S, sub, route, rate) {
   S.given.push({ id: sub.id, n: sub.n, d: recordedRate, unit: sub.unit, route: route.r, t: S.t, pumpAction: action });
   if (action === 'start' && root.TRAITS) root.TRAITS.onDrug(S, sub, rate);
   if (rate > 0 && S.lastGiven !== undefined) S.lastGiven = sub.id;
-  S.log.push([fmt(S.t), pumpOrder(sub.n, action, recordedRate, sub.unit), 'good']);
+  S.log.push([fmt(S.t), pumpOrder(sub.n, action, recordedRate, sub.unit), 'good', S.t, null, true]);
   return recordedRate;
 }
 
@@ -1328,7 +1364,8 @@ function insulinActivity(S) {
   let activity = S.eff?.insulin ?? 0;
   for (const p of S.pk || []) {
     if (p.id === 'insulin' && p.infusionMinutes) {
-      activity += p.scale * infusionActivity((S.t - p.t) / 60, p.infusionMinutes, 1 / EFFECT_DECAY_MINUTES);
+      activity += p.scale * infusionActivity((S.t - p.t) / 60, p.infusionMinutes, 1 / EFFECT_DECAY_MINUTES,
+        infusionDeliveredMinutes(p));
     }
   }
   return Math.min(3.5, activity);
@@ -1372,15 +1409,15 @@ function give(S, drugId, dose, route, bill = true) {
       const scale = (d / (refDose || 1)) * wScale;
       const pkMul = S.pkScale || 1;
       S.pk = S.pk || [];
+      S.given = S.given || [];
       if (BENZODIAZEPINES.has(s.id) && benzodiazepineExposure(S).load <= 0.1) {
         S.benzoBaseline = { gcs: S.gcs, rr: S.rr };
       }
       const order = { id: s.id, n: s.n, t: S.t, route: selectedRoute?.r || s.route,
                       onset: on, dur: du * pkMul, eff: s.eff, scale,
-                      ...(infusionMinutes ? { infusionMinutes, dose: d, unit: s.unit } : {}) };
+                      ...(infusionMinutes ? { infusionMinutes, dose: d, unit: s.unit, givenIndex: S.given.length } : {}) };
       S.pk.push(order);
       if (scale > 0 && isTimedCirculatorySupport(order)) markCirculatorySupport(S);
-      S.given = S.given || [];
       S.given.push({ id: s.id, n: s.n, d, unit: s.unit, route: route || s.route, t: S.t, cost,
                      ...(infusionMinutes ? { infusionMinutes } : {}) });
       if (root.TRAITS) root.TRAITS.onDrug(S, s, d);
@@ -1417,7 +1454,7 @@ function give(S, drugId, dose, route, bill = true) {
       const label = infusionMinutes
         ? `开始${selectedRoute.r} ${s.n}（${infusionDetails(d, s.unit, infusionMinutes)}）`
         : `给予 ${s.n} ${d}${s.unit}（${route || s.route || '静推'}）`;
-      S.log.push([fmt(S.t), label, 'good']);
+      S.log.push([fmt(S.t), label, 'good', S.t, null, true]);
       if (s.id === 'calcium' || s.id === 'calcium_cl') S.caProtectUntil = S.t + (s.dur || 45) * 60;
       if (s.id === 'insulin' && !infusionMinutes) S.eff.insulin = Math.min(3.5, S.eff.insulin + d / 10);
       if (s.id === 'mannitol') S.icp = Math.max(0, (S.icp || 0) - 0.30 * d / 250);
@@ -1475,7 +1512,7 @@ function finishDelivery(S) {
   const maternal = `胎盘已娩出，母体进入产后观察。血压 ${pressure.sys}/${pressure.dia} mmHg，SpO₂ ${saturation == null ? '无信号' : saturation + '%'}`;
   const newborn = '已交接新生儿科观察，后续结局待随访';
   S.deliveryRecord = { maternal, newborn };
-  S.log.push([fmt(dueAt), maternal + '。新生儿' + newborn, 'good']);
+  S.log.push([fmt(dueAt), maternal + '。新生儿' + newborn, 'good', dueAt, null, true]);
 }
 
 function tick(S, dtSec) {
@@ -1548,14 +1585,15 @@ function tick(S, dtSec) {
     if (infusion) {
       const previousElapsed = (previousTime - p.t) / 60;
       const finishedAt = p.t + infusion * 60;
-      if (previousTime < finishedAt && S.t >= finishedAt) {
-        S.log.push([fmt(finishedAt), `${p.n} ${p.route || '泵入'}完成（${infusionDetails(p.dose, p.unit, infusion)}）`, 'good', finishedAt]);
+      if (p.stoppedAt == null && previousTime < finishedAt && S.t >= finishedAt) {
+        S.log.push([fmt(finishedAt), `${p.n} ${p.route || '泵入'}完成（${infusionDetails(p.dose, p.unit, infusion)}）`, 'good', finishedAt, null, true]);
       }
+      const deliveredMinutes = infusionDeliveredMinutes(p);
       const age = el - lag;
       const previousAge = previousElapsed - lag;
-      const active = infusionActivity(age, infusion, ke);
-      const supplied = (clamp(age, 0, infusion) - clamp(previousAge, 0, infusion)) / infusion;
-      const released = Math.max(0, supplied - active + infusionActivity(previousAge, infusion, ke));
+      const active = infusionActivity(age, infusion, ke, deliveredMinutes);
+      const supplied = (clamp(age, 0, deliveredMinutes) - clamp(previousAge, 0, deliveredMinutes)) / infusion;
+      const released = Math.max(0, supplied - active + infusionActivity(previousAge, infusion, ke, deliveredMinutes));
       const effectScale = pumpEffectScale(p.scale * active);
       for (const key in p.eff) {
         if (MOD_KEYS.includes(key)) {
@@ -1566,7 +1604,7 @@ function tick(S, dtSec) {
         }
       }
       concOf[p.n] = Math.max(concOf[p.n] || 0, p.scale * active);
-      if (el > infusion + p.dur * 1.8) S.pk.splice(i, 1);
+      if (el > deliveredMinutes + p.dur * 1.8) S.pk.splice(i, 1);
       continue;
     }
     if (el > p.dur * 1.8) { S.pk.splice(i, 1); continue; }
@@ -2279,7 +2317,8 @@ function triggerVf(S) {
 function note(S, id, msg, lvl) {
   if (S.events.some(e => e.id === id && S.t - e.t < 600)) return;
   S.events.push({ id, t: S.t, msg, lvl: lvl || 'info' });
-  S.log.push([fmt(S.t), msg, lvl === 'crit' ? 'bad' : lvl === 'bad' ? 'bad' : 'warn']);
+  const monitorEvent = id === 'vf' || id === 'asystole' || id === 'rosc';
+  S.log.push([fmt(S.t), msg, lvl === 'crit' || lvl === 'bad' ? 'bad' : 'warn', S.t, null, monitorEvent]);
 }
 
 function endCase(S, type, reason, dischargeOutcome = null) {
@@ -2747,7 +2786,7 @@ function orderTest(S, id) {
   const sample = id === 'cxr' ? Object.freeze({ sampledAt: S.t, findings: chestXrayFindings(S) }) : testSample(S, id);
   S.cost += T.cost;
   S.tests[id] = { readyAt, done: false, sample };
-  S.log.push([fmt(S.t), `开出 ${T.name}（${T.min} 分钟后出结果）`, 'info', S.t]);
+  S.log.push([fmt(S.t), `开出 ${T.name}（${T.min} 分钟后出结果）`, 'info', S.t, null, true]);
   return readyAt;
 }
 
@@ -2876,7 +2915,8 @@ const API = {
               EXAMS, EXAM_GROUPS, TEST_GROUPS, examine, reports, getReport, knownResults,
               auscultate, orderTest, pollTests, testValue, chestXrayReports, restoreChestXrayReports,
               computeMap, fmt, endCase, setBleedingRate, restoreBleeding,
-              benzodiazepineExposure, restoreBenzodiazepines, temperatureStatus, restoreTemperature, infusionDetails, insulinActivity,
+              benzodiazepineExposure, restoreBenzodiazepines, temperatureStatus, restoreTemperature, infusionDetails, infusionProgress,
+              stopInfusion, insulinActivity,
               pumpRate, pumpOrder, pumpEffect, stopPump, drugPrice, restoreDrugCost,
               hill, computePh, computePcwp, roomAirSaturation, restoreCardiorespiratory, restoreDischargeObservation };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;

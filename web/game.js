@@ -519,12 +519,15 @@ function openDetail(name, sub, kv, warn) {
   stopObservation();
   const detail = $('#detail');
   delete detail.dataset.view;
+  const fields = $('#dKv');
+  fields.onclick = null;
+  fields.removeAttribute('tabindex');
   detail.classList.remove('case-review', 'case-review-success', 'case-review-failure');
   detail.querySelector('.case-review-body')?.remove();
   detail.querySelector('.card').scrollTop = 0;
   $('#dName').textContent = name;
   $('#dSub').textContent = sub || '';
-  $('#dKv').innerHTML = kv.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
+  fields.innerHTML = kv.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
   const w = $('#dWarn'); w.classList.remove('eligible'); w.textContent = warn || ''; w.style.display = warn ? 'block' : 'none';
   $('#detail').classList.add('on');
 }
@@ -673,9 +676,250 @@ function describeEff(eff) {
   return parts.join(' ');
 }
 
+let infusionPanel;
+const infusionNumber = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 3, useGrouping: false });
+
+function infusionAmount(dose, unit) {
+  if (!Number.isFinite(dose)) return '未记录';
+  return `${infusionNumber.format(dose)}${unit ? ' ' + escapeHtml(unit) : ''}`;
+}
+
+function infusionDuration(seconds) {
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes} 分 ${seconds % 60} 秒`;
+}
+
+function infusionRecords(patient) {
+  const knownOrder = order => order.infusionMinutes > 0 || /静滴|静脉滴注|输液|输注|输血|泵入|挂液/.test(order.route || '');
+  const key = order => JSON.stringify([order.id || order.n, order.t, order.route]);
+  const groups = new Map();
+  const records = [];
+  const byGivenIndex = new Map();
+  (patient.given || []).forEach((given, i) => {
+    if (!given || (!knownOrder(given) && !given.pumpAction)) return;
+    const record = { ...given, dose: given.d, givenNumber: i + 1 };
+    records.push(record);
+    if (given.pumpAction) return;
+    byGivenIndex.set(i, record);
+    const id = key(given);
+    if (!groups.has(id)) groups.set(id, []);
+    groups.get(id).push(record);
+  });
+  for (const pk of patient.pk || []) {
+    if (!pk || !knownOrder(pk)) continue;
+    const candidates = groups.get(key(pk));
+    const matchesDose = record => !record.pk && (record.dose === pk.dose || pk.dose == null || record.dose == null);
+    const match = pk.givenIndex != null ? byGivenIndex.get(pk.givenIndex) :
+      candidates?.find(record => matchesDose(record) && (record.stoppedAt ?? null) === (pk.stoppedAt ?? null)) ||
+      candidates?.find(matchesDose);
+    if (!match) records.push({ ...pk, pk });
+    else Object.assign(match, {
+      pk, infusionMinutes: pk.infusionMinutes ?? match.infusionMinutes,
+      dose: pk.dose ?? match.dose, unit: pk.unit ?? match.unit, stoppedAt: pk.stoppedAt ?? match.stoppedAt,
+    });
+  }
+  return records;
+}
+
+function infusionSnapshot(patient) {
+  const records = infusionRecords(patient);
+  const timed = [], history = [], pumps = [];
+  for (const record of records) {
+    if (record.pumpAction && record.pumpAction !== 'stop') continue;
+    const progress = E.infusionProgress(patient, record);
+    if (record.pk && progress?.running) timed.push({ ...record, progress });
+    else history.push({ ...record, progress, eventAt: progress?.stoppedAt ??
+      (progress && !progress.running ? progress.completedAt : record.t) });
+  }
+  for (const [id, pump] of Object.entries(patient.pumps || {})) {
+    if (!(pump?.rate > 0)) continue;
+    const sub = window.SUBSTANCES?.byId(id);
+    const route = sub?.routes?.find(rt => rt.pumpHalfLife);
+    let startedAt, adjustedAt;
+    for (let i = records.length - 1; i >= 0; i--) {
+      const event = records[i];
+      if (event.id !== id || !event.pumpAction) continue;
+      if (event.pumpAction === 'stop') break;
+      if (event.pumpAction === 'start') { startedAt = event.t; break; }
+      if (event.pumpAction === 'adjust') adjustedAt ??= event.t;
+    }
+    pumps.push({ id, n: sub?.n || id, unit: sub?.unit, route, rate: pump.rate, startedAt, adjustedAt });
+  }
+  history.reverse().sort((a, b) => (b.eventAt ?? -1) - (a.eventAt ?? -1));
+  return { timed, pumps, history: history.slice(0, 8) };
+}
+
+function infusionSection(label, content) {
+  return `<div class="infusion-section"><dt>${label}</dt><dd>${content}</dd></div>`;
+}
+
+function infusionRow(name, status, body) {
+  return `<article class="infusion-row">
+    <div class="infusion-row-heading"><strong>${escapeHtml(name)}</strong><span class="infusion-status">${status}</span></div>
+    ${body}
+  </article>`;
+}
+
+function timedInfusionRow(record, index, selected) {
+  const name = record.n || record.id;
+  const { progress } = record;
+  const status = progress.stoppedAt != null ? '已停止' : progress.running ? '输注中' : '已完成';
+  const controls = selected ? `${progress.running ? '<button type="button" class="pill infusion-manage" data-stop-infusion>停止输注</button>' : ''}
+    <button type="button" class="pill infusion-manage" data-infusion-back>返回输液与泵药</button>` :
+    `<button type="button" class="pill infusion-manage" data-infusion-id="${escapeHtml(record.id)}" data-infusion-index="${index}">查看输注</button>`;
+  return infusionRow(name, status, `
+    <p class="infusion-meta">${escapeHtml(record.route || '定时输注')} · 开始于 ${caseTime(record.t)}${record.givenNumber ? ` · 医嘱 #${record.givenNumber}` : ''}</p>
+    <progress class="infusion-progress" aria-label="${escapeHtml(name)}输注进度" max="${record.infusionMinutes}" value="0"></progress>
+    <p class="infusion-amounts"><span data-infused-amount></span><span data-infusion-remaining></span></p>
+    ${controls}`);
+}
+
+function openInfusions(patient) {
+  if (!isCurrentPatient(patient)) return;
+  const fromBedsideMenu = $('#sheet').classList.contains('on') && $('#sheetTitle').dataset.view === 'menu';
+  infusionPanel = { patient, fromBedsideMenu };
+  showInfusionPanel(infusionPanel);
+}
+
+function showInfusionPanel(panel) {
+  const { patient, selected } = panel;
+  if (!isCurrentPatient(patient)) return;
+  openDetail(selected ? selected.n || selected.id : '当前输液与泵药', `床位 ${activeIdx + 1} · ${patient.patient.name}`, [], '');
+  $('#detail').dataset.view = 'infusions';
+  const list = $('#dKv');
+  list.tabIndex = 0;
+  list.onclick = event => handleInfusionAction(event, panel);
+  panel.markup = '';
+  refreshInfusions(patient);
+  const target = [...list.querySelectorAll('[data-pump-id], [data-infusion-index]')].find(button =>
+    (panel.focusPump && button.dataset.pumpId === panel.focusPump) ||
+    (panel.focusOrder && panel.timed[+button.dataset.infusionIndex]?.pk === panel.focusOrder));
+  (target || list.querySelector('[data-infusion-back]') || $('#detailX')).focus({ preventScroll: true });
+  if (!selected) {
+    $('#detail .card').scrollTop = panel.cardTop || 0;
+    list.scrollTop = panel.listTop || 0;
+  }
+  panel.focusOrder = panel.focusPump = null;
+}
+
+function handleInfusionAction(event, panel) {
+  const { patient, selected } = panel;
+  const button = event.target.closest('button');
+  const list = $('#dKv'), detail = $('#detail');
+  if (!button || !list.contains(button) || panel !== infusionPanel || !isCurrentPatient(patient) || !hasCurrentSaveEpoch() ||
+      detail.dataset.view !== 'infusions' || !detail.classList.contains('on')) return;
+
+  if (button.hasAttribute('data-stop-infusion')) {
+    if (E.stopInfusion(patient, selected?.pk)) {
+      const entry = patient.log.at(-1);
+      markEvent(entry);
+      saveGame();
+      toast(escapeHtml(entry[1]));
+      renderAll();
+    }
+    panel.selected = null;
+    showInfusionPanel(panel);
+    return;
+  }
+  if (button.hasAttribute('data-infusion-back')) {
+    panel.focusOrder = selected?.pk;
+    panel.selected = null;
+    showInfusionPanel(panel);
+    return;
+  }
+
+  panel.cardTop = detail.querySelector('.card').scrollTop;
+  panel.listTop = list.scrollTop;
+  if (button.hasAttribute('data-infusion-index')) {
+    panel.selected = panel.timed[+button.dataset.infusionIndex];
+    if (panel.selected) showInfusionPanel(panel);
+    return;
+  }
+  const pumpId = button.dataset.pumpId;
+  if (!pumpId || E.pumpRate(patient, pumpId) <= 0) return;
+  const sub = window.SUBSTANCES?.byId(pumpId);
+  if (!sub) return;
+  panel.focusPump = pumpId;
+  closeDetail();
+  openSheet(sub.n, patient.patient.name, [], patient);
+  openGiveConfig(sub, patient, () => {
+    closeSheet();
+    if (panel.fromBedsideMenu) openBedsideMenu();
+    showInfusionPanel(panel);
+  }, { backLabel: '返回输液与泵药', returnAfterApply: true });
+}
+
+function refreshInfusions(patient) {
+  const detail = $('#detail');
+  const panel = infusionPanel;
+  if (!detail.classList.contains('on') || detail.dataset.view !== 'infusions' ||
+      panel?.patient !== patient || !isCurrentPatient(patient)) return;
+  const { timed, pumps, history } = infusionSnapshot(patient);
+  const previousTimed = panel.timed;
+  panel.timed = timed;
+  const selected = panel.selected;
+  const selectedRecord = selected && (timed.find(record => record.pk === selected.pk) || history.find(record => record.pk === selected.pk) ||
+    { ...selected, progress: E.infusionProgress(patient, selected.pk) });
+  const timedRows = selected ? (selectedRecord?.progress ? [selectedRecord] : []) : timed;
+  const activeRows = timedRows.map((record, i) => timedInfusionRow(record, i, selected)).join('') + (selected ? '' : pumps.map(pump =>
+    infusionRow(pump.n, '持续泵入', `
+      <p class="infusion-meta">当前泵速 <strong>${infusionAmount(pump.rate, pump.unit)}</strong></p>
+      <p class="infusion-meta">本轮启动 ${caseTime(pump.startedAt)} · 最近调速 ${pump.adjustedAt != null ?
+        caseTime(pump.adjustedAt) : pump.startedAt != null ? '尚未调速' : '时间未记录'}</p>
+      <p class="infusion-meta" data-pump-duration></p>
+      ${pump.route ? `<button type="button" class="pill infusion-manage" data-pump-id="${escapeHtml(pump.id)}">调速或停用</button>` : ''}`)).join(''));
+  const historyRows = selected ? '' : history.map(record => {
+    const { progress } = record;
+    const status = record.pumpAction === 'stop' ? '已停泵' : progress?.stoppedAt != null ? '已停止' :
+      progress && !progress.running ? '已完成' : '单次医嘱';
+    const amount = record.pumpAction === 'stop' ? `停泵前 ${infusionAmount(record.dose, record.unit)}` : progress && !progress.running
+      ? `已输 ${infusionAmount(progress.deliveredDose, record.unit)} / ${infusionAmount(progress.totalDose, record.unit)}`
+      : `${infusionAmount(record.dose, record.unit)} · ${progress ? '无在输记录' : '未记录输注时长'}`;
+    return infusionRow(record.n || record.id, status,
+      `<p class="infusion-meta">${caseTime(record.eventAt)} · ${escapeHtml(record.route || '输注')} · ${amount}${record.givenNumber ? ` · 医嘱 #${record.givenNumber}` : ''}</p>`);
+  }).join('');
+  const empty = selected ? '<p class="infusion-empty">这条输注已结束。</p><button type="button" class="pill infusion-manage" data-infusion-back>返回输液与泵药</button>' :
+    '<p class="infusion-empty">本床暂无正在进行的输液或泵药。</p>';
+  const markup = infusionSection(selected ? '输注详情' : '正在进行', activeRows || empty) +
+    (historyRows ? infusionSection('近期输注相关记录', historyRows) : '');
+  const list = $('#dKv');
+  if (markup !== panel.markup) {
+    const card = detail.querySelector('.card');
+    const cardTop = card.scrollTop, listTop = list.scrollTop;
+    const focus = list.contains(document.activeElement) ? document.activeElement : null;
+    const focusedPump = focus?.dataset.pumpId;
+    const focusedOrder = previousTimed?.[+focus?.dataset.infusionIndex]?.pk;
+    list.innerHTML = panel.markup = markup;
+    if (focus && focus !== list) {
+      const next = [...list.querySelectorAll('button')].find(button =>
+        (focusedPump && button.dataset.pumpId === focusedPump) ||
+        (focusedOrder && timed[+button.dataset.infusionIndex]?.pk === focusedOrder) ||
+        (focus.hasAttribute('data-infusion-back') && button.hasAttribute('data-infusion-back')) ||
+        (focus.hasAttribute('data-stop-infusion') && button.hasAttribute('data-stop-infusion')));
+      (next || list.querySelector('[data-infusion-back]') || $('#detailX')).focus({ preventScroll: true });
+    }
+    card.scrollTop = cardTop;
+    list.scrollTop = listTop;
+  }
+  const progressBars = list.querySelectorAll('.infusion-progress');
+  timedRows.forEach((record, index) => {
+    const progress = progressBars[index], data = record.progress;
+    progress.value = data.elapsedMinutes;
+    const amount = progress.parentElement.querySelector('[data-infused-amount]');
+    amount.innerHTML = `已输 ${infusionAmount(data.deliveredDose, record.unit)} / ${infusionAmount(data.totalDose, record.unit)}`;
+    const remaining = progress.parentElement.querySelector('[data-infusion-remaining]');
+    remaining.textContent = data.stoppedAt != null ? `停于 ${caseTime(data.stoppedAt)}` :
+      `剩余 ${infusionDuration(Math.ceil(data.remainingMinutes * 60 - 1e-8))}`;
+  });
+  if (!selected) list.querySelectorAll('[data-pump-duration]').forEach((el, i) => {
+    const at = pumps[i].startedAt;
+    el.textContent = `累计泵入 ${at == null ? '未记录' : infusionDuration(Math.max(0, Math.floor(patient.t - at)))}`;
+  });
+}
+
 
 /* 选完药 → 选途径 + 调剂量（允许给错、给过量） */
-function openGiveConfig(it, patient, back) {
+function openGiveConfig(it, patient, back, { backLabel = '返回药物列表', returnAfterApply = false } = {}) {
   const routes = (it.routes && it.routes.length) ? it.routes : [{ r: it.route, d: it.dose, on: it.onset, du: it.dur }];
   let ri = 0;
   let dose = E.pumpRate(patient, it.id) || routes[0].d;
@@ -708,7 +952,7 @@ function openGiveConfig(it, patient, back) {
     $('#sheetTitle').innerHTML = `${it.n} <small>${escapeHtml(patient.patient.name)} · ${it.cls}</small>`;
     $('#sheetList').innerHTML = `
       <div style="padding:2px 14px 14px">
-        <button type="button" id="drugBack" class="pill">返回药物列表</button>
+        <button type="button" id="drugBack" class="pill">${backLabel}</button>
         ${routes.length > 1 ? `<div class="sec">给药途径</div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;padding:0 0 14px">
             ${routes.map((x, i) => `<span class="pill" data-ri="${i}" style="cursor:pointer;${i === ri ? 'background:#f7e6e6;color:#a33;font-weight:700' : ''}">${x.r}</span>`).join('')}
@@ -765,6 +1009,7 @@ function openGiveConfig(it, patient, back) {
       closeSheet();
       toast(pump || infusion ? entry[1] : `已${order}（${rt.r}）`);
       renderAll();
+      if (returnAfterApply) back();
     };
     $('#sheetList').querySelector('#dGo').addEventListener('click', event => execute(event, false));
     $('#sheetList').querySelector('#dStop')?.addEventListener('click', event => execute(event, true));
@@ -785,7 +1030,7 @@ function syncEnvSheet() {
 function openEnvControls(patient, title, controls, allowReset = false) {
   if (!isCurrentPatient(patient)) return;
   const update = label => {
-    patient.log.push([E.fmt(patient.t), label, 'info']);
+    patient.log.push([E.fmt(patient.t), label, 'info', patient.t, null, true]);
     saveGame();
     renderStates();
     syncEnvSheet();
@@ -909,6 +1154,7 @@ function openRespiratoryFlow(patient) {
     if (setFlow(patient, slider.valueAsNumber)) {
       const entry = patient.log.at(-1);
       markEvent(entry);
+      entry[5] = true;
       window.SOUND?.click();
       saveGame();
       toast(entry[1]);
@@ -967,6 +1213,7 @@ function performAction(id, a) {
   if (isEDIntake(S)) {
     const visibleResult = ['defib', 'cpr', 'oxygen', 'oxygen_off', 'intubate', 'extubate', 'pace', 'catheter'].includes(id);
     const message = visibleResult || result[2] === 'good' ? result[1] : `${a.name} · 处置未执行，请复评`;
+    result[5] = message; // 保留首诊当时实际展示的处置回执。
     toast(message, result[2] === 'bad');
   } else if (level === 'expert') toast(result[1], result[2] === 'warn' || result[2] === 'bad');
   saveGame();
@@ -1717,6 +1964,10 @@ function renderHUD() {
   renderVitals();
   renderStates();
   syncEnvSheet();
+  if ($('#detail').classList.contains('on')) {
+    if ($('#detail').dataset.view === 'operation-log') refreshOperationLog(S);
+    if ($('#detail').dataset.view === 'infusions') refreshInfusions(S);
+  }
   if ($('#sheetTitle').dataset.view === 'menu' && !realismRules.signedDischarge && $('#sheet').classList.contains('on')) {
     const assessment = E.dischargeCheck(S);
     if ($('#sheetTitle').dataset.eligible !== String(assessment.ok) ||
@@ -1894,7 +2145,7 @@ function finishReview(event) {
     result.hidden = false;
     result.textContent = message;
   }
-  patient.log.push([E.fmt(patient.t), message, event.urgent ? 'warn' : 'info', patient.t]);
+  patient.log.push([E.fmt(patient.t), message, event.urgent ? 'warn' : 'info', patient.t, null, true]);
   paused = false;
   ff = false;
   speed = 1;
@@ -1956,6 +2207,52 @@ function toast(msg, urgent) {
   t.classList.add('on');
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => t.classList.remove('on'), 2600);
+}
+
+// 老存档没有床旁回执标记，仅从能辨认的医嘱、查体及报告回执恢复首诊记录。
+function bedsideLogMessage(entry, ed) {
+  const [stamp, text, status, , reportId, receipt] = entry;
+  if (!ed || receipt === true) return text;
+  if (receipt === false) return null;
+  if (typeof receipt === 'string') return receipt;
+  if (reportId || stamp === '给药' || /^(给予 |开出 |开始持续静脉泵入 |调整 .+ 泵速至 |停止泵入 |开始(?:静滴|泵入) )/.test(text) ||
+      /(?:静滴|泵入)完成（总量 | · 补录/.test(text)) return text;
+  if (stamp === '操作') return status === 'good' ? text : '床旁处置已记录，详情未留存';
+  return null;
+}
+
+let lastBedsideLogEntry, lastBedsideLogSize;
+function refreshOperationLog(patient, force = false) {
+  if (!isCurrentPatient(patient)) return;
+  const entries = patient.log || [];
+  if (!force && entries.length === lastBedsideLogSize && entries.at(-1) === lastBedsideLogEntry) return;
+  lastBedsideLogEntry = entries.at(-1);
+  lastBedsideLogSize = entries.length;
+  const list = $('#dKv');
+  const top = list.scrollTop;
+  const height = list.scrollHeight;
+  const ed = isEDIntake(patient);
+  const rows = [];
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i];
+    const message = bedsideLogMessage(entry, ed);
+    if (!message) continue;
+    const time = Number.isFinite(entry[3]) ? caseTime(entry[3]) : /^\d+:\d\d$/.test(entry[0]) ? entry[0] : '时间未记';
+    rows.push(`<dt>${escapeHtml(time)}</dt><dd>${escapeHtml(message)}</dd>`);
+  }
+  $('#dSub').textContent = patient.patient.name + ' · ' + rows.length + ' 条 · 最近在前';
+  list.innerHTML = rows.join('') || '<dt>暂无记录</dt><dd>给药、处置或检查后可在这里回看。</dd>';
+  list.scrollTop = top > 0 ? Math.max(0, top + list.scrollHeight - height) : 0;
+}
+
+function openOperationLog(patient) {
+  if (!isCurrentPatient(patient)) return;
+  openDetail('操作日志', patient.patient.name, [], '');
+  $('#detail').dataset.view = 'operation-log';
+  $('#dKv').tabIndex = 0;
+  $('#dKv').scrollTop = 0;
+  refreshOperationLog(patient, true);
+  $('#dKv').focus({ preventScroll: true });
 }
 
 /* ---------------- 结束 / 复盘 ---------------- */
@@ -2708,7 +3005,7 @@ function openFeedback() {
 }
 
 /* ---------------- 版本 / 更新检查 ---------------- */
-const APP_VERSION = '1.54.2';
+const APP_VERSION = '1.54.3';
 const releaseRoot = document.querySelector('meta[name="xuanhu-release-root"]')?.content;
 const releaseBase = releaseRoot ? new URL(releaseRoot, location.href).href.replace(/\/$/, '') : '';
 const platformName = location.protocol === 'file:' ? '离线 HTML' :
@@ -3171,6 +3468,10 @@ function openBedsideMenu() {
   const patient = S;
   const rows = [
     ...dischargeMenuRows(patient),
+    ...(isCurrentPatient(patient) ? [
+      {n:'查看操作日志', tag:'当前床位', amt:'查看', run: () => openOperationLog(patient)},
+      {n:'当前输液与泵药', tag:'输注进度与泵速', amt:'查看', run: () => openInfusions(patient)},
+    ] : []),
     {n:'音效设置', tag:SOUND.enabled ? SOUND.volume + '%' : '静音', amt:'调节', run:openSoundSettings},
     {sec:'存档与测试'},
     {n:'重置游戏存档', tag:'清空游戏进度及设置', amt:'', run:confirmSaveReset},
@@ -3359,7 +3660,7 @@ function openHistoryTopics(patient, source) {
     amt: '问询', run: () => {
       const result = INTAKE.ask(patient, source.id, topic.id);
       if (result.status === 'learned') {
-        patient.log.push([E.fmt(patient.t), source.label + ' · 补录' + topic.label, 'info', patient.t]);
+        patient.log.push([E.fmt(patient.t), source.label + ' · 补录' + topic.label, 'info', patient.t, null, true]);
       }
       if (result.status === 'learned' || result.status === 'unknown') {
         saveGame();
@@ -3543,7 +3844,7 @@ function openRealismSettings() {
         if (!patient.running) continue;
         patient.usedRealismRules ??= [];
         if (realismRules[key] && !patient.usedRealismRules.includes(key)) patient.usedRealismRules.push(key);
-        patient.log.push([E.fmt(patient.t), (realismRules[key] ? '开启' : '关闭') + '规则 · ' + rule.name, 'info', patient.t]);
+        patient.log.push([E.fmt(patient.t), (realismRules[key] ? '开启' : '关闭') + '规则 · ' + rule.name, 'info', patient.t, null, true]);
       }
       if (key === 'insurance' && realismRules.insurance && S && !S.ins) initInsurance();
       try { localStorage.setItem('life.realismRules', JSON.stringify(realismRules)); } catch (e) {}
@@ -3697,6 +3998,10 @@ function renderAll() {
 
 /* 更新公告：每次发版在这里加一条（新的放最前面） */
 const RELEASES = [
+  { v: '1.54.3', notes: [
+    '床旁菜单可滚动查看本床操作日志，给药、处置及检查回报按最近时间在前显示',
+    '新增当前输液与泵药面板，可查看已输量、剩余时间和持续泵速，点进单笔医嘱可提前结束输注或停泵',
+  ] },
   { v: '1.54.2', notes: [
     '给药列表按临床用途折叠，常用与急救药可直接展开，搜索支持药名、别名和类别',
     '新增尼卡地平持续泵入和左乙拉西坦定时静滴，可在高血压急症和癫痫持续状态病例中复评反应',

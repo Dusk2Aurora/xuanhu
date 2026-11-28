@@ -98,6 +98,53 @@ const ok = (name, cond, detail) => { if (cond) { pass++; } else { fail++; consol
     action?.[4]?.minutes === 60 && action[4].unit === 'U');
 }
 
+/* 停掉同一时刻的其中一笔胰岛素医嘱，保存另一笔的完整输注。 */
+{
+  const spec = { id: 'infusion-stop-test', init: { ...CASEGEN.BASE } };
+  const S = E.create(spec);
+  E.give(S, 'insulin', 2, '泵入');
+  E.give(S, 'insulin', 2, '泵入');
+  const [first, second] = S.pk;
+  const charges = [S.cost, S.drugCost, S.given[1].cost];
+  for (let i = 0; i < 30; i++) E.tick(S, 60);
+  const activity = E.insulinActivity(S);
+  const otherBed = E.create(spec);
+  E.give(otherBed, 'insulin', 2, '泵入');
+  ok('只允许停当前床位的实际医嘱', !E.stopInfusion(otherBed, second) && !E.stopInfusion(S, { ...second }));
+  ok('停泵即刻保留胰岛素药效和已计费用',
+    E.stopInfusion(S, second) && !E.stopInfusion(S, second) &&
+    E.insulinActivity(S) === activity && E.infusionProgress(S, first).running &&
+    [S.cost, S.drugCost, S.given[1].cost].every((amount, i) => amount === charges[i]));
+  const stop = S.log.filter(([, line]) => line.startsWith('停止泵入 胰岛素'));
+  ok('同名医嘱按条停用并记录停泵时刻和已输量',
+    S.given[0].stoppedAt == null && S.given[1].stoppedAt === 1800 &&
+    stop.length === 1 && stop[0][1] === '停止泵入 胰岛素（医嘱 #2，已输 1 / 2 U）' &&
+    stop[0][3] === 1800 && stop[0][5] === true);
+  const restored = { ...JSON.parse(JSON.stringify(S)), cas: S.cas };
+  for (let i = 0; i < 31; i++) E.tick(restored, 60);
+  const completed = E.infusionProgress(restored, restored.given[0]);
+  const stopped = E.infusionProgress(restored, restored.given[1]);
+  const completeActivity = 0.2 * (90 / 60) * (1 - Math.exp(-60 / 90)) * Math.exp(-1 / 90);
+  const stoppedActivity = activity / 2 * Math.exp(-31 / 90);
+  ok('半程停泵存档重载后剂量维持在 1 U，只有另一条医嘱自动完成',
+    !stopped.running && stopped.elapsedMinutes === 30 && stopped.remainingMinutes === 0 && stopped.deliveredDose === 1 &&
+    !completed.running && completed.deliveredDose === 2 && !E.stopInfusion(restored, restored.pk[0]) &&
+    restored.log.filter(([, line]) => line.includes('胰岛素 泵入完成')).length === 1 &&
+    Math.abs(E.insulinActivity(restored) - completeActivity - stoppedActivity) < 1e-9);
+}
+
+/* 旧版相同时间、剂量的输注没有给药记录索引，也能单独停用。 */
+{
+  const S = E.create({ id: 'legacy-infusion-stop-test', init: { ...CASEGEN.BASE } });
+  E.give(S, 'insulin', 2, '泵入');
+  E.give(S, 'insulin', 2, '泵入');
+  for (const order of S.pk) delete order.givenIndex;
+  const [first, second] = S.pk;
+  ok('开单即停的旧医嘱留下零剂量记录',
+    E.stopInfusion(S, second) && S.given[0].stoppedAt == null && S.given[1].stoppedAt === 0 &&
+    E.infusionProgress(S, second).deliveredDose === 0 && E.infusionProgress(S, first).running);
+}
+
 /* 持续泵入沿模拟时钟生效，调速和停泵沿用当时的药物浓度。 */
 for (const [id, rate, unit, halfLife] of [
   ['dobutamine', 5, 'μg/kg/min', 2], ['isoproterenol', 1, 'μg/min', 3],
@@ -234,6 +281,27 @@ for (const [id, rate, unit, halfLife] of [
     !E.convulsionSigns(restored) && E.convulsionSigns(control) &&
     completion.length === 1 && completion[0][3] === 900 &&
     order?.[3] === 2000 && order[4]?.minutes === 15 && order[4]?.unit === 'mg' && order[4]?.route === '静滴');
+}
+
+/* 左乙拉西坦提前停用后，已输入的药量仍按延迟时间起效和衰减。 */
+{
+  const S = E.create({ id: 'seizure-infusion-stop-test', init: { ...CASEGEN.BASE, seizure: 0.9 } });
+  E.give(S, 'levetiracetam');
+  const [order] = S.pk;
+  E.tick(S, 60);
+  E.tick(S, 60);
+  const seizureBeforeStop = S.seizure;
+  ok('提前停止左乙拉西坦只记录部分剂量和需要显示的静滴途径',
+    E.stopInfusion(S, order) && S.seizure === seizureBeforeStop &&
+    S.log.at(-1)[1] === '停止静滴 左乙拉西坦（医嘱 #1，已输 266.667 / 2000 mg）');
+  E.tick(S, 60);
+  const gcsEffect = S.mod.gcs - S.modBase.gcs;
+  const seizureAfterLag = S.seizure;
+  for (let i = 0; i < 15; i++) E.tick(S, 60);
+  ok('左乙拉西坦只应用已送达的止惊剂量，既有意识效应逐渐减退',
+    seizureAfterLag < seizureBeforeStop && Math.abs(S.seizure - (0.9 - 0.65 * (2 / 15))) < 1e-9 &&
+    gcsEffect < 0 && S.mod.gcs - S.modBase.gcs > gcsEffect &&
+    !S.log.some(([, line]) => line.includes('静滴完成')));
 }
 
 /* 旧版血管加压素泵入医嘱仍按原定时程结束。 */

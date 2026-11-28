@@ -529,132 +529,140 @@ function openDetail(name, sub, kv, warn) {
   $('#detail').classList.add('on');
 }
 
-/* 给药列表：按类别分组 + 搜索（119 种物质） */
+/* 给药面板按临床用途浏览，搜索保留全库范围。 */
 
 /* 给药面板置顶：常用（补液、电解质、代谢）与急救（复苏、解毒） */
 const PIN_DRUGS = {
   '常用': ['nacl', 'half_saline', 'dextrose50', 'dextrose10', 'ringer', 'kcl', 'insulin', 'calcium',
            'bicarb', 'furosemide', 'magnesium', 'hypertonic_saline', 'glucagon'],
   '急救': ['epi', 'norepi', 'atropine', 'amiodarone', 'lidocaine',
-           'naloxone', 'flumazenil', 'dopamine', 'vasopressin', 'adenosine', 'isoproterenol'],
+           'naloxone', 'flumazenil', 'dopamine', 'vasopressin', 'adenosine', 'isoproterenol', 'nicardipine', 'levetiracetam'],
 };
 
-function openDrugSheet() {
+const DRUG_SECTIONS = {
+  '补液、电解质与血糖': ['扩容', '高渗液', '电解质', '碱性药', '酸化药', '升糖', '降糖'],
+  '循环与心律': ['血管活性', '强心', '强心苷', '抗心律失常', '钙拮抗剂', 'β阻滞剂', 'ACEI', 'ARB', '硝酸酯'],
+  '呼吸与过敏': ['祛痰', '平喘', '支气管扩张', '呼吸兴奋', '抗组胺'],
+  '镇痛、镇静与麻醉': ['解热镇痛', 'NSAID', '阿片类', '阿片', '镇静', '肌松', '催眠药'],
+  '止血与抗栓': ['止血药', '抗凝', '抗血小板', '溶栓'],
+  '解毒与拮抗': ['阿片拮抗', '解毒', '解毒与拮抗'],
+  '抗感染': ['抗生素', '抗菌药', '抗病毒', '抗真菌'],
+  '利尿与脱水': ['袢利尿', '保钾利尿', '利尿', '利尿脱水'],
+  '消化系统': ['止吐', '止泻', '抑酸'],
+  '内分泌与激素': ['糖皮质激素', '甲状腺素', '抗甲状腺', '性激素', '激素拮抗'],
+  '神经与精神': ['抗癫痫', '抗精神病', '抗精神病2', '心境稳定剂', '抗抑郁药', '抗帕金森', '抗胆碱能'],
+  '其他精神活性物质': ['兴奋剂', '致幻剂'],
+};
+const drugSectionFor = new Map(Object.entries(DRUG_SECTIONS).flatMap(([section, classes]) =>
+  classes.map(cls => [cls, section])));
+
+function openDrugSheet({ tab = 'all', query = '', expanded = new Set(), scrollTop = 0, focusRow } = {}) {
   const SUB = window.SUBSTANCES;
   const patient = S;
   if (!isCurrentPatient(patient)) return;
   if (!SUB) { openSheet('给药', patient.patient.name, drugRows(), patient); return; }
-  $('#sheetTitle').innerHTML = `给药 <small>${escapeHtml(patient.patient.name)} · 搜索全库</small>`;
-  delete $('#sheetTitle').dataset.view;
+  openSheet('给药', patient.patient.name + ' · 模拟药价', [], patient);
   const list = $('#sheetList');
   list.innerHTML = `
-    <div style="padding:2px 10px 8px">
-      <input id="drugSearch" placeholder="搜索药名 / 类别，跨药品·血制品·微生物·食物"
-        style="width:100%;padding:11px 13px;border-radius:11px;border:1px solid #e8e4e2;
-               font:inherit;font-size:14px;outline:none;background:#faf9f8">
-    </div>
-    <div id="drugTabs" style="display:flex;gap:6px;padding:0 10px 10px;overflow-x:auto;scrollbar-width:none"></div>
+    <input id="drugSearch" type="search" aria-label="搜索全库" placeholder="搜索全库 · 药名、别名或类别">
+    <div id="drugTabs" role="group" aria-label="药库范围"></div>
     <div id="drugList"></div>`;
-
-  /* 分类：搜索时跨全库；空搜索时按标签过滤 */
-  const TABS = [
-    { id: 'all',  n: '全部' },
-    { id: 'drug', n: '药品' },
-    { id: 'cell', n: '细胞·血制品' },
-    { id: 'germ', n: '病毒·细菌' },
-    { id: 'food', n: '食物' },
-  ];
-  const inTab = (it, tab) => {
-    if (!tab || tab === 'all') return true;
+  const input = list.querySelector('#drugSearch');
+  const tabs = list.querySelector('#drugTabs');
+  const host = list.querySelector('#drugList');
+  const tabLabels = { all: '全部', drug: '药品', cell: '细胞·血制品', germ: '病毒·细菌', food: '食物' };
+  const inTab = it => {
+    if (tab === 'all') return true;
     if (tab === 'food') return it.kind === 'food';
-    if (tab === 'germ') return it.cls === '病毒' || it.cls === '细菌';
     if (tab === 'cell') return it.cls === '血液成分' || it.cls === '扩容';
-    return it.kind === 'drug' && it.cls !== '病毒' && it.cls !== '细菌';
+    const germ = it.cls === '病毒' || it.cls === '细菌';
+    return tab === 'germ' ? germ : it.kind === 'drug' && !germ;
   };
-
-  let curTab = 'all';
-  const drugName = (name) => {
+  const drugName = name => {
     const aliases = SUB.aliasesFor(name).slice(0, 2);
-    return `${escapeHtml(name)}${aliases.length ? `<span style="font-size:10px;color:#c8a0a0">（${escapeHtml(aliases.join('/'))}）</span>` : ''}`;
+    return escapeHtml(name) + (aliases.length ? `<small>（${escapeHtml(aliases.join('/'))}）</small>` : '');
   };
-  const rowOf = (it) => {
+  const row = it => {
     const pump = it.routes?.[0]?.pumpHalfLife;
     const rate = pump ? E.pumpRate(patient, it.id) : 0;
-    const amount = pump ? `${rate ? '当前' : '默认'} ${rate || it.dose} ${it.unit}` : `${it.dose}${it.unit}`;
-    return `
-        <button type="button" class="drow" data-id="${it.id}">
-          <span class="nm">${drugName(it.n)}${it.note ? `<span style="font-size:10px;color:#b3a6a6"> · ${it.note}</span>` : ''}</span>
-          <span class="tag">${it.route}${(it.routes && it.routes.length > 1) ? ' 等' + it.routes.length + ' 途径' : ''}</span>
-          <span class="amt">${amount}</span>
-        </button>`;
+    const dose = rate || it.dose;
+    const amount = pump ? `${rate ? '当前' : '默认'} ${dose} ${it.unit}` : `${dose}${it.unit}`;
+    const price = money(E.drugPrice(it, dose, patient.patient)) + (pump ? '/小时' : '');
+    return `<button type="button" class="drow" data-id="${escapeHtml(it.id)}">
+      <span class="nm">${drugName(it.n)}${it.note ? ' <small>· ' + escapeHtml(it.note) + '</small>' : ''}</span>
+      <span class="tag">${escapeHtml(it.route)}${it.routes?.length > 1 ? ' 等' + it.routes.length + ' 途径' : ''}</span>
+      <span class="amt">${escapeHtml(amount)}<br>${price}</span></button>`;
   };
-
-  const drawTabs = () => {
-    const host = list.querySelector('#drugTabs');
-    host.innerHTML = TABS.map(t =>
-      `<span class="pill" data-tab="${t.id}" style="flex:0 0 auto;cursor:pointer;padding:7px 13px;${
-        t.id === curTab ? 'background:#f7e6e6;color:#a33;font-weight:700' : ''}">${t.n}</span>`).join('');
-    host.querySelectorAll('[data-tab]').forEach(el => {
-      el.addEventListener('click', () => { curTab = el.dataset.tab; drawTabs(); draw(inp.value); });
-    });
-  };
-
-  const draw = (q) => {
-    const searching = !!(q && q.trim());
-    const items = SUB.search(q).filter(it => searching ? true : inTab(it, curTab));
-    const groups = {};
-    let pinnedHtml = '';
-
-    /* 置顶只在「全部 + 空搜索」时出现 */
-    if (!searching && curTab === 'all') {
-      const used = {};
-      for (const [title, ids] of Object.entries(PIN_DRUGS)) {
-        const rows = ids.map(id => SUB.byId(id)).filter(Boolean);
-        if (!rows.length) continue;
-        for (const r of rows) used[r.id] = 1;
-        pinnedHtml += `<div class="sec">${title} <span style="opacity:.6">${rows.length}</span></div>` +
-          rows.map(rowOf).join('');
-      }
-      for (const it of items) if (!used[it.id]) (groups[it.cls] = groups[it.cls] || []).push(it);
-    } else {
-      for (const it of items) (groups[it.cls] = groups[it.cls] || []).push(it);
+  const section = (name, items) => `<details data-section="${escapeHtml(name)}"${expanded.has(name) ? ' open' : ''}>
+    <summary>${escapeHtml(name)} <small>${items.length} 项</small></summary>${items.map(row).join('')}</details>`;
+  const rememberGroups = () => {
+    for (const group of host.querySelectorAll('details')) {
+      if (group.open) expanded.add(group.dataset.section);
+      else expanded.delete(group.dataset.section);
     }
-
-    const order = Object.keys(groups).sort();
-    const host = list.querySelector('#drugList');
-    const body = order.map(cls => `
-      <div class="sec">${cls} <span style="opacity:.6">${groups[cls].length}</span></div>
-      ${groups[cls].map(rowOf).join('')}
-    `).join('');
-    const unlisted = SUB.searchUnlistedDrugs(q).map(name => `
-      <div class="drow" style="cursor:default">
-        <span class="nm">${drugName(name)}</span>
-        <span class="tag">游戏暂未收录</span>
-      </div>`).join('');
-    host.innerHTML = (pinnedHtml + unlisted + body) ||
-      `<div style="padding:18px;color:#9a9a9a;font-size:13px">没有匹配的物质</div>`;
-
-    host.querySelectorAll('button.drow').forEach(el => {
-      el.addEventListener('click', () => {
-        if (!list.contains(el) || !$('#sheet').classList.contains('on') || !isCurrentPatient(patient)) return;
-        openGiveConfig(SUB.byId(el.dataset.id), patient);
-      });
-    });
   };
-
-  drawTabs();
-  draw('');
-  const inp = list.querySelector('#drugSearch');
-  inp.addEventListener('input', e => draw(e.target.value));
-  $('#sheet').classList.add('on');
-  $('#mask').classList.add('on');
+  function draw() {
+    rememberGroups();
+    const q = input.value.trim();
+    if (q) {
+      const matches = new Set(SUB.search(q));
+      for (const it of SUB.ALL) {
+        if (drugSectionFor.get(it.cls) === q) matches.add(it);
+      }
+      for (const [name, ids] of Object.entries(PIN_DRUGS)) {
+        if (name === q) ids.map(SUB.byId).filter(Boolean).forEach(it => matches.add(it));
+      }
+      const unlisted = SUB.searchUnlistedDrugs(q).map(name =>
+        `<div class="drow"><span class="nm">${drugName(name)}</span><span class="tag">游戏暂未收录</span></div>`).join('');
+      host.innerHTML = [...matches].map(row).join('') + unlisted || '<p class="note">没有匹配的物质</p>';
+      return;
+    }
+    const groups = new Map();
+    for (const it of SUB.ALL.filter(inTab)) {
+      const name = drugSectionFor.get(it.cls) || it.cls;
+      if (!groups.has(name)) groups.set(name, []);
+      groups.get(name).push(it);
+    }
+    const pins = tab === 'all' || tab === 'drug'
+      ? Object.entries(PIN_DRUGS).map(([name, ids]) => section(name, ids.map(SUB.byId).filter(Boolean))).join('') : '';
+    const ordered = [...new Set([...Object.keys(DRUG_SECTIONS), ...groups.keys()])].filter(name => groups.has(name));
+    host.innerHTML = pins + ordered.map(name => section(name, groups.get(name))).join('');
+  }
+  tabs.innerHTML = Object.entries(tabLabels).map(([id, name]) =>
+    `<button type="button" class="pill" data-tab="${id}" aria-pressed="${id === tab}">${name}</button>`).join('');
+  tabs.onclick = event => {
+    const button = event.target.closest('[data-tab]');
+    if (!button) return;
+    tab = button.dataset.tab;
+    for (const item of tabs.children) item.setAttribute('aria-pressed', String(item === button));
+    input.value = '';
+    draw();
+  };
+  host.onclick = event => {
+    const button = event.target.closest('button[data-id]');
+    if (!button || !list.contains(button) || !$('#sheet').classList.contains('on') ||
+        !hasCurrentSaveEpoch() || !isCurrentPatient(patient)) return;
+    rememberGroups();
+    const focusRow = { id: button.dataset.id, section: button.closest('details')?.dataset.section };
+    const state = { tab, expanded, query: input.value, scrollTop: list.scrollTop, focusRow };
+    openGiveConfig(SUB.byId(button.dataset.id), patient, () => openDrugSheet(state));
+  };
+  input.value = query;
+  input.oninput = draw;
+  draw();
+  if (focusRow) {
+    const buttons = host.querySelectorAll('button[data-id]');
+    [...buttons].find(el => el.dataset.id === focusRow.id && el.closest('details')?.dataset.section === focusRow.section)
+      ?.focus({ preventScroll: true });
+  }
+  list.scrollTop = scrollTop;
 }
 
 const EFF_NAME = { k:'血钾', na:'血钠', cl:'血氯', ca:'血钙', hco3:'HCO₃⁻', glu:'血糖', lac:'乳酸',
                    vol:'血容量', freeWater:'自由水', hb:'血红蛋白', hr:'心率', svr:'血管张力', sv:'心肌收缩力',
                    rr:'呼吸频率', spo2:'血氧', temp:'体温', gcs:'意识', uo:'尿量', infection:'感染负荷',
                    coag:'凝血能力', halfSaline:'低渗补液量', icp:'颅内压', estrogen:'雌激素',
-                   testosterone:'睾酮', pao2:'动脉氧分压' };
+                   testosterone:'睾酮', pao2:'动脉氧分压', seizure:'抽搐' };
 function describeEff(eff) {
   const parts = [];
   for (const k in (eff || {})) {
@@ -667,7 +675,7 @@ function describeEff(eff) {
 
 
 /* 选完药 → 选途径 + 调剂量（允许给错、给过量） */
-function openGiveConfig(it, patient) {
+function openGiveConfig(it, patient, back) {
   const routes = (it.routes && it.routes.length) ? it.routes : [{ r: it.route, d: it.dose, on: it.onset, du: it.dur }];
   let ri = 0;
   let dose = E.pumpRate(patient, it.id) || routes[0].d;
@@ -684,16 +692,23 @@ function openGiveConfig(it, patient) {
     const currentRate = pump ? E.pumpRate(patient, it.id) : 0;
     const sameRate = pump && currentRate === dose;
     const order = pump ? (sameRate ? '维持当前泵速' : E.pumpOrder(it.n, currentRate ? 'adjust' : 'start', dose, it.unit))
-      : infusion ? `开始泵入 ${it.n}（${E.infusionDetails(dose, it.unit, infusion)}）`
+      : infusion ? `开始${rt.r} ${it.n}（${E.infusionDetails(dose, it.unit, infusion)}）`
         : `给予 ${it.n} ${fmt(dose)}${it.unit}`;
-    const hi = it.doseRange ? it.doseRange[1] : rt.d * 10;
-    const over = dose > rt.d * 2.5, under = dose < rt.d * 0.4;
+    const hi = rt.maxDose ?? it.doseRange?.[1] ?? rt.d * 10;
+    const over = dose > (rt.maxDose ?? rt.d * 2.5), under = dose < rt.d * 0.4;
     const doseLabel = pump ? '泵速' : '剂量';
+    const price = E.drugPrice(it, dose, patient.patient);
+    const quote = pump ? '按此泵速每小时' : '本次';
+    const feeLabel = it.kind === 'food' ? '饮食费' : it.cls === '血液成分' || rt.r === '输血' ? '血液成分费用'
+      : it.kind === 'virus' ? '模拟暴露费用' : '药费';
+    const selfPay = realismRules.insurance && patient.ins
+      ? costSummary(patient, price).selfPay - costSummary(patient).selfPay : null;
     const warn = over ? `⚠ ${doseLabel}明显高于常规，注意中毒风险`
                 : under ? `⚠ ${doseLabel}偏低，可能达不到治疗浓度` : '';
     $('#sheetTitle').innerHTML = `${it.n} <small>${escapeHtml(patient.patient.name)} · ${it.cls}</small>`;
     $('#sheetList').innerHTML = `
       <div style="padding:2px 14px 14px">
+        <button type="button" id="drugBack" class="pill">返回药物列表</button>
         ${routes.length > 1 ? `<div class="sec">给药途径</div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;padding:0 0 14px">
             ${routes.map((x, i) => `<span class="pill" data-ri="${i}" style="cursor:pointer;${i === ri ? 'background:#f7e6e6;color:#a33;font-weight:700' : ''}">${x.r}</span>`).join('')}
@@ -706,14 +721,16 @@ function openGiveConfig(it, patient) {
             <span style="font-family:var(--mono);font-size:28px;font-weight:600">${pump ? dose : fmt(dose)}</span>
             <span style="font-size:13px;color:#9a9a9a"> ${it.unit}</span>
           </div>
-          <button id="dPlus" class="pill" style="width:46px;height:46px;font-size:22px;cursor:pointer">+</button>
+          <button id="dPlus" class="pill" ${dose >= hi ? 'disabled' : ''} style="width:46px;height:46px;font-size:22px;cursor:pointer">+</button>
         </div>
         <div style="display:flex;gap:6px;justify-content:center;padding-bottom:10px">
-          ${[0.5, 1, 2, 5].map(f => `<span class="pill" data-mul="${f}" style="cursor:pointer;${Math.abs(dose - rt.d * f) < 1e-6 ? 'font-weight:700;color:#a33' : ''}">${f === 1 ? '常规' : f + '×'}</span>`).join('')}
+          ${[0.5, 1, 2, 5].filter(f => !rt.maxDose || rt.d * f <= hi).map(f => `<button type="button" class="pill" data-mul="${f}" style="cursor:pointer;${Math.abs(dose - rt.d * f) < 1e-6 ? 'font-weight:700;color:#a33' : ''}">${f === 1 ? '常规' : f + '×'}</button>`).join('')}
         </div>
         ${warn ? `<div class="note" style="margin-bottom:10px;color:#a33;background:#fdf3f2">${warn}</div>` : ''}
         <div class="note" style="margin-bottom:12px;font-size:11.5px">
-          ${infusion ? `输注时长 ${infusion} 分钟<br>` : ''}
+          ${quote}${feeLabel} ${money(price)}${selfPay == null ? '' : ' · 预计新增自付 ' + money(selfPay)}<br>
+          ${rt.maxDose ? `本方案${doseLabel}上限 ${rt.maxDose} ${it.unit}<br>` : ''}
+          ${infusion ? `${rt.r} · 输注时长 ${infusion} 分钟<br>` : ''}
           ${pump ? `持续至手动停泵 · 模拟血药浓度半衰期约 ${pump} 分钟`
             : `起效 ${rt.on} min · ${infusion ? '药效' : ''}维持 ${rt.du} min`} · 效应 ${describeEff(it.eff) || '—'}
           ${it.note ? '<br>' + it.note : ''}
@@ -724,6 +741,7 @@ function openGiveConfig(it, patient) {
         ${currentRate ? '<button type="button" id="dStop" class="pill" style="width:100%;margin-top:8px;padding:14px;font-size:16px;font-weight:700;cursor:pointer">停止泵入</button>' : ''}
       </div>`;
 
+    $('#drugBack').onclick = () => { if (isCurrentPatient(patient)) back(); };
     $('#sheetList').querySelectorAll('[data-ri]').forEach(el => {
       el.addEventListener('click', () => { ri = +el.dataset.ri; dose = routes[ri].d; render(); });
     });
@@ -815,7 +833,7 @@ function openEnvSheet(patient) {
 /* 给药列表（旧接口，保留给不支持 SUBSTANCES 的场合） */
 function drugRows() {
   return Object.entries(E.DRUGS).map(([id, d]) => ({
-    n: d.name, tag: (d.routes && d.routes[0]) || '', amt: d.defaultDose + ' ' + d.unit,
+    n: d.name, tag: d.routes?.[0] || '', amt: d.defaultDose + ' ' + d.unit + ' · ' + money(E.drugPrice(d, d.defaultDose, S.patient)),
     run: () => {
       const route = (d.routes && d.routes[0]) || '';
       E.give(S, id, d.defaultDose, route);
@@ -1391,6 +1409,7 @@ function loadGame() {
       const cas = base.cas;
       const st = Object.assign(base, item.s, { cas });
       E.restorePatient(st);
+      E.restoreDrugCost(st, item.s);
       INTAKE.init(st);
       E.restoreBenzodiazepines(st, item.s);
       E.restoreBleeding(st, item.s);
@@ -1561,7 +1580,9 @@ function loop(ts) {
       if (observation) observationEnd = observationStopReason();
     }
     for (const { patient, from, hourlyRate } of billedBeds) {
+      if (!patient.ins) initInsurance(undefined, patient);
       patient.bedCost = (patient.bedCost || 0) + hourlyRate * (patient.t - from) / 3600;
+      if (patient.t > from) checkBudget(patient);
     }
     const checkGroup = $('#sheet').classList.contains('on') && $('#sheetTitle').dataset.testGroup;
     const reportsOpen = $('#detail').classList.contains('on') && $('#detail').dataset.view === 'reports';
@@ -1682,8 +1703,9 @@ function renderHUD() {
         el.title = '家庭自付 / 可承受上限';
       }
       const cs = costSummary();
+      if ($('#detail').dataset.view === 'cost' && $('#detail').classList.contains('on')) updateCostSheet(cs);
       const over = cs.selfPay > cs.cap;
-      el.textContent = '自付 ¥' + cs.selfPay + '/' + cs.cap;
+      el.textContent = '自付 ¥' + Math.round(cs.selfPay) + '/' + cs.cap;
       el.style.color = over ? '#c0392b' : '';
       el.style.display = '';
     } else if (el) {
@@ -2297,6 +2319,8 @@ function archiveCase(st, wardCount) {
   /* === /HANDBOOK PATCH === */
 
   /* 病历归档：每例结束追加一条，只留最近 30 条 */
+  if (realismRules.insurance && !st.ins) initInsurance(undefined, st);
+  const bill = costSummary(st);
   const record = {
     recordId: wardRecordId(st),
     时间: new Date().toLocaleString('zh-CN', { hour12: false }),
@@ -2306,7 +2330,11 @@ function archiveCase(st, wardCount) {
     结局: caseOutcomeLabel(st),
     签字评估: st.dischargeOutcome,
     耗时: min,
-    费用: Math.round(st.cost),
+    费用: bill.total,
+    药费: Math.round((st.drugCost || 0) * 100) / 100,
+    药费部分记录: !!st.drugCostPartial,
+    床位费: Math.round((st.bedCost || 0) * 100) / 100,
+    医保结算: realismRules.insurance ? { 类型: st.ins.t, 支付: bill.reimb, 自付: bill.selfPay } : null,
     评分: breakdown.score,
     计分明细: breakdown,
     检查报告: E.reports(st),
@@ -2358,7 +2386,11 @@ function caseSettingsRows(settings) {
 
 function openCaseRecord(r) {
   const ok = r.结局 === '出院';
-  const summary = [['诊断', r.诊断 || r.病例名], ['住院用时', r.耗时 + ' 分钟'], ['诊疗费用', '¥' + r.费用]];
+  const summary = [['诊断', r.诊断 || r.病例名], ['住院用时', r.耗时 + ' 分钟'], ['诊疗费用', money(r.费用)]];
+  if (r.药费 != null) summary.push([r.药费部分记录 ? '药费含血制品（更新后）' : '药费（含血液制品）', money(r.药费)]);
+  if (r.床位费) summary.push(['其中床位费', money(r.床位费)]);
+  if (r.医保结算) summary.push(['参保类型', r.医保结算.类型], ['医保支付', money(r.医保结算.支付)],
+    ['家庭自付', money(r.医保结算.自付)]);
   if (r.死因) summary.push(['死因', r.死因]);
   if (r.终末血钾 != null) summary.push(['终末血钾', r.终末血钾 + ' mmol/L'], ['终末 pH', r.终末pH]);
   summary.push(...caseSettingsRows(r.设置));
@@ -2676,7 +2708,7 @@ function openFeedback() {
 }
 
 /* ---------------- 版本 / 更新检查 ---------------- */
-const APP_VERSION = '1.54.1';
+const APP_VERSION = '1.54.2';
 const releaseRoot = document.querySelector('meta[name="xuanhu-release-root"]')?.content;
 const releaseBase = releaseRoot ? new URL(releaseRoot, location.href).href.replace(/\/$/, '') : '';
 const platformName = location.protocol === 'file:' ? '离线 HTML' :
@@ -2858,7 +2890,7 @@ function openInsuranceHelp() {
     '</div>' +
     '<div class="sec">三个数字</div>' +
     '<div style="padding:0 14px 10px;font-size:12.5px;line-height:1.9">' +
-      '① <b>总费用</b>：药费 + 操作费 + 床位费（普通 ¥25/小时，重症 ¥80/小时）<br>' +
+      '① <b>总费用</b>：药物、血液制品、检查、操作等费用，加床位费（普通 ¥25/小时，重症 ¥80/小时）。药库使用游戏模拟价，持续泵按实际泵速和时长计费。<br>' +
       '② <b>医保报销</b> = min(封顶线, max(0, 总费用 − 起付线) × 报销比例)<br>' +
       '③ <b>家庭自付</b> = 总费用 − 医保报销' +
     '</div>' +
@@ -3006,7 +3038,7 @@ function openConsult() {
       }
       if (kind === 'd' && Number.isFinite(infusion?.minutes) && infusion.minutes > 0) {
         const name = window.SUBSTANCES?.byId(id)?.n || id;
-        return `开始泵入 ${name}（${E.infusionDetails(dose, infusion.unit, infusion.minutes)}）`;
+        return `开始${infusion.route || '泵入'} ${name}（${E.infusionDetails(dose, infusion.unit, infusion.minutes)}）`;
       }
       return (kind === 'd' ? '给药 ' : '操作 ') + id + (dose ? ' ' + dose : '');
     });
@@ -3541,8 +3573,8 @@ const INSURANCE = [
   { t: '异地自费', rate: 0.00, ded: 0, cap: 0 },
 ];
 
-function initInsurance(forceType) {
-  if (!realismRules.insurance || !S) return;
+function initInsurance(forceType, patient = S) {
+  if (!realismRules.insurance || !patient) return;
   let k;
   if (forceType != null) {
     const list = INSURANCE;
@@ -3551,32 +3583,35 @@ function initInsurance(forceType) {
     k = INSURANCE[Math.floor(Math.random() * INSURANCE.length)];
   }
   const income = 3000 + Math.round(Math.random() * 9000);   // 家庭月收入
-  const keepIncome = (S.ins && S.ins.income) ? S.ins.income : income;
-  S.ins = { ...k, income: keepIncome, oopCap: keepIncome * 3 };
-  S.bedCost = S.bedCost || 0;
-  S._overWarned = 0; S._refused = 0;
+  const keepIncome = (patient.ins && patient.ins.income) ? patient.ins.income : income;
+  patient.ins = { ...k, income: keepIncome, oopCap: keepIncome * 3 };
+  patient.bedCost = patient.bedCost || 0;
+  patient._overWarned = 0; patient._refused = 0;
 }
 
-function costSummary() {
-  const total = Math.round((S.cost || 0) + (S.bedCost || 0));
-  const ins = S.ins || { rate: 0, ded: 0, cap: 0 };
-  const reimbursable = ins.cap === 0 ? 0 : Math.min(ins.cap, Math.max(0, total - ins.ded) * ins.rate);
-  const selfPay = Math.round(total - reimbursable);
-  return { total, reimb: Math.round(reimbursable), selfPay, cap: S.ins ? S.ins.oopCap : 0 };
+function money(value) {
+  return '¥' + (Math.round(value * 100) / 100).toFixed(2);
 }
 
-function checkBudget() {
-  if (!realismRules.insurance || !S || !S.ins) return;
-  const c = costSummary();
-  if (!S._overWarned && c.selfPay > c.cap) {
-    S._overWarned = 1;
-    toast('⚠ 自付 ¥' + c.selfPay + ' 已超过家庭承受能力 ¥' + c.cap, true);
+function costSummary(patient = S, additionalCost = 0) {
+  const totalFen = Math.round(((patient.cost || 0) + (patient.bedCost || 0) + additionalCost) * 100);
+  const ins = patient.ins;
+  const reimbFen = ins ? Math.round(Math.min(ins.cap * 100, Math.max(0, totalFen - ins.ded * 100) * ins.rate)) : 0;
+  return { total: totalFen / 100, reimb: reimbFen / 100, selfPay: (totalFen - reimbFen) / 100, cap: ins?.oopCap || 0 };
+}
+
+function checkBudget(patient = S) {
+  if (!realismRules.insurance || !patient?.ins || patient._refused) return;
+  const c = costSummary(patient);
+  if (!patient._overWarned && c.selfPay > c.cap) {
+    patient._overWarned = 1;
+    toast(escapeHtml(patient.patient.name) + ' · 自付 ' + money(c.selfPay) + ' 已超过家庭承受能力', true);
   }
-  if (!S._refused && c.selfPay > c.cap * 1.3) {
-    S._refused = 1;
-    S.score = Math.max(0, (S.score || 100) - 40);
-    S.log.push([E.fmt(S.t), '医保拒付：自付费用超过家庭承受力的 130%', 'bad']);
-    toast('⛔ 医保拒付：自付费用超过家庭承受力的 130%', true);
+  if (c.selfPay > c.cap * 1.3) {
+    patient._refused = 1;
+    patient.score = Math.max(0, (patient.score ?? 100) - 40);
+    patient.log.push([E.fmt(patient.t), '医保拒付：自付费用超过家庭承受力的 130%', 'bad']);
+    toast(escapeHtml(patient.patient.name) + ' · 医保拒付：自付费用超过家庭承受力的 130%', true);
   }
 }
 
@@ -3590,12 +3625,27 @@ function openCostSheet() {
   const ins = S.ins || { t: '未参保', rate: 0, ded: 0, cap: 0, income: 0 };
   openDetail('费用与医保', '医保与自付', [
     ['参保类型', ins.t + (ins.rate ? '（报销 ' + Math.round(ins.rate * 100) + '%）' : '')],
-    ['总费用', '¥' + c.total + (S.bedCost ? '（含床位 ¥' + Math.round(S.bedCost) + '）' : '')],
-    ['医保支付', '¥' + c.reimb],
-    ['家庭自付', '¥' + c.selfPay],
+    ['总费用', '<span id="billTotal"></span>'],
+    [S.drugCostPartial ? '药费含血制品（更新后）' : '药费（含血液制品）', '<span id="billDrugs"></span>'],
+    ['其中床位费', '<span id="billBed"></span>'],
+    ['医保支付', '<span id="billReimb"></span>'],
+    ['家庭自付', '<span id="billSelf"></span>'],
     ['家庭承受力', '¥' + c.cap + (ins.income ? '（月收入 ¥' + ins.income + ' ×3）' : '')],
     ['起付线 / 封顶', '¥' + ins.ded + ' / ¥' + ins.cap],
-  ], c.selfPay > c.cap ? '自付已超过家庭承受能力。' : '');
+  ], '');
+  $('#detail').dataset.view = 'cost';
+  updateCostSheet(c);
+}
+
+function updateCostSheet(c) {
+  $('#billTotal').textContent = money(c.total);
+  $('#billDrugs').textContent = money(S.drugCost || 0);
+  $('#billBed').textContent = money(S.bedCost || 0);
+  $('#billReimb').textContent = money(c.reimb);
+  $('#billSelf').textContent = money(c.selfPay);
+  const warn = $('#dWarn');
+  warn.textContent = c.selfPay > c.cap ? '自付已超过家庭承受能力。' : '';
+  warn.style.display = warn.textContent ? 'block' : 'none';
 }
 
 /* 重症判定：重症才给"实时监护"，轻症必须开检查才有新结果 */
@@ -3647,6 +3697,11 @@ function renderAll() {
 
 /* 更新公告：每次发版在这里加一条（新的放最前面） */
 const RELEASES = [
+  { v: '1.54.2', notes: [
+    '给药列表按临床用途折叠，常用与急救药可直接展开，搜索支持药名、别名和类别',
+    '新增尼卡地平持续泵入和左乙拉西坦定时静滴，可在高血压急症和癫痫持续状态病例中复评反应',
+    '药库显示模拟参考价，药费随开单总量或实际泵入时长累计，医保模式可预估新增自付并在结算时复核',
+  ] },
   { v: '1.54.1', notes: [
     '现实模式新增「禁用暂停」，可与医保、真实出院分别开关；结算记录本例启用过的规则',
     '补全病史中的暴露、用药与症状时间线，按患者、目击者和急救交接区分线索来源',

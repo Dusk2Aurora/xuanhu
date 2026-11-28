@@ -42,7 +42,7 @@ const PAGES = [
   {
     id: 'drugs', title: '怎么给药', html: `
       <div class="tut-h">四步</div>
-      <div class="tut-row"><b>1</b><span>点「给药」，搜索药名或按类别找</span></div>
+      <div class="tut-row"><b>1</b><span>点「给药」，展开「常用」「急救」或相应类别。也可直接搜索药名或别名。</span></div>
       <div class="tut-row"><b>2</b><span>点药名进详情，先看它的效应和注意事项</span></div>
       <div class="tut-row"><b>3</b><span>选给药途径（静推 / 口服 / 静滴…），不同途径起效和维持时间不同</span></div>
       <div class="tut-row"><b>4</b><span>调剂量（−/+ 或 0.5×/1×/2×/5×），然后给药</span></div>

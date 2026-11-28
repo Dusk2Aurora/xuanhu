@@ -411,9 +411,10 @@ const MODULES = [
         tone.controlled ? null : tone.text,
       ].filter(Boolean);
     },
-    hint:'高血压急症要平稳降压，不是越快越好。硝普钠/拉贝洛尔泵入，第一小时降幅不超过 25%。',
+    hint:'高血压急症要平稳降压。可持续静脉泵入尼卡地平，根据血压和心率调速。',
     advance(S, dtMin, E) {
-      const potency = (active(S,'nitroprusside') ? 0.95 : 0)
+      const potency = 0.12 * (E?.pumpEffect?.(S, 'nicardipine') || 0)
+                    + (active(S,'nitroprusside') ? 0.95 : 0)
                     + (active(S,'labetalol') ? 0.35 : 0)
                     + (active(S,'nitroglycerin') ? 0.25 : 0)
                     + (active(S,'nifedipine') ? 0.18 : 0)
@@ -818,7 +819,7 @@ const MODULES = [
     ],
     medicationHistory:['近期停用抗癫痫药'],
     goal:['抽搐停止','意识恢复','乳酸下降'],
-    hint:'持续抽搐超过 5 分钟就要止惊：苯二氮卓是首选。止惊后意识不会立刻回来，别重复过量给药。',
+    hint:'持续抽搐超过 5 分钟就要止惊。首选苯二氮卓，给药后仍持续发作可静滴左乙拉西坦。止惊后继续监测意识与呼吸。',
     advance(S, dtMin){
       /* 未止惊则持续放电：乳酸飙升、体温上升、缺氧 */
       if ((S.seizure || 0) > 0.2) {

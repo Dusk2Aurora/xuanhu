@@ -712,6 +712,13 @@ function restorePatient(S) {
   restoreDiagnosticReports(S);
 }
 
+function restoreDrugCost(S, saved) {
+  const hasDrugCost = Number.isFinite(saved.drugCost) && saved.drugCost >= 0;
+  S.drugCost = hasDrugCost ? saved.drugCost : 0;
+  // 旧档只保存诊疗总费用。从恢复时开始记录药费，保留原有总费用。
+  S.drugCostPartial = hasDrugCost ? saved.drugCostPartial === true : saved.cost > 0;
+}
+
 function create(caseId, identity = IDENTITY) {
   const C = (caseId && typeof caseId === 'object') ? caseId : (CASES[caseId] || CASES.hyperkalemia);
   /* 病人身份：病例可提供，缺省则随机生成 */
@@ -740,7 +747,7 @@ function create(caseId, identity = IDENTITY) {
     score: 100, death: null, discharged: false, dischargeOutcome: null,
     delivered: false, deliveryStartedAt: null, deliveryAt: null,
     caProtectUntil: -1, dialysisUntil: -1, o2: 0, fio2: ROOM_AIR_OXYGEN, oxygenFlow: 0, mapBoost: 0,
-    bleedStopped: false, cost: 0, events: [], arrests: 0, infection: 0,
+    bleedStopped: false, cost: 0, drugCost: 0, drugCostPartial: false, events: [], arrests: 0, infection: 0,
     coag: 1.0, tox: { benzo: 0, op: 0, apap: 0 }, env: makeEnv(),
     tensionPTX: 0, bleedPressDep: 0, externalBleed: false, coHb: 0, vent: 0, ventFlow: VENT_DEFAULT_FLOW,
     paced: 0, tamponade: 0, tca: 0, hematoma: 0, stemi: 0, seizure: 0,
@@ -806,8 +813,7 @@ function create(caseId, identity = IDENTITY) {
   S.ph = computePh(S);
   S.history = [];
   if (S.preload && root.SUBSTANCES) {
-    for (const [id, dose] of S.preload) give(S, id, dose);
-    S.cost = 0;          // 院前用药不计入本次费用
+    for (const [id, dose] of S.preload) give(S, id, dose, undefined, false);
     S.log = [];
     S.preload = null;
   }
@@ -817,10 +823,11 @@ function create(caseId, identity = IDENTITY) {
      这样所有代数式都走 tick 里的同一份代码，不会再出现"两份公式不同步"。 */
   (function settle() {
     const t0 = S.t, log0 = S.log.slice(), hist0 = (S.history || []).slice();
-    const given0 = (S.given || []).slice(), cost0 = S.cost, pk0 = (S.pk || []).slice();
+    const given0 = (S.given || []).slice(), pk0 = (S.pk || []).slice();
+    const cost0 = S.cost, drugCost0 = S.drugCost;
     try { tick(S, 1); } catch (err) { /* 首帧失败不影响创建 */ }
     S.t = t0; S.log = log0; S.history = hist0;
-    S.given = given0; S.cost = cost0; S.pk = pk0;
+    S.given = given0; S.pk = pk0; S.cost = cost0; S.drugCost = drugCost0;
     S.death = null; S.discharged = false; S.running = true;
   })();
 
@@ -878,6 +885,7 @@ function applyDelta(S, key, d) {
       S.diuresis = clamp((S.diuresis || 0) + d, 0, 9);
       break;
     case 'infection': S.infection = clamp((S.infection || 0) + d, 0, 1); break;
+    case 'seizure': S.seizure = clamp((S.seizure || 0) + d, 0, 1); break;
     case 'estrogen': S.estrogenExo = clamp((S.estrogenExo || 0) + d, -1, 1.5); break;
     case 'testosterone': S.testosteroneExo = clamp((S.testosteroneExo || 0) + d, -1, 1.5); break;
     case 'coag': S.coag = clamp((S.coag || 1) + d, 0.05, 2.0); break;
@@ -1211,6 +1219,26 @@ function pumpRate(S, drugId) {
   return S.pumps?.[drugId]?.rate || 0;
 }
 
+function drugPrice(sub, dose, patient) {
+  const pumpRoute = sub?.routes?.find(route => route.pumpHalfLife);
+  const referenceDose = pumpRoute?.d ?? sub?.dose ?? sub?.defaultDose;
+  const quantity = dose ?? referenceDose;
+  if (!(Number.isFinite(sub?.cost) && sub.cost > 0 && Number.isFinite(referenceDose) && referenceDose > 0 &&
+        Number.isFinite(quantity) && quantity > 0)) return 0;
+  // 按实际用量计价；体重相关医嘱以 70 kg 的实际用量为参考。
+  const referenceWeight = 70;
+  const weight = Number.isFinite(patient?.weight) && patient.weight > 0 ? patient.weight : referenceWeight;
+  const weightScale = /\/kg\b/.test(sub.unit || '') ? weight / referenceWeight : 1;
+  // 持续泵的参考价为默认泵速运行一小时的价格。
+  return sub.cost * (quantity / referenceDose) * weightScale;
+}
+
+function chargeSubstance(S, sub, amount) {
+  // 费用以元累计，保留每个模拟步长产生的亚分金额。
+  S.cost += amount;
+  if (sub.kind === 'drug' || sub.cls === '血液成分' || sub.kind == null) S.drugCost += amount;
+}
+
 function pumpOrder(name, action, rate, unit) {
   if (action === 'stop') return `停止泵入 ${name}（停泵前 ${rate} ${unit}）`;
   if (action === 'adjust') return `调整 ${name} 泵速至 ${rate} ${unit}`;
@@ -1275,10 +1303,7 @@ function changePump(S, sub, route, rate) {
   const recordedRate = rate || oldRate;
   S.given ||= [];
   S.given.push({ id: sub.id, n: sub.n, d: recordedRate, unit: sub.unit, route: route.r, t: S.t, pumpAction: action });
-  if (action === 'start') {
-    S.cost += sub.cost || 0;
-    if (root.TRAITS) root.TRAITS.onDrug(S, sub, rate);
-  }
+  if (action === 'start' && root.TRAITS) root.TRAITS.onDrug(S, sub, rate);
   if (rate > 0 && S.lastGiven !== undefined) S.lastGiven = sub.id;
   S.log.push([fmt(S.t), pumpOrder(sub.n, action, recordedRate, sub.unit), 'good']);
   return recordedRate;
@@ -1319,7 +1344,7 @@ function restoreKetoneBurden(S) {
   }
 }
 
-function give(S, drugId, dose, route) {
+function give(S, drugId, dose, route, bill = true) {
   const SUB = root.SUBSTANCES;
   if (SUB) {
     const s = SUB.byId(drugId);
@@ -1327,14 +1352,17 @@ function give(S, drugId, dose, route) {
       const pumpRoute = s.routes?.find(rt => rt.pumpHalfLife);
       if (pumpRoute) {
         const rate = dose ?? pumpRoute.d;
-        if ((route && route !== pumpRoute.r && route !== '泵入') || !(Number.isFinite(rate) && rate > 0)) return null;
+        if ((route && route !== pumpRoute.r && route !== '泵入') ||
+            !(Number.isFinite(rate) && rate > 0) || rate > (pumpRoute.maxDose ?? Infinity)) return null;
         return changePump(S, s, pumpRoute, rate);
       }
-      const selectedRoute = s.routes?.find(x => x.r === route);
+      const selectedRoute = s.routes?.find(x => x.r === (route || s.route));
+      if (!selectedRoute && s.routes?.length === 1 && s.routes[0].infusionMinutes) return null;
       const infusionMinutes = selectedRoute?.infusionMinutes;
       const d = dose ?? (infusionMinutes ? selectedRoute.d : s.dose);
-      if (infusionMinutes && !(Number.isFinite(d) && d > 0)) return null;
-      if (s.cost) S.cost += s.cost;
+      if (infusionMinutes && (!(Number.isFinite(d) && d > 0) || d > (selectedRoute.maxDose ?? Infinity))) return null;
+      const cost = bill ? drugPrice(s, d, S.patient) : 0;
+      chargeSubstance(S, s, cost);
       const on = selectedRoute?.on ?? s.onset;
       const du = selectedRoute?.du ?? s.dur;
       // 以同等总量的静推剂量作效应标尺，泵速只决定送入体内的时间。
@@ -1353,7 +1381,7 @@ function give(S, drugId, dose, route) {
       S.pk.push(order);
       if (scale > 0 && isTimedCirculatorySupport(order)) markCirculatorySupport(S);
       S.given = S.given || [];
-      S.given.push({ id: s.id, n: s.n, d, unit: s.unit, route: route || s.route, t: S.t,
+      S.given.push({ id: s.id, n: s.n, d, unit: s.unit, route: route || s.route, t: S.t, cost,
                      ...(infusionMinutes ? { infusionMinutes } : {}) });
       if (root.TRAITS) root.TRAITS.onDrug(S, s, d);
       /* 性激素类药物：给药后进入体内激素库（12 h 半衰期），由 tick 里的激素段合并到 S.estrogen/testosterone */
@@ -1387,7 +1415,7 @@ function give(S, drugId, dose, route) {
       if (s.id === 'pralidoxime') S.tox.op = Math.max(0, S.tox.op - d * 2);
       if (s.id === 'atropine' && S.tox.op > 0) S.tox.op = Math.max(0, S.tox.op - d);
       const label = infusionMinutes
-        ? `开始泵入 ${s.n}（${infusionDetails(d, s.unit, infusionMinutes)}）`
+        ? `开始${selectedRoute.r} ${s.n}（${infusionDetails(d, s.unit, infusionMinutes)}）`
         : `给予 ${s.n} ${d}${s.unit}（${route || s.route || '静推'}）`;
       S.log.push([fmt(S.t), label, 'good']);
       if (s.id === 'calcium' || s.id === 'calcium_cl') S.caProtectUntil = S.t + (s.dur || 45) * 60;
@@ -1417,7 +1445,7 @@ function give(S, drugId, dose, route) {
   const D = DRUGS[drugId]; if (!D) return null;
   const d = (dose == null ? D.defaultDose : dose);
   if (drugId === 'norepi' && !(Number.isFinite(d) && d > 0)) return null;
-  if (D.cost) S.cost += D.cost;
+  if (bill) chargeSubstance(S, D, drugPrice(D, d, S.patient));
   D.apply(S, d, route);
   return d;
 }
@@ -1503,6 +1531,7 @@ function tick(S, dtSec) {
     const sub = root.SUBSTANCES?.byId(id);
     const route = sub?.routes?.find(rt => rt.pumpHalfLife);
     if (!route) continue;
+    if (pump.rate > 0 && dtSec > 0) chargeSubstance(S, sub, drugPrice(sub, pump.rate, S.patient) * dtSec / 3600);
     const activity = pumpActivity(pump, route, S.t);
     const effectScale = pumpEffectScale(activity);
     for (const key of MOD_KEYS) drugMod[key] += (sub.eff[key] || 0) * effectScale;
@@ -1520,14 +1549,22 @@ function tick(S, dtSec) {
       const previousElapsed = (previousTime - p.t) / 60;
       const finishedAt = p.t + infusion * 60;
       if (previousTime < finishedAt && S.t >= finishedAt) {
-        S.log.push([fmt(finishedAt), `${p.n} 泵入完成（${infusionDetails(p.dose, p.unit, infusion)}）`, 'good', finishedAt]);
+        S.log.push([fmt(finishedAt), `${p.n} ${p.route || '泵入'}完成（${infusionDetails(p.dose, p.unit, infusion)}）`, 'good', finishedAt]);
       }
       const age = el - lag;
       const previousAge = previousElapsed - lag;
       const active = infusionActivity(age, infusion, ke);
       const supplied = (clamp(age, 0, infusion) - clamp(previousAge, 0, infusion)) / infusion;
       const released = Math.max(0, supplied - active + infusionActivity(previousAge, infusion, ke));
-      for (const key in p.eff) applyDelta(S, key, p.eff[key] * p.scale * released);
+      const effectScale = pumpEffectScale(p.scale * active);
+      for (const key in p.eff) {
+        if (MOD_KEYS.includes(key)) {
+          drugMod[key] += p.eff[key] * effectScale;
+        } else {
+          // 止惊效应随已送达剂量累积，避免把完整负荷量算成瞬时静推。
+          applyDelta(S, key, p.eff[key] * p.scale * (key === 'seizure' ? supplied : released));
+        }
+      }
       concOf[p.n] = Math.max(concOf[p.n] || 0, p.scale * active);
       if (el > infusion + p.dur * 1.8) S.pk.splice(i, 1);
       continue;
@@ -2332,6 +2369,7 @@ function dischargeCheck(S) {
     if (S.roomAirStableSince != null) observationDeadlines.push(S.roomAirStableSince + ROOM_AIR_OBSERVATION);
   }
   const circulationObservation = assessCirculationObservation(S, b);
+  if (pumpRate(S, 'nicardipine') > 0) add('仍在持续静脉泵入尼卡地平，需评估停泵后的血压', true);
   if (circulationObservation?.reason) {
     const { phase, reason } = circulationObservation;
     add(reason, phase === 'active' || (phase === 'unstable' && b.map < CIRCULATION_MIN_MAP));
@@ -2839,7 +2877,7 @@ const API = {
               auscultate, orderTest, pollTests, testValue, chestXrayReports, restoreChestXrayReports,
               computeMap, fmt, endCase, setBleedingRate, restoreBleeding,
               benzodiazepineExposure, restoreBenzodiazepines, temperatureStatus, restoreTemperature, infusionDetails, insulinActivity,
-              pumpRate, pumpOrder, pumpEffect, stopPump,
+              pumpRate, pumpOrder, pumpEffect, stopPump, drugPrice, restoreDrugCost,
               hill, computePh, computePcwp, roomAirSaturation, restoreCardiorespiratory, restoreDischargeObservation };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 root.LIFE = API;

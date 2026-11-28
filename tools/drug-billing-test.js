@@ -29,6 +29,32 @@ for (const id of ['naloxone', 'calcium', 'esmolol', 'insulin']) {
   }
 }
 
+// The same per-kg order has the same normalized exposure at both weights.
+for (const sub of SUB.ALL.filter(item => item.unit.includes('/kg'))) {
+  for (const route of sub.routes) {
+    const light = bed(50), heavy = bed(100);
+    for (const patient of [light, heavy]) {
+      Object.assign(patient, { warfarinLoad: 1, warfarinFactors: 0, mtxLevel: 10, renalFactor: 0.5 });
+      assert.equal(E.give(patient, sub.id, route.d, route.r), route.d);
+      E.tick(patient, sub.eff.warfarinFactors || sub.eff.mtxCleavage ? 90 : 1);
+    }
+    if (route.pumpHalfLife) {
+      const effect = E.pumpEffect(light, sub.id);
+      assert.ok(effect > 0);
+      close(E.pumpEffect(heavy, sub.id), effect, sub.id + ' normalized pump effect');
+    } else if (sub.eff.warfarinFactors || sub.eff.mtxCleavage) {
+      const field = sub.eff.warfarinFactors ? 'warfarinFactors' : 'mtxLevel';
+      assert.ok(sub.eff.warfarinFactors ? light[field] > 0 : light[field] < 10);
+      close(heavy[field], light[field], sub.id + ' concentration after delivery');
+    } else {
+      close(light.pk.at(-1).scale, 1, sub.id + ' reference order at 50 kg');
+      close(heavy.pk.at(-1).scale, 1, sub.id + ' reference order at 100 kg');
+    }
+    assert.ok(light.drugCost > 0);
+    close(heavy.drugCost, 2 * light.drugCost, sub.id + ' total quantity billed');
+  }
+}
+
 // An unsupported route must never reach PK, billing or the medication history.
 {
   const S = bed();

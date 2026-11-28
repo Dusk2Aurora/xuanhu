@@ -2101,9 +2101,10 @@ function give(S, drugId, dose, route, bill = true) {
       const du = selectedRoute?.du ?? s.dur;
       // 静滴按该途径的默认总量换算强度；旧胰岛素有限泵入沿用 10 U 标尺。
       const refDose = s.id === 'insulin' && infusionMinutes ? s.dose : (selectedRoute?.d ?? s.dose);
-      const perKg = /\/kg/.test(s.unit || '');
-      const wScale = perKg && s.id !== 'ketamine' ? (S.weight || 70) / 70 : 1;
-      const scale = (d / (refDose || 1)) * wScale;
+      // 凝血因子补充和 MTX 裂解先接收总量，再由救援模型按体重换算浓度。
+      const totalAmountScale = s.eff.warfarinFactors || s.eff.mtxCleavage
+        ? dosingWeight(S.patient) / REFERENCE_DOSING_WEIGHT : 1;
+      const scale = d / (refDose || 1) * totalAmountScale;
       const pkMul = root.TRAITS?.pkDurationMultiplier?.(S, s.id) || S.pkScale || 1;
       S.pk = S.pk || [];
       S.given = S.given || [];

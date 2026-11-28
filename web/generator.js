@@ -150,7 +150,8 @@ const MODULES = [
            contractility:0.80 },
     drivers:{ kProd:0.072, lactProd:0.03, insulinBase:0.12, ketoneProd:0.25, glucoseIn:0.32 },
     history:[
-      [4320, '病史回顾', '近期停用胰岛素，三天前开始多饮、多尿。'],
+      [null, '病史回顾', '近期停用胰岛素。', 'medications'],
+      [4320, '病史回顾', '开始多饮、多尿。'],
       [1440, '病史回顾', '开始恶心、呕吐。'],
     ],
     get goal() { return [glucoseGoal(true), 'pH 升至 7.30 以上', potassiumGoal()]; },
@@ -165,7 +166,8 @@ const MODULES = [
     drivers:{ kProd:0.068, bleedRate:0.012 },
     history:[
       [1440, '病史回顾', '发现黑便。'],
-      [null, '院前病史', '到院前呕血两次，起身时曾晕厥。'],
+      [null, '院前病史', '到院前呕血两次。'],
+      [null, '院前病史', '起身时曾晕厥。'],
     ],
     medicationHistory:['长期服用阿司匹林'],
     goal:['收缩压 ≥90 且心率 <120','血红蛋白 ≥80 g/L','止血'],
@@ -185,7 +187,8 @@ const MODULES = [
     drivers:{ kProd:0.072, lactProd:0.06, insulinBase:0.8, infection:0.78 },
     history:[
       [4320, '病史回顾', '开始发热、咳嗽。'],
-      [null, '院前交接', '送医前出现尿少、反应变慢，皮肤可见花斑。'],
+      [null, '家属转述', '送医前出现尿量减少、反应变慢。'],
+      [null, '院前交接', '转运时皮肤可见花斑。'],
     ],
     goal:['平均动脉压 ≥65','乳酸下降','感染控制'],
     /* 去掉了 temp>38.0（全局出院标准已含 temp ≤37.8），只留感染控制 */
@@ -257,7 +260,10 @@ const MODULES = [
            hr:104, svr:15, rr:16, pao2:90, spo2:97, uo:0.8,
            insulinLoad:6.0 },
     drivers:{ kProd:0.068, lactProd:0.02 },
-    history:[[null, '院前病史', '到院前注射胰岛素后未进食，随后大汗、反应变差。']],
+    history:[
+      [null, '院前病史', '注射胰岛素后未进食。', 'medications'],
+      [null, '家属转述', '到院前出现大汗、反应变差。'],
+    ],
     medicalHistory:['糖尿病'],
     goal:['血糖升至 4 以上','意识恢复'],
     /* glu 已由全局判据覆盖 */
@@ -322,7 +328,8 @@ const MODULES = [
            contractility:0.85, acheActivity:0.12, muscarinicBlock:0 },
     drivers:{ kProd:0.068, lactProd:0.035 },
     history:[
-      [null, '现场人员转述', '到院前喷洒农药，约两小时后出现大汗、流涎和呕吐。'],
+      [null, '现场人员转述', '发病前曾喷洒农药。', 'medications'],
+      [null, '现场人员转述', '喷洒农药约两小时后出现大汗、流涎和呕吐。'],
       [null, '院前交接', '转运时可见分泌物增多、双侧瞳孔明显缩小。'],
     ],
     goal:['心率 ≥60','血氧 ≥94%','毒蕈碱样症状缓解'], minDischargeHR:60,
@@ -354,7 +361,10 @@ const MODULES = [
            hr:82, svr:16.5, rr:15, pao2:95, paco2:39, spo2:98, uo:0.9,
            contractility:0.92, apapLoad:1.0, gsh:0.30, napqi:0.10, hepatotox:0 },
     drivers:{ kProd:0.068, lactProd:0.015 },
-    history:[[240, '院前病史', '吞服约 20 片对乙酰氨基酚，随后恶心。']],
+    history:[
+      [240, '院前病史', '吞服约 20 片对乙酰氨基酚。', 'medications'],
+      [null, '院前病史', '服药后出现恶心。'],
+    ],
     goal:['尽早使用解毒剂','观察 2 小时无肝损证据','肌酐与乳酸正常'],
     measures: { cr: 130, coag: 0.60 },
     ...observeAfter(() => 0, 2 * 3600, '对乙酰氨基酚中毒需观察 2 小时（肝损窗口）', S => [
@@ -386,7 +396,10 @@ const MODULES = [
            hr:104, svr:19.0, rr:18, pao2:90, paco2:38, spo2:96, uo:0.7,
            contractility:1.02, htn:1, svrDrive:7.0 },
     drivers:{ kProd:0.068, lactProd:0.02 },
-    history:[[180, '病史回顾', '出现剧烈头痛、视物模糊和呕吐，随后反应变慢。']],
+    history:[
+      [180, '病史回顾', '出现剧烈头痛、视物模糊和呕吐。'],
+      [null, '病史回顾', '随后反应变慢。'],
+    ],
     medicalHistory:['高血压'],
     medicationHistory:['一周前停用降压药'],
     goal:['收缩压降至 160 以下','意识恢复','避免脑出血'],
@@ -426,7 +439,8 @@ const MODULES = [
            icp:0.30 },
     drivers:{ kProd:0.068, lactProd:0.02 },
     history:[
-      [2880, '病史回顾', '出现乏力、嗜睡，近期饮水增多。'],
+      [2880, '病史回顾', '出现乏力、嗜睡。'],
+      [null, '病史回顾', '近期饮水增多。'],
       [null, '院前病史', '送医前呕吐，随后反应明显变差。'],
     ],
     medicationHistory:['长期服用氢氯噻嗪'],
@@ -451,7 +465,8 @@ const MODULES = [
            contractility:0.85, clot:0.90, pvr:10.35, vdvt:0.65 },
     drivers:{ kProd:0.068, lactProd:0.045 },
     history:[
-      [null, '院前病史', '近期长时间久坐，到院前突发胸痛、呼吸困难，曾晕倒。'],
+      [null, '病史回顾', '近期曾长时间久坐。'],
+      [null, '院前病史', '到院前突发胸痛、呼吸困难，曾晕倒。'],
       [null, '院前交接', '急救人员发现右下肢肿胀。'],
     ],
     goal:['血氧 ≥94%','收缩压 ≥90','右心负荷减轻'],
@@ -476,7 +491,10 @@ const MODULES = [
            hr:138, sv:40, svr:19, rr:36, pao2:48, paco2:30, spo2:78,
            contractility:0.88, tensionPTX:0.85, pvr:7.5 },
     drivers:{ kProd:0.011, lactProd:0.035 },
-    history:[[null, '院前交接', '受伤后出现左胸剧痛、明显气促，左侧呼吸音减弱。']],
+    history:[
+      [null, '院前病史', '受伤后出现左胸剧痛。'],
+      [null, '院前交接', '转运时见患者明显气促，左侧呼吸音减弱。'],
+    ],
     goal:['血氧 ≥ 94%','收缩压 ≥ 90','呼吸频率 ≤ 22'],
     check:(S, issue = dischargeReason)=>[
       S.tensionPTX > 0.20 ? issue(`胸腔内压仍高（${Math.round(S.tensionPTX*100)}%）`) : null,
@@ -551,7 +569,10 @@ const MODULES = [
            hr:108, sv:58, svr:14, rr:22, pao2:92, paco2:38, spo2:97, uo:1.2,
            contractility:0.90, insulinBase:0.55 },
     drivers:{ kProd:0.011, lactProd:0.02 },
-    history:[[null, '家属转述', '近几天饮水少，逐渐出现乏力、嗜睡，送医前反应明显变差。']],
+    history:[
+      [null, '家属转述', '近几天饮水少。'],
+      [null, '家属转述', '逐渐出现乏力、嗜睡，送医前反应明显变差。'],
+    ],
     get goal() {
       return [glucoseGoal(false), '血钠 ≤145 mmol/L', '血清渗透压 <300 mOsm/kg', '尿量 >0.5 mL/kg/h', '意识恢复'];
     },
@@ -574,7 +595,10 @@ const MODULES = [
            hr:112, sv:62, svr:15, rr:20, pao2:95, paco2:36, spo2:98, uo:0.9,
            contractility:0.90, coHb:0.55 },
     drivers:{ kProd:0.010, lactProd:0.03 },
-    history:[[null, '现场人员转述', '在通风不良的房间使用燃气热水器，离开现场前反应变慢。']],
+    history:[
+      [null, '现场人员转述', '在通风不良的房间使用燃气热水器。', 'medications'],
+      [null, '现场人员转述', '离开现场前，患者反应变慢。'],
+    ],
     goal:['意识恢复','血氧饱和度与氧输送改善'],
     check:(S, issue = dischargeReason)=> S.coHb > 0.10 ?
       [issue(`碳氧血红蛋白 ${Math.round(S.coHb*100)}%`, S.coHb > 0.15)] : [],
@@ -601,7 +625,7 @@ const MODULES = [
            hr:132, sv:44, svr:19, rr:28, pao2:84, paco2:32, spo2:93, uo:0.5,
            contractility:0.90, tamponade:0.80 },
     drivers:{ kProd:0.011, lactProd:0.04 },
-    history:[[null, '院前交接', '胸部受伤后曾烦躁，颈静脉怒张，心音低弱。']],
+    history:[[null, '院前交接', '急救人员到场时见患者烦躁、颈静脉怒张，心音低弱。']],
     goal:['收缩压 ≥ 90','心率 < 120','意识恢复'],
     check:(S, issue = dischargeReason)=> S.tamponade > 0.15 ?
       [issue(`心包内压仍高（${Math.round(S.tamponade*100)}%）`, S.tamponade > 0.25)] : [],
@@ -619,7 +643,10 @@ const MODULES = [
            hr:138, sv:56, svr:9.5, rr:30, pao2:82, paco2:28, spo2:93, uo:0.4,
            contractility:0.84, heatstrokeDrive:1.30 },
     drivers:{ kProd:0.016, lactProd:0.08 },
-    history:[[null, '现场人员转述', '在高温环境中持续暴露约四小时，随后晕倒。']],
+    history:[
+      [null, '现场人员转述', '晕倒前在高温环境中持续暴露约四小时。', 'medications'],
+      [null, '现场人员转述', '现场有人目击患者晕倒。'],
+    ],
     goal:['核心体温 ≤ 37.8','收缩压 ≥ 90','意识恢复'],
     hint:'热射病需尽快散热。在「环境 / 场景」开启物理降温，同时补液并监测血压。',
     advance(S, dtMin){
@@ -658,7 +685,10 @@ const MODULES = [
            hr:104, sv:60, svr:12.5, rr:20, pao2:88, paco2:32, spo2:96, uo:0.5,
            contractility:0.88, hepatotox:0.85, coag:0.55 },
     drivers:{ kProd:0.012, lactProd:0.05 },
-    history:[[10080, '家属转述', '近一周皮肤黄染加深，逐渐出现白天嗜睡、夜间烦躁。']],
+    history:[
+      [10080, '家属转述', '近一周皮肤黄染加深。'],
+      [null, '家属转述', '随后逐渐出现白天嗜睡、夜间烦躁。'],
+    ],
     goal:['意识恢复','凝血功能改善','乳酸下降'],
     measures: { coag: 0.70 },
     hint:'肝性脑病是"氨"的问题：乳果糖降氨，同时处理诱因（感染、出血、低钾）。别用镇静药。',
@@ -681,7 +711,11 @@ const MODULES = [
            hr:132, sv:52, svr:11.5, rr:22, pao2:88, paco2:36, spo2:95, uo:0.7,
            contractility:0.86, tca:0.78 },
     drivers:{ kProd:0.010, lactProd:0.035 },
-    history:[[null, '院前病史', '吞服约 20 片阿米替林，约两小时后被发现反应迟钝、口干。']],
+    history:[
+      [null, '院前病史', '吞服约 20 片阿米替林。', 'medications'],
+      [null, '院前病史', '服药约两小时后被发现反应迟钝。'],
+      [null, '患者自述', '服药后口干。'],
+    ],
     goal:['QRS 变窄','意识恢复','心率 < 120'],
     check:(S, issue = dischargeReason)=> S.tca > 0.25 ? [issue('三环类毒性仍高（QRS 增宽）', S.tca > 0.55)] : [],
     hint:'三环类过量的解药不是"洗胃"，而是碳酸氢钠——碱化血液能窄化 QRS、止住室性心律失常。',
@@ -699,7 +733,9 @@ const MODULES = [
            hr:56, sv:62, svr:22, rr:13, pao2:92, paco2:40, spo2:97, uo:0.7,
            contractility:0.90, hematoma:0.55, icp:0.62 },
     drivers:{ kProd:0.010, lactProd:0.03 },
-    history:[[null, '院前交接', '左颞部撞伤后曾清醒，约一小时后逐渐出现嗜睡、呕吐。']],
+    history:[
+      [null, '现场人员转述', '左颞部撞伤后曾清醒，约一小时后逐渐出现嗜睡、呕吐。'],
+    ],
     goal:['意识恢复','颅内压下降','血压心率回稳'],
     ...observeAfter(S => S.cranied ? (S.craniotomyAt ?? 0) : null, 900, '开颅术后观察未满 15 分钟', (S, issue = dischargeReason) =>
       S.hematoma > 0.12 ? [issue('颅内血肿未清除')] : []),
@@ -720,7 +756,10 @@ const MODULES = [
            hr:126, sv:54, svr:15, rr:26, pao2:76, paco2:36, spo2:91, uo:0.5,
            contractility:0.86, airwayResistance:0.75 },
     drivers:{ kProd:0.020, lactProd:0.055 },
-    history:[[null, '院前交接', '从密闭空间火灾中救出，伴面颈部烧伤、声音嘶哑及炭末样痰，估计烧伤面积约 35%。']],
+    history:[
+      [null, '院前交接', '从密闭空间火灾中救出。', 'medications'],
+      [null, '院前交接', '转运时见面颈部烧伤、气促、声音嘶哑及炭末样痰，估计烧伤面积约 35%。'],
+    ],
     goal:['血氧回升','血压稳定','尿量 ≥ 30 mL/h'],
     check:S=> (S.map || 100) < 68 ? ['平均动脉压不足'] : [],
     hint:'烧伤先看气道：声音嘶哑 + 炭末痰 = 吸入性损伤，气道会肿到堵死，宁可早插管。补液按体重×面积算。',
@@ -748,7 +787,10 @@ const MODULES = [
            hr:104, sv:54, svr:17, rr:22, pao2:90, paco2:33, spo2:96, uo:0.8,
            contractility:0.92, stemi:0.62 },
     drivers:{ kProd:0.011, lactProd:0.040 },
-    history:[[60, '院前病史', '出现持续的胸骨后压榨样痛，向左肩放射，伴冷汗。曾含服硝酸甘油，疼痛持续。']],
+    history:[
+      [60, '院前病史', '出现持续的胸骨后压榨样痛，向左肩放射，伴冷汗。'],
+      [null, '院前病史', '曾含服硝酸甘油，疼痛持续。', 'prehospital'],
+    ],
     goal:['胸痛缓解','血压心率稳定','ST 段回落'],
     ...observeAfter(S => S.reperfused ? (S.reperfusionAt ?? 0) : null, 900, 'PCI 后观察未满 15 分钟', (S, issue = dischargeReason) => [
       S.stemi > 0.15 ? issue('冠脉未再通（ST 仍抬高）') : null,
@@ -770,7 +812,10 @@ const MODULES = [
            hr:142, sv:58, svr:14, rr:30, pao2:78, paco2:30, spo2:90, uo:0.5,
            contractility:0.88, seizure:0.90 },
     drivers:{ kProd:0.014, lactProd:0.095 },
-    history:[[20, '院前交接', '开始持续抽搐，伴牙关紧闭和发绀。']],
+    history:[
+      [20, '现场人员转述', '开始持续抽搐。'],
+      [null, '院前交接', '急救人员到场时仍在抽搐，伴牙关紧闭和发绀。'],
+    ],
     medicationHistory:['近期停用抗癫痫药'],
     goal:['抽搐停止','意识恢复','乳酸下降'],
     hint:'持续抽搐超过 5 分钟就要止惊：苯二氮卓是首选。止惊后意识不会立刻回来，别重复过量给药。',
@@ -794,7 +839,10 @@ const MODULES = [
            hr:132, sv:48, svr:17, rr:28, pao2:92, paco2:32, spo2:97, uo:0.25,
            contractility:0.90, bleedRate:0.034 },
     drivers:{ kProd:0.012, lactProd:0.055 },
-    history:[[null, '院前交接', '左上腹受撞击后疼痛，向左肩放射，伴面色苍白、冷汗。']],
+    history:[
+      [null, '院前病史', '左上腹受撞击后疼痛，向左肩放射。'],
+      [null, '院前交接', '急救人员见患者面色苍白、出冷汗。'],
+    ],
     goal:['血压稳定','乳酸下降','尿量 ≥ 30 mL/h'],
     measures: { vol: 3.6, uo: 0.5 },
     ...observeAfter(S => S.bleedingSites.spleen === 0 ? (S.surgicalHemostasisAt ?? 0) : null, 900, '止血术后观察未满 15 分钟', (S, issue = dischargeReason) => [
@@ -818,7 +866,10 @@ const MODULES = [
            hr:134, sv:48, svr:17, rr:28, pao2:94, paco2:30, spo2:98, uo:0.2,
            contractility:0.92, bleedRate:0.032 },
     drivers:{ kProd:0.011, lactProd:0.06 },
-    history:[[null, '院前病史', '停经七周，送医前突发下腹撕裂样痛、肛门坠胀，曾晕厥。']],
+    history:[
+      [null, '患者自述', '已停经约七周。'],
+      [null, '院前病史', '送医前突发下腹撕裂样痛、肛门坠胀，曾晕厥。'],
+    ],
     goal:['血压稳定','尿量 ≥ 30 mL/h','腹腔出血已控制'],
     measures: { vol: 3.6, uo: 0.5 },
     ...observeAfter(S => S.bleedingSites.ectopic === 0 ? (S.surgicalHemostasisAt ?? 0) : null, 900, '止血术后观察未满 15 分钟', (S, issue = dischargeReason) => [
@@ -908,7 +959,7 @@ const CHIEF_COMPLAINTS = {
   htnEmergency: ['剧烈头痛、视物模糊约 3 小时', 180],
   hyponatremia: ['乏力、嗜睡约 2 天', 2880],
   pe: ['突发胸痛、气促', null],
-  ptx: ['受伤后突发气促', null],
+  ptx: ['胸部受伤后气促', null],
   trauma: ['受伤后右大腿出血', null],
   pancreatitis: ['上腹剧痛伴呕吐约 8 小时', 480],
   hhs: ['到院前嗜睡、反应变差', null],
@@ -918,7 +969,7 @@ const CHIEF_COMPLAINTS = {
   heatstroke: ['到院前晕倒', null],
   myxedema: ['被发现反应迟钝', null],
   liverFailure: ['近一周皮肤发黄，随后逐渐嗜睡', 10080],
-  tca: ['到院前被发现反应迟钝', null],
+  tca: ['送诊前反应迟钝', null],
   tbi: ['头部撞伤后逐渐嗜睡', null],
   burn: ['烧伤后气促', null],
   stemi: ['持续胸骨后疼痛约 1 小时', 60],
@@ -1033,7 +1084,8 @@ function mergeAdmission(target, values) {
 }
 
 const traumaIds = new Set(['ptx', 'trauma', 'tamponade', 'spleen', 'tbi']);
-const injuryNames = new Set(['胸部外伤', '头部外伤', '腹部钝性外伤', '骨盆骨折', '密闭空间火灾']);
+const episodeNames = new Set(['肺部感染', '胸部外伤', '头部外伤', '腹部钝性外伤', '骨盆骨折', '密闭空间火灾']);
+const pregnancyNotes = new Set(['早孕', '妊娠 34 周', '旧版产科记录与患者资料或孕周记录存在冲突']);
 const diabetesTypes = new Set(['1 型糖尿病', '2 型糖尿病']);
 const traumaScene = {
   ptx: '发生道路交通事故，胸部受伤。',
@@ -1051,36 +1103,42 @@ function makeAdmission(modules, patient, additionalHistory, diabetesType) {
     || modules.some(m => !fitsDemographics(m, demographics));
   const unclearDiabetes = ids.has('dka') && ids.has('hhs');
   const unclearThyroid = ids.has('thyroid') && ids.has('myxedema');
+  const mixedIngestion = ids.has('apap') && ids.has('tca');
   const history = [];
   if (trauma.length) {
     const text = ids.has('burn') ? '火灾现场同时发生外伤。'
       : trauma.length === 1 ? traumaScene[trauma[0].id] : '发生道路交通事故，身体多处受伤。';
-    const minutesBefore = ids.has('tamponade') && !ids.has('tbi') ? 40 : null;
+    const minutesBefore = ids.has('tamponade') && !ids.has('tbi') && !ids.has('burn') ? 40 : null;
     history.push({ moduleId: trauma[0].id, minutesBefore, source: '现场人员转述', text });
   }
   for (const m of modules) {
-    for (const [minutesBefore, source, description] of m.history) {
+    for (const [minutesBefore, source, description, section] of m.history) {
       let text = description;
-      if (m.id === 'co' && ids.has('burn')) text = '在通风不良的火场中吸入烟气，离开现场前反应变慢。';
-      if (m.id === 'tca' && ids.has('apap')) continue;
-      if (m.id === 'apap' && ids.has('tca')) {
-        text = '同时吞服对乙酰氨基酚和阿米替林各约 20 片，约两小时后被发现反应迟钝、口干，曾诉恶心。';
+      if (section === 'medications') {
+        if (m.id === 'co' && ids.has('burn')) text = '在密闭火场中吸入烟气。';
+        if (m.id === 'heatstroke' && ids.has('burn')) text = '火场中有高温暴露。';
+        if (m.id === 'tca' && mixedIngestion) continue;
+        if (m.id === 'apap' && mixedIngestion) text = '同时吞服对乙酰氨基酚和阿米替林各约 20 片。';
+        if (m.id === 'dka' && ids.has('hypogly')) text = '本次注射胰岛素前曾有一段时间停用。';
       }
       if (m.id === 'dka' && minutesBefore === 4320 && ids.has('aki')) {
-        text = '近期停用胰岛素，三天前开始明显口渴。';
+        text = '开始明显口渴。';
       }
-      if (m.id === 'ectopic' && unclearPregnancy) text = text.replace('停经七周，', '');
-      if (m.id === 'hhs' && ids.has('hyponatremia')) text = text.replace('近几天饮水少，', '近几天饮水量变化，');
+      if (m.id === 'ectopic' && unclearPregnancy && source === '患者自述') continue;
+      if (m.id === 'hhs' && (unclearDiabetes || ids.has('hyponatremia')) && text === '近几天饮水少。') continue;
       if (m.id === 'myxedema' && (unclearThyroid || ids.has('heatstroke'))) text = text.replace('、皮肤干冷', '');
-      history.push({ moduleId: m.id, minutesBefore, source, text });
+      history.push({ moduleId: m.id, minutesBefore, source, text, ...(section ? { section } : {}) });
     }
   }
   history.sort((a, b) => (b.minutesBefore ?? 0) - (a.minutesBefore ?? 0));
   const normalized = item => {
-    if (unclearPregnancy && (item === '早孕' || item === '妊娠 34 周')) return '旧版产科记录与患者资料或孕周记录存在冲突';
+    if (unclearPregnancy && pregnancyNotes.has(item)) return '旧版产科记录与患者资料或孕周记录存在冲突';
     if (unclearDiabetes && diabetesTypes.has(item)) return '糖尿病（旧版记录分型不一致）';
     if (diabetesType && item === '糖尿病') return diabetesType;
     if (unclearThyroid && item.startsWith('甲状腺功能')) return '甲状腺疾病（旧版记录分型不一致）';
+    if (unclearThyroid && (item === '近期停用抗甲状腺药' || item === '两个月前停用甲状腺激素替代药')) {
+      return '旧版甲状腺用药记录有出入，停药经过待核实';
+    }
     if (item === '一周前停用降压药' && ids.has('hyponatremia')) return '一周前停用其他降压药';
     return item;
   };
@@ -1088,7 +1146,7 @@ function makeAdmission(modules, patient, additionalHistory, diabetesType) {
     ...modules.flatMap(m => [...(m.comorbidities || []), ...(m.medicalHistory || []), ...(m.medicationHistory || [])]),
     ...additionalHistory,
     ...(diabetesType ? [diabetesType] : []),
-  ].filter(item => !injuryNames.has(item)).map(normalized)));
+  ].filter(item => !episodeNames.has(item)).map(normalized)));
   const medicationHistory = Array.from(new Set(modules.flatMap(m => m.medicationHistory || []).map(normalized)));
   return { history, background, medicationHistory };
 }
@@ -1105,7 +1163,10 @@ function admissionNarrative(spec) {
   if (!admission) return spec?.complaint || '';
   const lines = admission.history.map(({ minutesBefore, source, text }) =>
     `${historyTime(minutesBefore)} · ${source} · ${text}`);
-  if (admission.background.length) lines.push('既往及用药史 · ' + admission.background.join('、'));
+  const pregnancy = admission.background.filter(item => pregnancyNotes.has(item));
+  const background = admission.background.filter(item => !pregnancyNotes.has(item));
+  if (pregnancy.length) lines.push('本次妊娠情况 · ' + pregnancy.join('、'));
+  if (background.length) lines.push('既往及用药史 · ' + background.join('、'));
   return lines.join('\n');
 }
 

@@ -41,23 +41,26 @@ function rule(page, name) {
   return page.locator(`[data-rule="${name}"]`);
 }
 
-async function assertRules(page, insurance, signedDischarge) {
+async function assertRules(page, insurance, signedDischarge, noPause = false) {
   assert.equal(await rule(page, 'insurance').getAttribute('aria-pressed'), String(insurance));
   assert.equal(await rule(page, 'signedDischarge').getAttribute('aria-pressed'), String(signedDischarge));
+  assert.equal(await rule(page, 'noPause').getAttribute('aria-pressed'), String(noPause));
 }
 
-async function startPatient(page) {
+async function startPatient(page, replace = true) {
   await enterWard(page);
-  await page.evaluate(() => {
+  await page.evaluate(replace => {
     const game = window.__LIFE_GAME;
     game.startCase({
       id: 'realism-rules-test', name: '出院规则测试病例', tags: [], goals: ['测试治疗目标'],
       patient: { name: '测试患者', sex: '女', age: 40, height: 165, weight: 60 },
       init: { ...window.CASEGEN.BASE },
-    }, true);
+    }, replace);
     window.dischargeTestPatient = game.S;
-  });
-  await page.getByText(/查体与化验请自行评估/).click();
+  }, replace);
+  const intro = page.locator('#admissionIntro');
+  await intro.getByText(/查体与化验请自行评估/).click();
+  await intro.waitFor({ state: 'detached' });
 }
 
 async function advanceBedCost(page) {
@@ -168,6 +171,91 @@ async function testSuccessfulDischarges(page, status) {
   else assert.equal(await deduction.count(), 0);
 }
 
+async function assertWardElapsed(page, expectedSeconds) {
+  const elapsed = await page.evaluate(() => {
+    const { beds } = window.__LIFE_GAME;
+    const before = beds.map(({ S }) => S.t);
+    window.advanceSimulation();
+    window.advanceSimulation(420);
+    return beds.map(({ S }, index) => S.t - before[index]);
+  });
+  assert.equal(elapsed.length, 2);
+  for (const seconds of elapsed) assert.ok(Math.abs(seconds - expectedSeconds) < 1e-6, `${seconds} ≠ ${expectedSeconds}`);
+}
+
+async function testNoPause(page) {
+  await startPatient(page);
+  await startPatient(page, false);
+  const pause = page.locator('#pause');
+  const fastForward = page.locator('#ff');
+  const normalSpeed = page.locator('#speed [data-s="1"]');
+  const wait = page.locator('#conditionWait');
+
+  await fastForward.click();
+  await pause.click();
+  assert.equal(await pause.innerText(), '继续');
+  await assertWardElapsed(page, 0);
+
+  await page.locator('#btnMenu').click();
+  await page.locator('#sheet.on').getByText('现实模式', { exact: true }).click();
+  await rule(page, 'noPause').click();
+  await assertRules(page, false, false, true);
+  await assertWardElapsed(page, 0.4);
+  await page.locator('#sheetClose').click();
+  assert.equal(await pause.isVisible(), false);
+  assert.equal(await pause.isDisabled(), true);
+  await pause.dispatchEvent('click');
+  assert.equal(await normalSpeed.getAttribute('aria-pressed'), 'true');
+  await assertWardElapsed(page, 0.4);
+
+  await page.locator('#speed [data-s="4"]').click();
+  await assertWardElapsed(page, 1.6);
+  await fastForward.click();
+  await assertWardElapsed(page, 8.4);
+  await fastForward.click();
+  await page.evaluate(() => {
+    const { E, S } = window.__LIFE_GAME;
+    E.orderTest(S, 'cbc');
+    S.tests.cbc.readyAt = S.t + 0.3;
+  });
+  await wait.click();
+  assert.equal(await wait.innerText(), '结束等待');
+  await assertWardElapsed(page, 0.4);
+  assert.equal(await page.evaluate(() => window.__LIFE_GAME.S.tests.cbc.done), true);
+  assert.equal(await wait.innerText(), '等病情变化');
+  assert.equal(await normalSpeed.getAttribute('aria-pressed'), 'true');
+
+  await page.reload();
+  assert.deepEqual(await page.evaluate(() => window.__LIFE_GAME.beds.map(({ S }) => S.usedRealismRules)),
+    [['noPause'], ['noPause']]);
+  await openRules(page);
+  await assertRules(page, false, false, true);
+  await page.locator('#sheetClose').click();
+  await enterWard(page);
+  assert.equal(await pause.isVisible(), false);
+  await assertWardElapsed(page, 0.4);
+
+  await page.locator('#btnLobby').click();
+  await openRules(page);
+  await rule(page, 'noPause').click();
+  await assertRules(page, false, false);
+  await rule(page, 'signedDischarge').click();
+  await page.locator('#sheetClose').click();
+  await enterWard(page);
+  assert.equal(await pause.isVisible(), true);
+  assert.equal(await pause.isEnabled(), true);
+  await pause.click();
+  await assertWardElapsed(page, 0);
+  await pause.click();
+  await assertWardElapsed(page, 0.4);
+
+  const signing = await openSigning(page);
+  await signing.getByRole('button', { name: /确认签字出院/ }).click();
+  const summary = page.locator('#detail.on .case-review-summary');
+  assert.equal(await summary.locator('dt:has-text("结算时启用") + dd').innerText(), '真实出院');
+  assert.equal(await summary.locator('dt:has-text("本例曾启用") + dd').innerText(), '禁用暂停、真实出院');
+}
+
 async function main() {
   const browser = await launchBrowser();
   try {
@@ -175,7 +263,8 @@ async function main() {
     await withPage(browser, testFailedDischarge);
     await withPage(browser, page => testSuccessfulDischarges(page, 'penalized'));
     await withPage(browser, page => testSuccessfulDischarges(page, 'normal'));
-    console.log('Realism rule migration, billing, signed discharge outcomes, and persistent case records passed.');
+    await withPage(browser, testNoPause);
+    console.log('Realism rule migration, billing, signed discharge, continuous ward clocks, and persistent case records passed.');
   } finally {
     await browser.close();
   }

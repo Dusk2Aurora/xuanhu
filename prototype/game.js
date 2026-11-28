@@ -32,8 +32,9 @@ let nightMode = false;
 const REALISM_RULES = {
   insurance: { name: '医保与自付', note: '按参保类型结算费用，追踪家庭自付负担。' },
   signedDischarge: { name: '真实出院', note: '自行判断出院时机。签字后结算，病情未达标扣分，重大问题直接判负。' },
+  noPause: { name: '禁用暂停', note: '全病房持续推进，仍可调整倍速、快进或等病情变化。' },
 };
-const realismRules = { insurance: false, signedDischarge: false };
+const realismRules = { insurance: false, signedDischarge: false, noPause: false };
 function enabledRules() {
   return Object.keys(REALISM_RULES).filter(key => realismRules[key]);
 }
@@ -196,10 +197,13 @@ function edOrganRows(id, s, patient) {
     return [label, result.value, [unit, result.name, edSampleText(result)].filter(Boolean).join(' · ')];
   };
   const urine = ['尿量', patient.urineDrained ? s.uoHourly : '待观察', patient.urineDrained ? 'mL/h · 留置导尿' : ''];
+  const tone = known.svrDrive;
   switch (id) {
     case 'heart': return [
       ['HR', s.hr, 'bpm'], ['MAP', s.map, 'mmHg'],
       ['心律', s.rhythm === 'sinus' ? '窦性' : s.rhythm === 'vf' ? '室颤' : '心静止', ''],
+      tone ? ['张力评估', CASEGEN.vascularTone({ svrDrive: tone.value }).text, '测量于 ' + caseTime(tone.sampledAt)]
+        : ['张力评估', '待查', '床旁查体 → 循环与末梢灌注'],
     ];
     case 'lung': return [
       ['SpO₂', s.spo2 ?? '无信号', s.spo2 == null ? '' : '%'],
@@ -955,19 +959,21 @@ function caseTime(time) {
 }
 
 function reportRows(report, previous) {
-  const times = [[report.kind === 'exam' ? '查体时间' : '采集时间', caseTime(report.sampledAt)]];
-  if (report.kind !== 'exam') times.push(['回报时间', caseTime(report.reportedAt)]);
+  const label = { exam: '查体时间', procedure: '操作时间' }[report.kind] || '采集时间';
+  const times = [[label, caseTime(report.sampledAt)]];
+  if (report.kind !== 'exam' && report.kind !== 'procedure') times.push(['回报时间', caseTime(report.reportedAt)]);
   if (previous) times.push(['上次对照', caseTime(previous.sampledAt) + '（上次 → 本次）']);
   const values = report.rows.map(({ label, value, flag }) => {
     const before = previous?.rows.find(row => row.label === label);
-    return [escapeHtml(label), escapeHtml((before ? before.value + ' → ' : '') + value + (flag ? ' ' + flag : ''))];
+    const reading = before && before.value !== value ? before.value + ' → ' + value : value;
+    return [escapeHtml(label), escapeHtml(reading + (flag ? ' ' + flag : ''))];
   });
   return [...times, ...values];
 }
 
-function reportDetails(report, title = report.name) {
-  const fields = reportRows(report).map(([label, value]) => `<dt>${label}</dt><dd>${value}</dd>`).join('');
-  return `<details><summary>${escapeHtml(title)}</summary><dl>${fields}</dl></details>`;
+function reportDetails(report, title = report.name, previous) {
+  const fields = reportRows(report, previous).map(([label, value]) => `<dt>${label}</dt><dd>${value}</dd>`).join('');
+  return `<details data-report-id="${escapeHtml(report.id)}"><summary>${escapeHtml(title)}</summary><dl>${fields}</dl></details>`;
 }
 
 function openReportType(patient, type) {
@@ -984,6 +990,7 @@ function performExam(patient, id) {
   if (!isCurrentPatient(patient)) return;
   if (!E.examine(patient, id)) return;
   saveGame();
+  if ($('#sheet').classList.contains('on') && $('#sheetTitle').dataset.view === 'exams') openExamList(patient);
   openReportType(patient, id);
 }
 
@@ -1018,6 +1025,7 @@ function openExamList(patient) {
   }
   rows.push({ n: '返回检查', tag: '', amt: '返回', run: () => openChecks(patient) });
   openSheet('床旁查体', patient.patient.name, rows, patient);
+  $('#sheetTitle').dataset.view = 'exams';
 }
 
 function openTestGroup(patient, id) {
@@ -1475,8 +1483,8 @@ function openReports() {
   }
   for (const group of byType.values()) {
     const latest = group[0];
-    rows.push([escapeHtml(latest.name), reportDetails(latest, '查看本次 · ' + caseTime(latest.reportedAt)) +
-      group.slice(1).map(r => reportDetails(r, '此前 · ' + caseTime(r.reportedAt))).join('')]);
+    rows.push([escapeHtml(latest.name), group.map((report, i) => reportDetails(report,
+      (i ? '此前 · ' : '查看本次 · ') + caseTime(report.reportedAt), group[i + 1])).join('')]);
   }
   const monitor = !isEDIntake(S) && isSevere(S) ? E.snapshot(S) : null;
   if (monitor) rows.push(...monitorReportRows(monitor));
@@ -1484,6 +1492,20 @@ function openReports() {
   const potassium = E.knownResults(S).k?.value;
   openDetail('报告', S.patient.name + ' · ' + reports.length + ' 份已记录', rows,
     monitor?.k > 6.5 || potassium > 6.5 ? '最近的血钾读数达到游戏危急值。' : '');
+  $('#detail').dataset.view = 'reports';
+}
+
+function refreshOpenReports() {
+  const card = $('#detail .card');
+  const scroll = card.scrollTop;
+  const expanded = new Set([...card.querySelectorAll('details[open]')].map(item => item.dataset.reportId));
+  const focused = document.activeElement?.closest('details')?.dataset.reportId;
+  openReports();
+  for (const item of card.querySelectorAll('details[data-report-id]')) {
+    item.open = expanded.has(item.dataset.reportId);
+    if (focused === item.dataset.reportId) item.querySelector('summary').focus({ preventScroll: true });
+  }
+  card.scrollTop = scroll;
 }
 
 function monitorReportRows(monitor) {
@@ -1542,9 +1564,13 @@ function loop(ts) {
       patient.bedCost = (patient.bedCost || 0) + hourlyRate * (patient.t - from) / 3600;
     }
     const checkGroup = $('#sheet').classList.contains('on') && $('#sheetTitle').dataset.testGroup;
-    const pending = checkGroup ? Object.entries(S.tests).filter(([, order]) => !order.done) : [];
+    const reportsOpen = $('#detail').classList.contains('on') && $('#detail').dataset.view === 'reports';
+    const pending = checkGroup || reportsOpen ? Object.values(S.tests).filter(order => !order.done) : [];
     for (const b of beds) { try { E.pollTests(b.S); } catch (e) {} }
-    if (checkGroup && pending.some(([, order]) => order.done) && isCurrentPatient(S)) openTestGroup(S, checkGroup);
+    if (pending.some(order => order.done) && isCurrentPatient(S)) {
+      if (checkGroup) openTestGroup(S, checkGroup);
+      if (reportsOpen) refreshOpenReports();
+    }
     let reviewMessage = '';
     if (observation && (observationEnd || (observation.kind === 'steady' && E.dischargeCheck(S).ok))) {
       if (observation.kind !== 'steady') {
@@ -1701,6 +1727,8 @@ function syncSpeedUI() {
     x.setAttribute('aria-pressed', active);
   });
   const pauseButton = $('#pause');
+  pauseButton.style.display = realismRules.noPause ? 'none' : '';
+  pauseButton.disabled = realismRules.noPause;
   pauseButton.textContent = paused ? '继续' : '暂停';
   pauseButton.classList.toggle('on', paused);
   pauseButton.setAttribute('aria-pressed', String(paused));
@@ -2282,8 +2310,7 @@ function archiveCase(st, wardCount) {
     评分: breakdown.score,
     计分明细: breakdown,
     检查报告: E.reports(st),
-    接诊病历: chart.known.map(item => ({ 来源: item.sourceLabel, 内容: item.text, 获取: item.obtainedAt })),
-    主诉: chart.chief.text,
+    入院记录: { chief: chart.chief, topics: chart.topics, known: chart.known, inquiries: chart.inquiries, vitals: st.admissionVitals },
     操作日志: buildTimeline(st),
     设置: settings,
   };
@@ -2381,7 +2408,9 @@ function openCaseRecord(r) {
         : '<p>' + empty + '</p>'}</div></section>
     ${byId.size ? '<section class="case-review-section"><h5>检查报告</h5>' +
       [...byId.values()].map(report => reportDetails(report, report.name + ' · ' + caseTime(report.reportedAt))).join('') + '</section>' : ''}
-    ${r.主诉 ? '<section class="case-review-section"><details><summary>接诊病历</summary><p>' + escapeHtml(r.主诉) + '</p>' +
+    ${r.入院记录 ? '<section class="case-review-section"><details><summary>接诊病历</summary><dl>' +
+      admissionChartRows(r.入院记录, r.入院记录.vitals).map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('') + '</dl></details></section>'
+      : r.主诉 ? '<section class="case-review-section"><details><summary>接诊病历</summary><p>' + escapeHtml(r.主诉) + '</p>' +
       (r.接诊病历 || []).map(item => '<p>' + escapeHtml(caseTime(item.获取) + ' · ' + item.来源 + ' · ' + item.内容) + '</p>').join('') + '</details></section>' : ''}`;
   detail.querySelector('.card').appendChild(body);
 }
@@ -2647,7 +2676,7 @@ function openFeedback() {
 }
 
 /* ---------------- 版本 / 更新检查 ---------------- */
-const APP_VERSION = '1.54.0';
+const APP_VERSION = '1.54.1';
 const releaseRoot = document.querySelector('meta[name="xuanhu-release-root"]')?.content;
 const releaseBase = releaseRoot ? new URL(releaseRoot, location.href).href.replace(/\/$/, '') : '';
 const platformName = location.protocol === 'file:' ? '离线 HTML' :
@@ -3177,6 +3206,7 @@ function bind() {
   $('#speed').addEventListener('click', e => {
     const p = e.target.closest('.pill'); if (!p) return;
     if (p.id === 'pause') {
+      if (realismRules.noPause) return;
       if (observation) stopObservation();
       paused = !paused;
       syncSpeedUI();
@@ -3243,9 +3273,7 @@ function evidenceText(item) {
   return escapeHtml(timing + item.text) + ` <small>（${escapeHtml(item.sourceLabel)} · ${caseTime(item.obtainedAt)} 记录）</small>`;
 }
 
-function openAdmission() {
-  if (!isCurrentPatient(S)) return;
-  const chart = INTAKE.view(S);
+function admissionChartRows(chart, v) {
   const rows = [['主诉／来诊原因', escapeHtml(chart.chief.text)], ['陈述来源', escapeHtml(chart.chief.sourceLabel)]];
   for (const topic of chart.topics) {
     const notes = chart.known.filter(item => item.section === topic.id);
@@ -3255,13 +3283,18 @@ function openAdmission() {
     }
     rows.push([escapeHtml(topic.label), entries.join('<br>') || '尚未取得资料']);
   }
-  const v = S.admissionVitals;
   if (v) {
     rows.push(['接诊首测', caseTime(v.t)],
-      ['体温 / 心率', `${v.temp ?? '—'} ℃ · ${v.hr} 次/分`],
-      ['血压 / 呼吸', `${v.sys}/${v.dia} mmHg · ${v.rr} 次/分`],
-      ['SpO₂ / 意识', `${v.spo2 == null ? '无信号' : v.spo2 + '%'} · GCS ${v.gcs}`]);
+      ['体温 / 心率', escapeHtml(`${v.temp ?? '—'} ℃ · ${v.hr} 次/分`)],
+      ['血压 / 呼吸', escapeHtml(`${v.sys}/${v.dia} mmHg · ${v.rr} 次/分`)],
+      ['SpO₂ / 意识', escapeHtml(`${v.spo2 == null ? '无信号' : v.spo2 + '%'} · GCS ${v.gcs}`)]);
   } else rows.push(['接诊首测', '旧存档未记录']);
+  return rows;
+}
+
+function openAdmission() {
+  if (!isCurrentPatient(S)) return;
+  const rows = admissionChartRows(INTAKE.view(S), S.admissionVitals);
   const reports = E.reports(S);
   if (reports.length) rows.push(['已获查体与检查', reports.slice(-3).reverse().map(r => reportDetails(r, r.name + ' · ' + caseTime(r.reportedAt))).join('')]);
   rows.push(['继续采集', '<button class="pill" type="button" id="historySources">补问病史</button> <button class="pill" type="button" id="chartReports">查看报告</button>']);
@@ -3288,12 +3321,18 @@ function openHistorySources(patient) {
 function openHistoryTopics(patient, source) {
   const chart = INTAKE.view(patient);
   const rows = chart.topics.map(topic => ({
-    n: escapeHtml(topic.label), tag: '', amt: '了解', run: () => {
+    n: escapeHtml(topic.label),
+    tag: chart.inquiries.some(item => item.source === source.id && item.section === topic.id) ? '已询，未提供资料'
+      : chart.known.some(item => item.source === source.id && item.section === topic.id) ? '已有该来源记录' : '',
+    amt: '问询', run: () => {
       const result = INTAKE.ask(patient, source.id, topic.id);
       if (result.status === 'learned') {
         patient.log.push([E.fmt(patient.t), source.label + ' · 补录' + topic.label, 'info', patient.t]);
       }
-      if (result.status === 'learned' || result.status === 'unknown') saveGame();
+      if (result.status === 'learned' || result.status === 'unknown') {
+        saveGame();
+        openHistoryTopics(patient, source);
+      }
       const items = result.evidence.map(note => ['记录', evidenceText(note)]);
       openDetail(topic.label, patient.patient.name + ' · ' + source.label, items, result.message);
     },
@@ -3459,6 +3498,15 @@ function openRealismSettings() {
     run: () => {
       if (!hasCurrentWard()) return;
       realismRules[key] = !realismRules[key];
+      if (key === 'noPause') {
+        if (realismRules.noPause && paused) {
+          paused = false;
+          ff = false;
+          speed = 1;
+          acc = 0;
+        }
+        syncSpeedUI();
+      }
       for (const { S: patient } of beds) {
         if (!patient.running) continue;
         patient.usedRealismRules ??= [];
@@ -3599,6 +3647,13 @@ function renderAll() {
 
 /* 更新公告：每次发版在这里加一条（新的放最前面） */
 const RELEASES = [
+  { v: '1.54.1', notes: [
+    '现实模式新增「禁用暂停」，可与医保、真实出院分别开关；结算记录本例启用过的规则',
+    '补全病史中的暴露、用药与症状时间线，按患者、目击者和急救交接区分线索来源',
+    '新增床旁血酮和导尿尿量复查，代谢评估可查有效渗透压，内镜止血后可复阅镜下所见',
+    '急诊首诊可从循环查体取得血管收缩驱动，心脏面板显示上次测量值及时间',
+    '报告页自动接收新结果并保留展开的报告；归档可按来源和时间复阅各项病史与首测体征',
+  ] },
   { v: '1.54.0', notes: [
     '新增 6 级「急诊首诊」。同种子的病情与 5 级相同，病历随问诊、查体和检查逐步补全',
     '「检查」按取证方式分组，支持床旁查体与定向检验；出院移至床旁菜单第一项',
@@ -3849,6 +3904,7 @@ bind();
 if (S) drawBody();
 bindBedSwipe();
 renderAll();
+syncSpeedUI();
 syncLevel();
 if (S) showAdvice(false);
 if (beds.length > 1) flashBedBar(3000);

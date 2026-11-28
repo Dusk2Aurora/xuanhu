@@ -133,7 +133,7 @@ const CASES = {
     name: '高钾血症',
     comorbidities: ['慢性肾病'],
     age: 45, sex: '男', weight: 72, bloodType: 'A',
-    chief: '少尿伴心悸、乏力2天',
+    chief: '心悸、乏力约 1 天',
       complaint: '2 天前起尿量明显减少，1 天前出现心悸、乏力并逐渐加重。既往慢性肾病 3 期。',
     init: {
       vol: 4.25, k: 6.8, na: 134, cl: 100, ca: 1.15, hco3: 14, lac: 3.4, glu: 5.6,
@@ -152,7 +152,7 @@ const CASES = {
     id: 'dka', name: '糖尿病酮症酸中毒',
     comorbidities: ['1 型糖尿病'],
     age: 23, sex: '女', weight: 58, bloodType: 'O',
-    chief: '多饮多尿3天，恶心呕吐伴嗜睡1天',
+    chief: '恶心、呕吐约 1 天',
       complaint: '3 天前起多饮、多尿，1 天前出现恶心、呕吐，今晨嗜睡。1 型糖尿病，自行停用胰岛素。',
     init: {
       vol: 3.6, k: 4.9, na: 130, cl: 98, ca: 1.12, hco3: 8, lac: 2.6, glu: 28.5,
@@ -170,7 +170,7 @@ const CASES = {
     id: 'bleed', name: '上消化道大出血',
     comorbidities: ['消化性溃疡'],
     age: 61, sex: '男', weight: 78, bloodType: 'B',
-    chief: '呕血、黑便1天伴晕厥1次',
+    chief: '黑便约 1 天，伴呕血',
       complaint: '1 天前起呕血 2 次、排黑便，起身时晕厥 1 次。长期服用阿司匹林。',
     init: {
       vol: 3.9, k: 4.1, na: 138, cl: 104, ca: 1.18, hco3: 21, lac: 2.9, glu: 7.2,
@@ -194,7 +194,7 @@ const CASES = {
     id: 'sepsis', name: '感染性休克',
     comorbidities: ['肺部感染'],
     age: 67, sex: '男', weight: 70, bloodType: 'O',
-    chief: '发热咳嗽3天，意识模糊伴尿少1天',
+    chief: '发热、咳嗽约 3 天',
       complaint: '3 天前起发热、咳嗽，1 天前出现意识模糊、尿量减少，皮肤花斑。',
     init: {
       vol: 3.70, k: 4.3, na: 132, cl: 98, ca: 1.15, hco3: 17, lac: 5.8, glu: 8.2,
@@ -218,7 +218,7 @@ const CASES = {
     id: 'opioid', name: '阿片类药物过量',
     comorbidities: [],
     age: 29, sex: '女', weight: 55, bloodType: 'A',
-    chief: '被发现呼之不应、呼吸浅慢1小时',
+    chief: '被发现呼之不应约 1 小时',
       complaint: '1 小时前被发现倒在房间内，呼之不应，呼吸浅慢，双侧瞳孔针尖样缩小。',
     init: {
       vol: 4.30, k: 4.2, na: 138, cl: 102, ca: 1.18, hco3: 26, lac: 1.6, glu: 5.4,
@@ -681,7 +681,12 @@ const ACTIONS = {
       if (!(S.bleedingSites.bleed > 0)) { S.log.push(['操作', '内镜暂缓：无活动性消化道出血', 'warn']); return; }
       if (S.map < 65) { S.log.push(['操作', '内镜 → 血压过低，风险过高，暂缓', 'bad']); S.score -= 4; return; }
       setBleedingRate(S, 'bleed', 0);
-      S.log.push(['操作', '内镜下止血成功', 'good']);
+      const report = appendReport(S, { type: 'endoscopy', kind: 'procedure', name: '上消化道内镜',
+        sampledAt: S.t, reportedAt: S.t, rows: [
+          { label: '镜下所见', value: '上消化道内可见活动性出血', flag: '异常' },
+          { label: '止血后复查', value: '本次内镜检查结束时未见继续出血' },
+        ] });
+      S.log.push(['操作', '内镜下止血成功', 'good', S.t, report.id]);
     },
   },
 };
@@ -703,6 +708,7 @@ function syncPatientFields(S) {
 function restorePatient(S) {
   syncPatientFields(S);
   if (S.traits && root.TRAITS) root.TRAITS.restore(S);
+  restoreKetoneBurden(S);
   restoreDiagnosticReports(S);
 }
 
@@ -806,6 +812,7 @@ function create(caseId, identity = IDENTITY) {
     S.preload = null;
   }
   if (S.opioidTox) S.opioidDepress = 1;
+  restoreKetoneBurden(S);
   /* 首帧自洽：跑一拍真实 tick（1 秒），再把时间/日志/给药记录回滚。
      这样所有代数式都走 tick 里的同一份代码，不会再出现"两份公式不同步"。 */
   (function settle() {
@@ -1290,15 +1297,26 @@ function pumpEffect(S, drugId) {
 }
 
 const EFFECT_DECAY_MINUTES = 90;
+const KETONE_PRODUCTION_REFERENCE = 0.25;
 
 function insulinActivity(S) {
-  let activity = S.eff.insulin;
+  let activity = S.eff?.insulin ?? 0;
   for (const p of S.pk || []) {
     if (p.id === 'insulin' && p.infusionMinutes) {
       activity += p.scale * infusionActivity((S.t - p.t) / 60, p.infusionMinutes, 1 / EFFECT_DECAY_MINUTES);
     }
   }
   return Math.min(3.5, activity);
+}
+
+function ketoneProduction(S, insulinEffect) {
+  return (S.ketoneProd || 0) * (1 - 0.90 * clamp(insulinEffect + (S.insulinLoad || 0) * 0.5, 0, 1));
+}
+
+function restoreKetoneBurden(S) {
+  if (!Number.isFinite(S.ketoneBurden)) {
+    S.ketoneBurden = clamp(ketoneProduction(S, insulinActivity(S)) / KETONE_PRODUCTION_REFERENCE, 0, 1);
+  }
 }
 
 function give(S, drugId, dose, route) {
@@ -1904,6 +1922,11 @@ function tick(S, dtSec) {
   S.infection = clamp(S.infection + (S.infection > 0.2 ? 0.0030 : -0.004) * dtMin
                        * (S.infection > 0.2 ? (2 - (S.immunity || 1)) : 1), 0, 1);
   }
+  if (S.tags.includes('sepsis')) {
+    /* 肺实质影像的变化慢于感染和生命体征的变化。 */
+    const infiltrate = pulmonaryInfiltrate(S);
+    S.pulmonaryInfiltrate = lerp(infiltrate, S.infection, 1 - Math.exp(-dtMin / (7 * 1440)));
+  }
   /* D-二聚体：凝血激活 / 感染 / 组织损伤（手术、止血后）都会升高 */
   {
     const target = 0.3
@@ -1960,7 +1983,17 @@ function tick(S, dtSec) {
   const lacProd = (S.lactProd || 0.015) + 0.30 * o2debt + 0.10 * (S.infection || 0)
                 + 0.06 * (S.hepatotox || 0);
   S.lac = clamp(S.lac + (lacProd - 0.02 * S.lac) * dtMin, 0.3, 25);
-  const ketone = (S.ketoneProd || 0) * (1 - clamp((insulinEffect + S.insulinLoad * 0.5), 0, 1) * 0.90);
+  const ketone = ketoneProduction(S, insulinEffect);
+  if (ketone > 0 || S.ketoneBurden > 0) {
+    /* 沿用酸碱模型的生成驱动，强度归一化后供定性血酮报告使用。已蓄积的酮体随胰岛素效应逐步清除。 */
+    const production = clamp(ketone / KETONE_PRODUCTION_REFERENCE, 0, 1);
+    const clearance = 0.003 + 0.025 * clamp(insEff - 0.6, 0, 1.6);
+    const equilibrium = production * 0.003 / clearance;
+    const burden = S.ketoneBurden ?? production;
+    S.ketoneBurden = equilibrium + (burden - equilibrium) * Math.exp(-clearance * dtMin);
+  } else {
+    S.ketoneBurden = 0;
+  }
   /* 胰岛素充足时酮体被外周组织氧化，等量 HCO₃ 再生
      （β-羟丁酸是"潜在碳酸氢盐"）——替代原来"补碱之外没有任何回收途径"的写法 */
   const ketoRecover = 0.060 * clamp(insEff - 0.6, 0, 1.6);
@@ -2493,8 +2526,10 @@ function examine(S, type) {
     auscultate(S);
     return S.diagnosticReports.at(-1);
   }
+  const generator = root.CASEGEN || (typeof module !== 'undefined' && module.exports ? require('./generator.js') : null);
   const report = appendReport(S, { type, kind: 'exam', name: EXAMS[type].name,
-    ...DIAGNOSTICS.bedside(S, type, { bp, convulsionSigns }), sampledAt: S.t, reportedAt: S.t });
+    ...DIAGNOSTICS.bedside(S, type, { bp, convulsionSigns, vascularTone: generator?.vascularTone }),
+    sampledAt: S.t, reportedAt: S.t });
   S.log.push([fmt(S.t), `${report.name} · 已记录查体`, 'info', S.t, report.id]);
   return report;
 }
@@ -2509,6 +2544,10 @@ function lungWaterFindings(lungWater) {
   return '双肺未见明显肺水肿征象。';
 }
 
+function pulmonaryInfiltrate(S) {
+  return S.pulmonaryInfiltrate ?? Math.max(S.infection || 0, S.cas?.init?.infection || 0);
+}
+
 function chestXrayFindings(S) {
   let pleuralFindings = '未见胸腔积气。';
   /* 模拟中的气胸发生在左侧，针刺减压后可残留积气。 */
@@ -2516,7 +2555,10 @@ function chestXrayFindings(S) {
   else if (S.tensionPTX >= 0.65) pleuralFindings = '左侧胸腔积气，左肺明显受压。';
   else if (S.tensionPTX >= 0.20) pleuralFindings = '左侧胸腔积气，左肺部分受压。';
   else if (S.tensionPTX > 0) pleuralFindings = '左侧少量胸腔积气。';
-  return lungWaterFindings(S.lungWater) + pleuralFindings;
+  /* 当前感染性休克模块的已建模感染源在肺部。 */
+  const parenchymalFindings = S.tags?.includes('sepsis') && pulmonaryInfiltrate(S) >= 0.35
+    ? '肺野可见局灶斑片状实变影，需结合感染线索。' : '未见明确局灶实变影。';
+  return lungWaterFindings(S.lungWater) + pleuralFindings + parenchymalFindings;
 }
 
 function chestXrayReports(S) {

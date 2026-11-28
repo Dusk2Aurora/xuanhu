@@ -11,7 +11,11 @@ async function main() {
     // Advance the patient's clock explicitly to isolate sampling time from result time.
     await page.addInitScript(() => {
       const raf = window.requestAnimationFrame.bind(window);
-      window.requestAnimationFrame = fn => fn.name === 'loop' ? 0 : raf(fn);
+      window.requestAnimationFrame = fn => {
+        if (fn.name !== 'loop') return raf(fn);
+        window.tickWard = () => fn(performance.now());
+        return 0;
+      };
     });
     await page.goto(gameUrl);
     const rows = page.locator('#sheetList');
@@ -58,6 +62,10 @@ async function main() {
     await choose(lung);
     assert.match(await page.locator('#dKv').innerText(), /查体时间/);
     await page.locator('#detailX').click();
+    const lungActions = rows.locator('.paired-actions').filter({ hasText: lung });
+    assert.equal(await lungActions.getByRole('button', { name: '上次记录' }).isVisible(), true);
+    await choose(lung);
+    await page.locator('#detailX').click();
     await close();
 
     const [group, glucose] = await page.evaluate(() => {
@@ -67,11 +75,18 @@ async function main() {
     await page.locator('#btnBody').click();
     await choose(group);
     await choose(glucose);
+    await page.locator('#btnBlood').click();
+    assert.match(await page.locator('#dKv').innerText(), /待回报/);
+    const lungSummary = page.locator('#dKv > dt').filter({ hasText: lung }).locator('xpath=following-sibling::dd[1]//summary').first();
+    await lungSummary.click();
+    assert.match(await page.locator('#dKv').innerText(), /上次对照/);
     await page.evaluate(() => {
-      const { E, S } = window.__LIFE_GAME;
+      const { S } = window.__LIFE_GAME;
       S.t = S.tests.glucose.readyAt;
-      E.pollTests(S);
+      window.tickWard();
     });
+    assert.doesNotMatch(await page.locator('#dKv').innerText(), /待回报/);
+    assert.equal(await lungSummary.evaluate(summary => summary.parentElement.open), true);
     await page.reload();
     await enterWard(page);
     assert.ok(await page.evaluate(() => window.INTAKE.view(window.__LIFE_GAME.S).known.length > 0));

@@ -21,15 +21,17 @@ const EXAMS = {
   pupils: { group: 'neuro', name: '检查双侧瞳孔', desc: '比较两侧瞳孔大小与对光反应。' },
   airway: { group: 'resp', name: '观察气道与呼吸', desc: '观察胸廓起伏、呼吸频率及气道分泌物。' },
   lungs: { group: 'resp', name: '双肺听诊', desc: '比较双侧呼吸音与附加音。' },
-  circulation: { group: 'circ', name: '循环与末梢灌注', desc: '检查脉搏、末梢灌注、颈静脉及心音。' },
+  circulation: { group: 'circ', name: '循环与末梢灌注', desc: '检查脉搏、末梢灌注、颈静脉及心音，并复核模拟血管收缩驱动。' },
   legs: { group: 'circ', name: '比较双下肢', desc: '检查双下肢是否有不对称肿胀或水肿。' },
   abdomen: { group: 'abd', name: '腹部查体', desc: '检查腹部压痛及耻骨上区膨隆。' },
+  urine: { group: 'abd', name: '复核导尿与尿量', desc: '留置导尿后记录当前尿量，结合膀胱充盈程度评估少尿。' },
   skin: { group: 'skin', name: '皮肤与伤口检查', desc: '观察皮色、皮肤湿度和外露伤口。' },
   temp: { group: 'skin', name: '测量体温', desc: '记录当时测得的体温。' },
 };
 
 const TESTS = {
   glucose: { group: 'urgent', name: '指尖血糖', min: 1, cost: 10, fields: ['glu'], desc: '快速筛查血糖异常，可复测变化。' },
+  ketones: { group: 'urgent', name: '床旁血酮', min: 3, cost: 30, fields: [], desc: '记录模拟的定性血酮结果，结合血糖、血气与渗透压鉴别。' },
   ecg: { group: 'urgent', name: '12 导联心电图', min: 5, cost: 40, fields: ['ecg'], desc: '记录节律、传导和 ST–T 改变。' },
   abg: { group: 'blood', name: '动脉血气', min: 8, cost: 120, fields: ['ph', 'paco2', 'pao2', 'hco3', 'lac', 'k'], desc: '评估氧合、通气和酸碱状态。' },
   bmp: { group: 'blood', name: '电解质+肾功', min: 35, cost: 180, fields: ['k', 'na', 'cl', 'ca', 'cr', 'bun'], desc: '查电解质、肌酐和尿素氮。' },
@@ -42,10 +44,10 @@ const TESTS = {
   apap: { group: 'targeted', name: '对乙酰氨基酚暴露筛查', min: 30, cost: 110, fields: [], desc: '查看模拟的暴露证据，结合肝损伤与凝血结果解读。' },
   thyroid: { group: 'targeted', name: '甲状腺功能', min: 45, cost: 145, fields: [], desc: '以模拟定性结果比较促甲状腺激素与游离甲状腺素。' },
   liver: { group: 'targeted', name: '肝功能与凝血趋势', min: 30, cost: 135, fields: ['hepato', 'coag'], desc: '观察模拟肝损伤及凝血随时间的变化。' },
-  metabolism: { group: 'targeted', name: '高血糖与渗透压评估', min: 20, cost: 90, fields: ['glu', 'anionGap', 'osmolality'], desc: '测血糖，并计算阴离子间隙和渗透压。' },
+  metabolism: { group: 'targeted', name: '血糖与渗透压评估', min: 20, cost: 90, fields: ['glu', 'anionGap', 'effectiveOsmolality', 'osmolality'], desc: '测血糖，并计算阴离子间隙、有效渗透压和总渗透压。' },
   lipase: { group: 'targeted', name: '胰脂肪酶', min: 30, cost: 90, fields: [], desc: '辅助评估持续上腹痛伴呕吐。' },
   hcg: { group: 'targeted', name: '血妊娠试验（β-hCG）', min: 20, cost: 75, fields: [], desc: '确认有无妊娠证据，必要时结合超声定位。' },
-  cxr: { group: 'imaging', name: '床旁胸片', min: 15, cost: 90, fields: [], desc: '查看肺水肿及胸腔积气征象。' },
+  cxr: { group: 'imaging', name: '床旁胸片', min: 15, cost: 90, fields: [], desc: '查看肺实质阴影、肺水肿及胸腔积气征象。' },
   lungus: { group: 'imaging', name: '床旁肺超声', min: 3, cost: 100, fields: [], desc: '观察肺滑动和 B 线，辅助辨别气胸与肺间质水肿。' },
   echo: { group: 'imaging', name: '床旁心脏超声', min: 5, cost: 150, fields: [], desc: '观察心包积液和左右心室表现。' },
   fast: { group: 'imaging', name: '创伤床旁超声（FAST）', min: 5, cost: 150, fields: [], desc: '观察腹腔、盆腔有无游离液体。' },
@@ -116,6 +118,11 @@ function bedside(S, type, E) {
           ? '可见充盈' : '未见明显怒张'),
         row('心音', S.tamponade >= 0.35 ? '心音低弱' : perfused ? '心音可闻' : '无有效心搏音'),
       ];
+      const tone = E.vascularTone?.(S);
+      if (tone) {
+        values.svrDrive = tone.value;
+        rows.push(row('血管张力评估', tone.text, !tone.controlled && '偏高'));
+      }
       break;
     }
     case 'legs': {
@@ -138,6 +145,19 @@ function bedside(S, type, E) {
       row('耻骨上区', retention(S) ? '膨隆，可触及充盈膀胱' : '未触及明显膀胱膨隆')];
       break;
     }
+    case 'urine': {
+      if (!S.urineDrained || !Number.isFinite(S.uo)) {
+        rows = [row('尿量', '尚无导尿监测读数')];
+        break;
+      }
+      values.uoHourly = rounded(S.uo * 60, 1);
+      rows = [valueRow('uoHourly', values.uoHourly)];
+      if (S.weight > 0) {
+        values.uoPerKg = rounded(S.uo * 60 / S.weight, 2);
+        rows.push(valueRow('uoPerKg', values.uoPerKg));
+      }
+      break;
+    }
     case 'skin': {
       const injuries = [];
       if (withTag(S, 'trauma')) injuries.push(activeBleed(S, 'trauma') && S.externalBleed
@@ -148,6 +168,7 @@ function bedside(S, type, E) {
       if (S.hb < 95 || E.bp(S).map < 65) signs.push('面色苍白，末梢湿冷');
       if (S.infection >= 0.5 && E.bp(S).map < 65) signs.push('四肢皮肤呈花斑');
       if (S.hepatotox >= 0.45 && withTag(S, 'liver')) signs.push('巩膜与皮肤黄染');
+      if (S.myxedemaSeverity >= 0.45 && S.temp < 36) signs.push('面部浮肿，皮肤干冷');
       if (cholinergic(S) >= 0.35 || S.glu < 3.9) signs.push('出汗');
       if (S.temp >= 39) signs.push('皮肤热');
       rows = [row('皮色与湿度', signs.join('；') || '未见明显异常', signs.length > 0 && '异常'),
@@ -181,11 +202,14 @@ const METRICS = {
   temp: ['体温', '℃', 36, 37.8],
   cohb: ['碳氧血红蛋白（COHb）', '%'],
   ache: ['胆碱酯酶相对活性', '（模拟值）', 0.75],
-  coag: ['凝血功能', '（模拟值）', 0.8],
+  coag: ['凝血功能指数', '（模拟值）', 0.8],
   hepato: ['肝损伤指数', '（模拟值）', null, 0.25],
   troponin: ['高敏肌钙蛋白 I', 'ng/L（模拟值）', null, 26],
   anionGap: ['阴离子间隙（计算）', 'mmol/L'],
+  effectiveOsmolality: ['有效渗透压（计算）', 'mOsm/kg'],
   osmolality: ['总渗透压（计算）', 'mOsm/kg'],
+  uoHourly: ['当前尿流率（按小时折算）', 'mL/h'],
+  uoPerKg: ['按体重折算', 'mL/kg/h'],
 };
 
 function valueRow(field, value) {
@@ -239,7 +263,9 @@ function targetedSample(S, type, sample, E) {
     case 'coag':
     case 'liver':
       sample.coag = Number.isFinite(S.coag) ? rounded(S.coag, 2) : null;
-      return labRows(type, sample);
+      return [...labRows(type, sample), row('结果说明', type === 'liver'
+        ? '肝损伤指数升高提示损伤加重，凝血功能指数下降提示凝血异常加重。为便于复查，保留模拟指数。'
+        : '凝血功能指数下降提示凝血异常加重。')];
     case 'apap': {
       const exposure = E.acetaminophenExposure(S);
       const result = exposure.known ? '存在暴露标志' :
@@ -249,16 +275,30 @@ function targetedSample(S, type, sample, E) {
         row('解读范围', '检验仅提供定性暴露线索，浓度和服药至采样间隔未纳入模型。'),
       ];
     }
-    case 'thyroid':
-      if (withTag(S, 'thyroid')) return [abnormal('TSH', '相对降低'), abnormal('游离 T₄', '相对升高')];
-      if (withTag(S, 'myxedema')) return [abnormal('TSH', '相对升高'), abnormal('游离 T₄', '相对降低')];
-      return [row('TSH', '未见明确升降'), row('游离 T₄', '未见明确升降')];
+    case 'thyroid': {
+      // TSH 的变化晚于临床病情变化，短期复查以生命体征与意识为主。
+      const thyroidDrive = S.cas?.init?.thyroidHeatDrive ?? S.thyroidHeatDrive ?? 0;
+      const hypothyroid = S.cas?.init?.myxedemaSeverity ?? S.myxedemaSeverity ?? 0;
+      const findings = thyroidDrive > 0 && hypothyroid > 0 ? [row('甲状腺功能', '结果需结合既往甲状腺病史复核')] :
+        thyroidDrive > 0 ? [abnormal('TSH', '相对降低'), abnormal('游离 T₄', '相对升高')] :
+        hypothyroid > 0 ? [abnormal('TSH', '相对升高'), abnormal('游离 T₄', '相对降低')] :
+        [row('TSH', '未见明确升降'), row('游离 T₄', '未见明确升降')];
+      return [...findings, row('结果说明', '定性支持线索，短期疗效以体温、心率和意识复查为主。')];
+    }
+    case 'ketones': {
+      const burden = S.ketoneBurden;
+      if (!Number.isFinite(burden)) return [row('血酮（模拟定性）', '未记录')];
+      return [row('血酮（模拟定性）', burden >= 0.55 ? '明显升高' : burden >= 0.15 ? '轻度升高' : '未见明显升高',
+        burden >= 0.15 && '异常')];
+    }
     case 'metabolism':
       sample.anionGap = rounded(S.na - S.cl - S.hco3, 1);
+      sample.effectiveOsmolality = rounded(2 * S.na + S.glu, 1);
       sample.osmolality = rounded(2 * S.na + S.glu + S.bun, 1);
       return labRows(type, sample);
     case 'lipase':
-      return [withTag(S, 'pancreatitis') ? abnormal('脂肪酶', '明显升高') : row('脂肪酶', '未见明显升高')];
+      return [withTag(S, 'pancreatitis') ? abnormal('脂肪酶', '明显升高') : row('脂肪酶', '未见明显升高'),
+        row('结果说明', '模拟定性结果，用于鉴别上腹痛。观察病情变化时复查灌注和尿量。')];
     case 'hcg':
       sample.pregnant = Number(pregnancyEvidence(S));
       return [row('β-hCG', sample.pregnant ? '检出' : '未检出')];

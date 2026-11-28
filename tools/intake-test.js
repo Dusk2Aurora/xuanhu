@@ -51,6 +51,86 @@ for (const seed of [...Array.from({ length: 64 }, (_, index) => index + 1), 915]
   assert.ok(discover(s6, I.view(s6)).length);
 }
 
+for (const id of ['hyperkalemia', 'dka', 'bleed', 'sepsis', 'opioid']) {
+  const S = E.create(id);
+  I.init(S, 6);
+  const chart = I.view(S);
+  assert.ok(chart.chief.text);
+  assert.equal(chart.known.length, 0);
+  assert.ok(discover(S, chart).length, id);
+}
+
+const hypoglycemia = E.create(G.generate(6, 42, ['hypogly']));
+assert.match(I.ask(hypoglycemia, 'family', 'present').evidence[0].text, /大汗.*反应变差/);
+assert.match(I.ask(hypoglycemia, 'family', 'medications').evidence[0].text, /注射胰岛素后未进食/);
+
+const pesticide = E.create(G.generate(6, 42, ['organophosphate']));
+assert.match(I.ask(pesticide, 'witness', 'medications').evidence[0].text, /喷洒农药/);
+assert.match(I.ask(pesticide, 'witness', 'present').evidence[0].text, /两小时后.*流涎/);
+assert.match(I.ask(pesticide, 'ems', 'prehospital').evidence[0].text, /瞳孔/);
+
+const fire = E.create(G.generate(6, 42, ['burn', 'co', 'heatstroke']));
+const fireExposure = I.ask(fire, 'witness', 'medications').evidence.map(item => item.text).join('');
+assert.match(fireExposure, /火场.*烟气/);
+assert.match(fireExposure, /火场.*高温/);
+assert.doesNotMatch(fireExposure, /燃气热水器|四小时/);
+
+const ingestion = E.create(G.generate(6, 42, ['tca', 'apap']));
+assert.equal(I.view(ingestion).chief.source, 'ems');
+ingestion.gcs = 15;
+const ingested = I.ask(ingestion, 'patient', 'medications').evidence;
+assert.equal(ingested.length, 1);
+assert.match(ingested[0].text, /对乙酰氨基酚和阿米替林/);
+assert.equal(ingested[0].minutesBefore, 240);
+const afterIngestion = I.ask(ingestion, 'patient', 'present').evidence;
+assert.ok(afterIngestion.some(item => item.text.includes('口干')));
+assert.ok(afterIngestion.every(item => item.minutesBefore === null));
+
+const mixed = E.create(G.generate(6, 42, ['asthma', 'opioid', 'aki']));
+assert.match(I.view(mixed).chief.text, /呼之不应/);
+const mixedHandoff = I.ask(mixed, 'ems', 'prehospital').evidence.map(item => item.text).join('');
+assert.match(mixedHandoff, /喘鸣/);
+assert.match(mixedHandoff, /水肿/);
+assert.doesNotMatch(mixedHandoff, /患者说话断续/);
+
+const trauma = E.create(G.generate(6, 42, ['tamponade', 'tbi']));
+const traumaScene = I.ask(trauma, 'witness', 'present').evidence;
+assert.equal(traumaScene.find(item => item.text.includes('交通事故')).minutesBefore, null);
+assert.ok(traumaScene.some(item => item.text.includes('一小时后')));
+
+const legacyExposureCase = G.generate(6, 42, ['organophosphate']);
+const exposureText = '到院前喷洒农药，约两小时后出现大汗、流涎和呕吐。';
+legacyExposureCase.admission.history = [{ moduleId: 'organophosphate', minutesBefore: null, source: '现场人员转述', text: exposureText }];
+const legacyExposure = E.create(legacyExposureCase);
+assert.match(I.ask(legacyExposure, 'witness', 'medications').evidence[0].text, /喷洒农药/);
+
+const persisted = E.create(G.generate(6, 42, ['organophosphate']));
+const { chief, contacts } = I.init(persisted);
+persisted.intake = JSON.parse(JSON.stringify({ version: 1, difficulty: 6, chief, contacts,
+  known: [{ id: 'intake-1p67tvx', section: 'present', text: exposureText, source: 'witness',
+    sourceLabel: '现场目击者', minutesBefore: null, obtainedAt: 127 }],
+}));
+for (const topic of ['present', 'medications']) {
+  const result = I.ask(persisted, 'witness', topic);
+  assert.equal(result.status, 'known');
+  assert.equal(result.evidence[0].source, 'witness');
+  assert.equal(result.evidence[0].obtainedAt, 127);
+}
+assert.equal(I.view(persisted).known.length, 2);
+assert.equal(I.ask(persisted, 'witness', 'typo').status, 'unavailable');
+assert.equal(I.view(persisted).inquiries.length, 0);
+
+const savedSeizure = E.create(G.generate(6, 42, ['seizure']));
+const seizureIntake = I.init(savedSeizure);
+savedSeizure.intake = { ...seizureIntake, version: 1, contacts: { ...seizureIntake.contacts, witness: false },
+  chief: { ...seizureIntake.chief, source: 'ems', sourceLabel: '急救交接' },
+  known: [{ id: 'intake-1', section: 'prehospital', text: '开始持续抽搐，伴牙关紧闭和发绀。',
+    source: 'ems', sourceLabel: '急救交接', minutesBefore: 20, obtainedAt: 11 }],
+};
+assert.equal(I.view(savedSeizure).sources.find(item => item.id === 'witness').available, false);
+assert.equal(I.ask(savedSeizure, 'ems', 'prehospital').status, 'known');
+assert.ok(I.view(savedSeizure).known.every(item => item.source === 'ems' && item.obtainedAt === 11));
+
 // An unresponsive patient without family cannot supply subjective symptoms.
 const noFamily = Array.from({ length: 64 }, (_, i) => E.create(G.generate(6, i + 1, ['pancreatitis'])))
   .find(S => !I.view(S).sources.find(source => source.id === 'family').available);

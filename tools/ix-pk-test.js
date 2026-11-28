@@ -98,6 +98,30 @@ const ok = (name, cond, detail) => { if (cond) { pass++; } else { fail++; consol
   ok('同时给药 → 记一条相互作用', n === 1, `记录 ${n} 条`);
 }
 
+// 对照仅相差阿片医嘱，分别检查拮抗期与拮抗消退后的联合药效。
+for (const [opioid, sedative] of [['morphine', 'diazepam'], ['fentanyl', 'midazolam'], ['morphine', 'zolpidem']]) {
+  const spec = { id: 'opioid-interaction', init: { ...CASEGEN.BASE } };
+  const control = E.create(spec), combination = E.create(spec);
+  E.give(combination, opioid);
+  for (const S of [control, combination]) {
+    E.give(S, sedative);
+    E.give(S, 'naloxone');
+    E.tick(S, 15 * 60);
+  }
+  ok(opioid + '/' + sedative + ' 拮抗期间保留镇静药自身效应',
+    control.mod.gcs < 0 && combination.mod.gcs === control.mod.gcs && combination.mod.rr === control.mod.rr);
+  for (const S of [control, combination]) E.tick(S, 31 * 60);
+  ok(opioid + '/' + sedative + ' 拮抗消退后仍有联合抑制',
+    combination.mod.rr < control.mod.rr && combination.mod.gcs < control.mod.gcs);
+}
+{
+  const S = E.create({ id: 'antagonist-only', init: { ...CASEGEN.BASE } });
+  E.give(S, 'naloxone');
+  S.pk.at(-1).eff = { rr: 5, gcs: 3 }; // 旧档曾保存这两个直接效应。
+  E.tick(S, 60);
+  ok('无阿片时旧医嘱不会额外兴奋呼吸或意识', S.mod.rr === 0 && S.mod.gcs === 0);
+}
+
 // 开泵和普通给药共用相互作用提示；未输入即停泵不会产生暴露。
 for (const [pump, other] of [['norepi', 'chlorpromazine'], ['heparin', 'aspirin']]) {
   for (const pumpFirst of [true, false]) {

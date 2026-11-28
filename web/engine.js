@@ -2579,6 +2579,8 @@ function advancePhysiology(S, dtSec) {
     /* 「体征类」效应用平台型时程：输注期间维持（泵入/持续静滴），停药后按半衰期消退。
        替代原来"一给就指数衰减、10 分钟后效应基本消失"的写法——
        那是去甲肾上腺素 32 μg/min 只升 4 mmHg 的原因。 */
+    // 纳洛酮通过专用拮抗状态起效；旧存档中的通用兴奋效应也不再叠加。
+    if (p.id === 'naloxone' || (sub?.cls === '阿片' && opioidAntagonized)) continue;
     const cMod = BENZODIAZEPINES.has(p.id) ? bolusActivity(p, S.t) * benzoAvailable : bolusEffectModifier(p, el, lag, ke);
     concOf[p.n] = Math.max(concOf[p.n] || 0, p.scale * cMod);
     if (THYROID_THERAPY.has(p.id)) {
@@ -2591,7 +2593,6 @@ function advancePhysiology(S, dtSec) {
     }
     /* 阿片类：记录当前最大的效应浓度（用于呼吸抑制深度） */
     if (sub?.cls === '阿片') {
-      if (opioidAntagonized) continue;
       opioidTone = Math.max(opioidTone, p.scale * c);
     }
     recordAdverseExposure(adverseExposures, sub, p.scale * cMod);

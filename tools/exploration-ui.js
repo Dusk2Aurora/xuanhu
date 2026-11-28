@@ -62,6 +62,8 @@ async function main() {
     await choose('结束本床探索');
     await choose('结束并查看本次记录');
     assert.match(await page.locator('#dName').innerText(), /探索结束/);
+    assert.equal(await page.locator('#detail').getByText('分享本例', { exact: true }).count(), 0);
+    assert.equal(await page.locator('#detail').getByLabel('本例分享码').count(), 0);
     assert.ok((await page.locator('#dKv').innerText()).includes(tests[1]));
     assert.deepEqual(await page.evaluate(() => [window.__LIFE_GAME.beds.length, JSON.parse(localStorage.getItem('life.records') || '[]').length]), [original, 0]);
     assert.deepEqual(errors, []);

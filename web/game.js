@@ -729,6 +729,12 @@ function infusionAmount(dose, unit) {
   return `${infusionNumber.format(dose)}${unit ? ' ' + escapeHtml(unit) : ''}`;
 }
 
+function bedsideDeliveredAmount(dose, unit) {
+  const scale = unit === 'mL' ? 1 : 10;
+  if (dose > 0 && dose * scale < 1) return `<${1 / scale}`;
+  return String(Math.floor(dose * scale) / scale);
+}
+
 function infusionDuration(seconds) {
   const minutes = Math.floor(seconds / 60);
   return `${minutes} 分 ${seconds % 60} 秒`;
@@ -936,7 +942,7 @@ function renderBedsideInfusions(patient) {
     const remaining = row.querySelector('[data-bedside-remaining]');
     const seconds = Math.ceil(progress.remainingMinutes * 60 - 1e-8);
     const amount = Number.isFinite(progress.totalDose)
-      ? `已输 ${infusionNumber.format(progress.deliveredDose)} / ${infusionNumber.format(progress.totalDose)}${unit ? ' ' + unit : ''} · ` : '';
+      ? `已输 ${bedsideDeliveredAmount(progress.deliveredDose, unit)} / ${infusionNumber.format(progress.totalDose)}${unit ? ' ' + unit : ''} · ` : '';
     const label = amount + '剩余 ' + infusionDuration(seconds);
     if (remaining.textContent !== label) remaining.textContent = label;
   });
@@ -2886,7 +2892,6 @@ function settleBeds() {
           [['模拟时间', caseTime(st.t)], ['结束情况', escapeHtml(st.death?.reason || '主动结束')],
            ['处置参考费用', money(costSummary(st).total)],
            ['操作记录', buildTimeline(st).map(([time, message]) => escapeHtml(time + ' · ' + message)).join('<br>') || '无操作记录']], '');
-        appendCaseShare($('#detail .card'), window.SHARE?.make(st));
       } else showCaseReview(review.st, review);
     }
   } else {

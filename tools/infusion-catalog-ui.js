@@ -93,7 +93,10 @@ async function main() {
             window.advanceCatalogFrame();
             window.advanceCatalogFrame();
             expect(progress.value >= minutes / 4 && progress.value < minutes, '定时进度未随模拟时间推进');
-            expect(/已输 .+剩余 /.test(row.querySelector('.infusion-meta').textContent), '床旁缺少已输量或剩余时间');
+            const amounts = row.querySelector('.infusion-meta').textContent;
+            expect(/已输 .+剩余 /.test(amounts), '床旁缺少已输量或剩余时间');
+            if (unit === 'mL') expect(/^已输 <?\d+ \/ /.test(amounts), '床旁体积应显示整毫升');
+            else expect(/^已输 <?\d+(?:\.\d)? \/ /.test(amounts), '床旁已输药量最多显示一位小数');
           }
 
           click('#sheet.on #sheetClose');

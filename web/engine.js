@@ -1290,22 +1290,24 @@ function venousOxygenContent(S, capillaryContent, capacity, flow = S.co) {
   /* CaO₂ = (1−f)·CcO₂ + f·CvO₂，且 Fick 给出 CaO₂−CvO₂ = VO₂/CO。 */
   const extraction = S.vo2 / (flow * (1 - S.shunt));
   return clamp(capillaryContent - extraction,
-    oxygenContent(MIN_VENOUS_PO2, capacity), oxygenContent(MAX_VENOUS_PO2, capacity));
+    Math.min(capillaryContent, oxygenContent(MIN_VENOUS_PO2, capacity)), oxygenContent(MAX_VENOUS_PO2, capacity));
 }
 
 function arterialOxygenPressure(shunt, capillaryPressure, capillaryContent, venousContent, capacity) {
   if (shunt <= 0) return capillaryPressure;
   const arterialContent = lerp(capillaryContent, venousContent, shunt);
-  return oxygenPressure(arterialContent, capacity, Math.max(capillaryPressure, MAX_VENOUS_PO2));
+  return oxygenPressure(arterialContent, capacity, capillaryPressure);
 }
 
 function updateOxygenation(S, initialVenousSaturation = null) {
   const capacity = oxygenCapacity(S);
   const capillaryPressure = S.endCapillaryPo2;
   const capillaryContent = oxygenContent(capillaryPressure, capacity);
-  const venousContent = initialVenousSaturation == null
-    ? venousOxygenContent(S, capillaryContent, capacity)
-    : oxygenContent(inverseHill(clamp(initialVenousSaturation, 0.15, 0.85)), capacity);
+  // 首帧或旧档中的静脉饱和度若高于肺毛细血管末端，按当前氧耗和血流重算。
+  const savedSaturation = Number.isFinite(initialVenousSaturation) ? clamp(initialVenousSaturation, 0.15, 0.85) : null;
+  const venousContent = savedSaturation != null && savedSaturation <= hill(capillaryPressure)
+    ? oxygenContent(inverseHill(savedSaturation), capacity)
+    : venousOxygenContent(S, capillaryContent, capacity);
   S.svo2 = hill(oxygenPressure(venousContent, capacity, MAX_VENOUS_PO2));
   S.pao2 = arterialOxygenPressure(S.shunt, capillaryPressure, capillaryContent, venousContent, capacity);
   const fraction = ADVANCED.hasEcmo(S) ? ecmoGasExchangeFraction(S) : 0;

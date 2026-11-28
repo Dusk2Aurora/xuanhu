@@ -1070,6 +1070,21 @@ for (const id of ['hyperkalemia', 'dka', 'bleed', 'sepsis', 'opioid']) {
     Math.abs(healthy.spo2 - co.spo2) < 0.1 && co.spo2 >= 94 && co.do2 < healthy.do2 * 0.7,
     `SpO₂ ${co.spo2.toFixed(1)}%，氧输送 ${Math.round(healthy.do2)} → ${Math.round(co.do2)} mL/min`);
 
+  // 严重低氧旧档的静脉值可能来自默认值。无体外氧合时，分流不能给动脉血增氧。
+  for (const shunt of [0, 0.5]) {
+    const saved = { pao2: 25, shunt, svo2: 0.8 };
+    const patient = Object.assign(E.create({ id: 'legacy-hypoxia', init: { ...G.BASE } }), saved);
+    E.restoreCardiorespiratory(patient, saved);
+    assert.ok(patient.pao2 <= patient.endCapillaryPo2);
+    assert.ok(patient.svo2 < E.hill(patient.endCapillaryPo2));
+    if (shunt === 0) assert.equal(patient.pao2, saved.pao2);
+    else assert.ok(patient.pao2 < saved.pao2);
+    const monitor = E.snapshot(patient);
+    assert.equal(monitor.spo2, Math.round(E.hill(patient.pao2) * 100));
+    E.orderTest(patient, 'poct_abg');
+    assert.equal(patient.tests.poct_abg.sample.s.pao2, monitor.pao2);
+  }
+
   const oldSample = { s: { pao2: 631, spo2: 90 } };
   const saved = { pao2: 631, spo2: 90, shunt: 0.25, svo2: 0.50, labSnap: { abg: oldSample } };
   const restored = Object.assign(E.create({ id: 'oxygen-test', init: { ...G.BASE } }), saved);

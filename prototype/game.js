@@ -3140,7 +3140,7 @@ function openFeedback() {
 }
 
 /* ---------------- 版本 / 更新检查 ---------------- */
-const APP_VERSION = '1.55';
+const APP_VERSION = '1.56';
 const releaseRoot = document.querySelector('meta[name="xuanhu-release-root"]')?.content;
 const releaseBase = releaseRoot ? new URL(releaseRoot, location.href).href.replace(/\/$/, '') : '';
 const platformName = location.protocol === 'file:' ? '离线 HTML' :
@@ -4138,9 +4138,11 @@ function renderAll() {
 
 /* 更新公告：每次发版在这里加一条（新的放最前面） */
 const RELEASES = [
-  { v: '1.55', notes: [
+  { v: '1.56', notes: [
     '高级设备按床启停：VA/VV-ECMO、CRRT 与连续脑电按模拟时间计费，另可申请肺动脉导管取栓。',
     '新增定向救援药、对应病例和床旁快速血气；支付明细区分游戏内全自费与部分支付，家庭可承受预算分布更广。',
+  ] },
+  { v: '1.55', notes: [
     '急性肾损伤病例透析后观察 30 个模拟分钟。自身尿量仍偏低但病情稳定时，可结合肌酐趋势完成出院评估',
     '「不靠药」更名为「不用升压药」，按本床整局用药记录判定，涵盖已停用的升压药泵',
   ] },

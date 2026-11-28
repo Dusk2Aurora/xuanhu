@@ -165,6 +165,34 @@ function myxedemaPattern(c) {
  * priority 只在分数接近时用于排序，不改变分数本身。
  * ------------------------------------------ */
 const RULES = [
+  ...[
+    ['warfarinBleed', '华法林相关大出血', c => c.flag('warfarinLoad') > 0.35, '华法林抗凝负荷持续'],
+    ['dabigatranBleed', '达比加群相关大出血', c => c.flag('dabigatranLoad') > 0.35, '直接凝血酶抑制作用持续'],
+    ['fibrinogenBleed', '大出血伴低纤维蛋白原', c => c.flag('fibrinogen') != null && c.S.fibrinogen < 1.7, '纤维蛋白原不足'],
+  ].map(([id, name, matches, finding]) => ({
+    id, name, priority: 93, tags: [id, 'bleeding'],
+    diff: ['消化道出血', '凝血因子缺乏'],
+    test(c) {
+      if (!matches(c) || !(c.S.bleedingSites?.bleed > 0) || c.s.hb >= 100) return null;
+      return { score: 0.96, evidence: [finding, '活动性消化道出血', `血红蛋白 ${c.s.hb} g/L`] };
+    },
+  })),
+  {
+    id: 'digoxinTox', name: '地高辛中毒', priority: 93, tags: ['digoxinTox', 'arrhythmia'],
+    diff: ['高钾血症', '传导阻滞'],
+    test(c) {
+      if (!(c.flag('digoxinLoad') > 0.3) || (c.s.hr >= 60 && c.s.k < 5.5)) return null;
+      return { score: 0.96, evidence: ['地高辛暴露伴心肌毒性', `心率 ${c.s.hr} 次/分，血钾 ${c.s.k} mmol/L`] };
+    },
+  },
+  {
+    id: 'mtxDelayed', name: '甲氨蝶呤延迟清除', priority: 93, tags: ['mtxDelayed', 'renal'],
+    diff: ['急性肾损伤', '容量不足'],
+    test(c) {
+      if (!(c.flag('mtxLevel') > 1 && c.flag('mtxHoursAtArrival') >= 24 && c.s.cr > 130)) return null;
+      return { score: 0.96, evidence: ['高剂量甲氨蝶呤治疗后仍有药物蓄积', `肌酐 ${c.s.cr} µmol/L`] };
+    },
+  },
 
   /* ===== 心律失常 / 骤停 ===== */
   {

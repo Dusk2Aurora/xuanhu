@@ -393,6 +393,26 @@ const RULES = {
       d:'停止追加高渗盐水并复查',
       s:'评估游离水与近期血钠升幅，监测神经症状' },
   ],
+  warfarinBleed: [
+    { id:'history', when: S => !S.tests.coag?.done, c:'出血伴抗凝用药史', d:'核实抗凝药种类，查凝血功能', s:'查用药记录和凝血报告，复评血压与血红蛋白' },
+    { id:'reversal', when: S => !S.given?.some(x => x.id === 'pcc4'), c:'华法林相关重大出血', d:'及时逆转抗凝并处理出血源', s:'评估四因子凝血酶原复合物及维生素 K₁，稳定后内镜止血' },
+  ],
+  dabigatranBleed: [
+    { id:'history', when: S => !S.tests.coag?.done, c:'出血伴抗凝用药史', d:'核实最后一次服药和肾功能', s:'查用药记录和凝血报告' },
+    { id:'reversal', when: S => !S.given?.some(x => x.id === 'idarucizumab'), c:'达比加群相关重大出血', d:'评估特异性逆转', s:'依达赛珠单抗逆转达比加群，同时评估内镜止血' },
+  ],
+  digoxinTox: [
+    { id:'toxin', when: S => !S.tests.digoxin_level?.done, c:'缓慢心律伴用药线索', d:'确认暴露与严重程度', s:'复核心电图、血钾、肾功及地高辛浓度' },
+    { id:'fab', when: S => !S.given?.some(x => x.id === 'digoxinFab'), c:'严重地高辛毒性可累及心律', d:'结合病史评估特异性抗体', s:'评估地高辛免疫 Fab，治疗后随访心律及血钾' },
+  ],
+  mtxDelayed: [
+    { id:'level', when: S => !S.tests.methotrexate_level?.done, c:'近期有大剂量甲氨蝶呤治疗史', d:'对照给药时间、血药浓度和肌酐', s:'查看交接记录，复查甲氨蝶呤浓度和肾功' },
+    { id:'rescue', when: S => !S.given?.some(x => x.id === 'glucarpidase'), c:'甲氨蝶呤清除延迟', d:'结合暴露评估酶解救援与后续支持', s:'评估 Glucarpidase，并核对亚叶酸钙救援时序' },
+  ],
+  fibrinogenBleed: [
+    { id:'coag', when: S => !S.tests.coag?.done, c:'持续失血伴凝血异常', d:'判断是否消耗了纤维蛋白原', s:'复查凝血报告和血红蛋白' },
+    { id:'replace', when: S => !S.given?.some(x => ['fibrinogenConcentrate','cryoprecipitate'].includes(x.id)), c:'活动性出血伴纤维蛋白原不足', d:'补充缺失成分并处理出血源', s:'评估纤维蛋白原浓缩物或冷沉淀，稳定后内镜止血' },
+  ],
   pe: [
     { id:'o2', when: S => S.spo2 < 92,
       c:'大面积肺栓塞的氧合很差',
@@ -449,6 +469,22 @@ function evaluate(S, kind, id, payload) {
 
   if (kind === 'drug') {
     switch (id) {
+      case 'pcc4':
+        return s.warfarinLoad > 0.15 ? say(true, '复查 INR、失血与凝血因子恢复情况') : say(false, '缺少需紧急逆转的华法林作用，复核药史及凝血结果');
+      case 'idarucizumab':
+        return s.dabigatranLoad > 0.15 ? say(true, '已安排针对性逆转，继续处理出血源') : say(false, '缺少明显达比加群作用，请复核抗凝药种类');
+      case 'digoxinFab':
+        return s.digoxinLoad > 0.18 ? say(true, '监测地高辛毒性消退后的心律与血钾') : say(false, '缺少严重地高辛毒性证据，请复核心电图与用药史');
+      case 'glucarpidase':
+        return s.mtxLevel > 1 ? say(true, '随访血浆甲氨蝶呤浓度及细胞保护情况') : say(false, '缺少甲氨蝶呤清除延迟证据，请复核暴露和浓度');
+      case 'fibrinogenConcentrate':
+      case 'cryoprecipitate':
+        return s.fibrinogen < 1.7 && Number.isFinite(s.fibrinogen) ?
+          say(true, '复查纤维蛋白原、止血情况和输注反应') : say(false, '缺少纤维蛋白原不足证据，请先复核凝血报告');
+      case 'bicarb':
+        if (hasTag(s, 'mtxDelayed') && s.ph <= 7.45) return say(true, '已给予碳酸氢钠，复核酸碱和甲氨蝶呤清除趋势');
+        if (s.ph > 7.20) return say(false, 'pH 还可以，此时纠酸收益不大，反而可能碱中毒');
+        return say(true, '酸中毒明显，纠酸合理');
       case 'kcl':
         if (s.k > 5.0) return say(false, '当前血钾偏高，继续补钾会加重风险');
         return say(true, '已给予补钾，请复查血钾');
@@ -461,9 +497,6 @@ function evaluate(S, kind, id, payload) {
         if (insulinActivity(s) > 2.5) return say(false, '胰岛素已经给得偏多，注意监测血糖和血钾');
         if (hasTag(s, 'dka') && s.glu < 12) return say(false, '血糖已接近目标，继续给会有低血糖风险');
         return say(true, '剂量在常规范围');
-      case 'bicarb':
-        if (s.ph > 7.20) return say(false, 'pH 还可以，此时纠酸收益不大，反而可能碱中毒');
-        return say(true, '酸中毒明显，纠酸合理');
       case 'saline':
         if (s.vol > 5.0) return say(false, '容量已经补足，继续大量补液有肺水肿风险');
         return say(true, '扩容合理');

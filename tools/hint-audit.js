@@ -6,9 +6,9 @@ const E = require('../prototype/engine.js');
 const G = globalThis.CASEGEN, M = globalThis.MENTOR, SUB = globalThis.SUBSTANCES;
 
 /* 未实现的医疗概念（若出现在提示里，说明玩家照做会找不到入口） */
-const MISSING = ['高压氧', '交叉配血', '血库', '呼吸机参数', '体外循环', 'ECMO', 'CRRT', '血浆置换', '动脉穿刺', '中心静脉置管', '肺动脉导管', '胃管', '导尿管冲洗', '亚低温'];
+const MISSING = ['高压氧', '交叉配血', '血库', '呼吸机参数', '血浆置换', '动脉穿刺', '中心静脉置管', '肺动脉导管测压', '胃管', '导尿管冲洗', '亚低温'];
 /* 存在的操作名（用于正向核对） */
-const ACT_NAMES = Object.values(E.ACTIONS).map(a => a.name);
+const ACT_NAMES = [...Object.values(E.ACTIONS), ...Object.values(E.ADVANCED_DEVICES), require('../prototype/pe-intervention')].map(a => a.name);
 const DRUG_NAMES = SUB.DRUGS.map(d => d.n);
 
 let hits = [], checked = 0;

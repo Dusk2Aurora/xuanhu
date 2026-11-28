@@ -17,6 +17,9 @@
 'use strict';
 let IDENTITY = null;      /* 测试用：固定病人身份；生产环境使用病例所带资料 */
 const DIAGNOSTICS = root.LIFE_EXAMS || (typeof module !== 'undefined' && module.exports ? require('./exams.js') : null);
+const FINANCE = root.LIFE_FINANCE || (typeof module !== 'undefined' && module.exports ? require('./finance.js') : null);
+const ADVANCED = root.LIFE_ADVANCED_CARE || (typeof module !== 'undefined' && module.exports ? require('./advanced-care.js') : null);
+const PE_INTERVENTION = root.PE_INTERVENTION || (typeof module !== 'undefined' && module.exports ? require('./pe-intervention.js') : null);
 const { EXAMS, EXAM_GROUPS, TESTS, TEST_GROUPS } = DIAGNOSTICS;
 const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
 const lerp  = (a, b, k) => a + (b - a) * k;
@@ -637,6 +640,10 @@ const ACTIONS = {
     name: '血液透析', cost: 1800,
     desc: '弥散清除钾/尿素/肌酐并超滤。3–4 小时。',
     apply: (S) => {
+      if (ADVANCED.active(S, 'crrt')) {
+        S.log.push(['操作', '本床正在运行 CRRT', 'warn']);
+        return;
+      }
       if (S.dialysisUntil && S.t < S.dialysisUntil) return;
       S.dialysisUntil = S.t + 180 * 60;
       if (S.tags.includes('aki')) S.akiObservation = null;
@@ -715,6 +722,7 @@ function syncPatientFields(S) {
 
 function restorePatient(S) {
   syncPatientFields(S);
+  ADVANCED.restore(S);
   if (S.traits && root.TRAITS) root.TRAITS.restore(S);
   restoreKetoneBurden(S);
   restoreDiagnosticReports(S);
@@ -788,6 +796,7 @@ function create(caseId, identity = IDENTITY) {
   };
   /* 合并病例定义（后写覆盖前写） */
   Object.assign(S, C.init || {});
+  S.advancedCare = {};
   restoreOxygenFlow(S, C.init ?? {});
   S.bleedingSites = { ...(C.init?.bleedingSites || (C.id === 'bleed' ? { bleed: S.bleedRate } : {})) };
   if (Object.keys(S.bleedingSites).length) {
@@ -832,10 +841,13 @@ function create(caseId, identity = IDENTITY) {
   (function settle() {
     const t0 = S.t, log0 = S.log.slice(), hist0 = (S.history || []).slice();
     const given0 = (S.given || []).slice(), pk0 = (S.pk || []).slice();
-    const cost0 = S.cost, drugCost0 = S.drugCost;
+    const cost0 = S.cost, drugCost0 = S.drugCost, rescueDrugCost0 = S.rescueDrugCost;
+    const coverageCost0 = S.coverageCost ? { ...S.coverageCost } : undefined;
     try { tick(S, 1); } catch (err) { /* 首帧失败不影响创建 */ }
     S.t = t0; S.log = log0; S.history = hist0;
     S.given = given0; S.pk = pk0; S.cost = cost0; S.drugCost = drugCost0;
+    S.rescueDrugCost = rescueDrugCost0;
+    S.coverageCost = coverageCost0;
     S.death = null; S.discharged = false; S.running = true;
   })();
 
@@ -906,7 +918,7 @@ function applyDelta(S, key, d) {
       /* 肌酐不再被直接改写：nephrotoxin 通过降低肾清除表达（见 tick） */
       S.renalFactor = clamp((S.renalFactor || 1) * (1 - d / 400), 0.05, 1.5);
       break;
-    default: break;
+    default: root.SUBSTANCES?.applyRescueEffect?.(S, key, d); break;
   }
 }
 
@@ -1014,9 +1026,9 @@ function oxygenPressure(content, capacity, upperPressure) {
   return (low + high) / 2;
 }
 
-function venousOxygenContent(S, capillaryContent, capacity) {
+function venousOxygenContent(S, capillaryContent, capacity, flow = S.co) {
   /* CaO₂ = (1−f)·CcO₂ + f·CvO₂，且 Fick 给出 CaO₂−CvO₂ = VO₂/CO。 */
-  const extraction = S.vo2 / (S.co * (1 - S.shunt));
+  const extraction = S.vo2 / (flow * (1 - S.shunt));
   return clamp(capillaryContent - extraction,
     oxygenContent(MIN_VENOUS_PO2, capacity), oxygenContent(MAX_VENOUS_PO2, capacity));
 }
@@ -1036,6 +1048,14 @@ function updateOxygenation(S, initialVenousSaturation = null) {
     : oxygenContent(inverseHill(clamp(initialVenousSaturation, 0.15, 0.85)), capacity);
   S.svo2 = hill(oxygenPressure(venousContent, capacity, MAX_VENOUS_PO2));
   S.pao2 = arterialOxygenPressure(S.shunt, capillaryPressure, capillaryContent, venousContent, capacity);
+  if (ADVANCED.hasEcmo(S)) {
+    const fraction = ecmoGasExchangeFraction(S);
+    const oxygenatorPressure = 160;
+    const arterial = oxygenContent(S.pao2, capacity);
+    const circuit = oxygenContent(oxygenatorPressure, capacity);
+    S.pao2 = oxygenPressure(lerp(arterial, Math.max(arterial, circuit), fraction), capacity,
+      Math.max(S.pao2, oxygenatorPressure));
+  }
   S.sao2 = hill(S.pao2);
   S.spo2 = S.sao2 * 100;
 }
@@ -1044,7 +1064,8 @@ function roomAirSaturation(S, co2 = S.paco2) {
   const pressure = endCapillaryOxygenPressure(S, 0.21, co2);
   const capacity = oxygenCapacity(S);
   const capillaryContent = oxygenContent(pressure, capacity);
-  const venousContent = venousOxygenContent(S, capillaryContent, capacity);
+  const flow = ADVANCED.active(S, 'vaEcmo') ? nativeCardiacOutput(S) : S.co;
+  const venousContent = venousOxygenContent(S, capillaryContent, capacity, flow);
   return hill(arterialOxygenPressure(S.shunt, pressure, capillaryContent, venousContent, capacity)) * 100;
 }
 
@@ -1094,7 +1115,7 @@ function restoreDischargeObservation(S, saved) {
     S.roomAirStableSince = null;
   }
 
-  if (S.tags.includes('aki')) {
+  if (needsRenalObservation(S)) {
     // 旧趋势没有连续尿量或肌酐，读取存档后从当前开始留观。
     S.akiObservation = saved.akiObservation ?? null;
     trackAkiObservation(S);
@@ -1282,14 +1303,17 @@ function drugPrice(sub, dose, patient) {
   const referenceWeight = 70;
   const weight = Number.isFinite(patient?.weight) && patient.weight > 0 ? patient.weight : referenceWeight;
   const weightScale = /\/kg\b/.test(sub.unit || '') ? weight / referenceWeight : 1;
+  const billedQuantity = sub.billingStep > 0 ? Math.ceil(quantity / sub.billingStep) * sub.billingStep : quantity;
   // 持续泵的参考价为默认泵速运行一小时的价格。
-  return sub.cost * (quantity / referenceDose) * weightScale;
+  return sub.cost * (billedQuantity / referenceDose) * weightScale;
 }
 
 function chargeSubstance(S, sub, amount) {
   // 费用以元累计，保留每个模拟步长产生的亚分金额。
   S.cost += amount;
+  FINANCE.recordCoverage(S, sub.coverage, amount);
   if (sub.kind === 'drug' || sub.cls === '血液成分' || sub.kind == null) S.drugCost += amount;
+  if (sub.rescue && amount > 0) S.rescueDrugCost = (S.rescueDrugCost || 0) + amount;
 }
 
 function pumpOrder(name, action, rate, unit) {
@@ -1338,8 +1362,24 @@ function timedSupportEndsAt(order) {
 function trackCirculationObservation(S) {
   if (!S.hadCirculatorySupport) return;
   const support = activeCirculationSupport(S);
-  if (support.running.length || support.timed.length || !circulationStable(S, bp(S))) S.circulationStableSince = null;
-  else S.circulationStableSince ??= S.t;
+  if (ADVANCED.active(S, 'vaEcmo') || support.running.length || support.timed.length || !circulationStable(S, bp(S))) {
+    S.circulationStableSince = null;
+  } else S.circulationStableSince ??= S.t;
+}
+
+function advancedDeviceAction(S, id, enable) {
+  const result = ADVANCED.action(S, id, enable, fmt);
+  if (!result.ok) return result;
+  if (id === 'vaEcmo' || id === 'vvEcmo') {
+    if (id === 'vaEcmo') markCirculatorySupport(S);
+    S.hadOxygenSupport = true;
+    S.roomAirStableSince = null;
+    updateCirculation(S);
+    updateOxygenation(S);
+    updateCirculation(S);
+  }
+  if (id === 'crrt') S.akiObservation = null;
+  return result;
 }
 
 function changePump(S, sub, route, rate) {
@@ -1529,7 +1569,7 @@ function canObserveMildOliguria(S, spontaneous) {
       S.hco3 >= 14 && S.ph >= 7.28 && circulationStable(S, bp(S)))) return false;
   if (!S.hadCirculatorySupport) return true;
   const { running, timed } = activeCirculationSupport(S);
-  return !running.length && !timed.length;
+  return !ADVANCED.active(S, 'vaEcmo') && !running.length && !timed.length;
 }
 
 function akiObservationWorsened(window, spontaneous, creatinine) {
@@ -1537,9 +1577,13 @@ function akiObservationWorsened(window, spontaneous, creatinine) {
     creatinine - window.creatinineNadir >= AKI_CREATININE_RISE;
 }
 
+function needsRenalObservation(S) {
+  return S.tags?.includes('aki') || S.advancedCare?.crrt?.startedAt != null;
+}
+
 function trackAkiObservation(S, previousTime = S.t) {
   // 跨过透析结束的这一拍仍含透析效应，以本拍结束为最早观察起点。
-  if (S.dialysisUntil > S.t || !Number.isFinite(S.cr)) {
+  if (ADVANCED.active(S, 'crrt') || S.dialysisUntil > S.t || !Number.isFinite(S.cr)) {
     S.akiObservation = null;
     return;
   }
@@ -1601,6 +1645,7 @@ function tick(S, dtSec) {
   const thyroidDepression = clamp(S.myxedemaSeverity || 0, 0, 1);
   const previousTime = S.t;
   S.t += dtSec;
+  ADVANCED.advance(S, dtSec);
   DIAGNOSTICS.advanceTroponin(S, dtMin);
 
   const env = S.env || {};
@@ -1673,7 +1718,8 @@ function tick(S, dtSec) {
           drugMod[key] += p.eff[key] * effectScale;
         } else {
           // 止惊效应随已送达剂量累积，避免把完整负荷量算成瞬时静推。
-          applyDelta(S, key, p.eff[key] * p.scale * (key === 'seizure' ? supplied : released));
+          const continuousEffect = key === 'seizure' || root.SUBSTANCES?.isRescueInfusionEffect?.(key);
+          applyDelta(S, key, p.eff[key] * p.scale * (continuousEffect ? supplied : released));
         }
       }
       concOf[p.n] = Math.max(concOf[p.n] || 0, p.scale * active);
@@ -1797,6 +1843,14 @@ function tick(S, dtSec) {
   const maintenanceIntake = 0.0017 * clamp((5.4 - S.vol) / 0.9, 0, 1);
   S.vol = clamp(S.vol + maintenanceIntake * dtMin, 1.5, 7.8);
 
+  const crrtActive = ADVANCED.active(S, 'crrt');
+  if (crrtActive) {
+    // 模拟低速等渗超滤，容量偏低时暂停净脱水。
+    const congestion = Math.max((S.interstitium - 11) / 2, (S.lungWater - 0.25) / 0.4);
+    const ultrafiltration = 0.0025 * clamp(congestion, 0, 1) * clamp((S.vol - 4.2) / 0.5, 0, 1);
+    applyDelta(S, 'vol', -ultrafiltration * dtMin);
+  }
+
   /* 肺水：Starling 滤过（肺毛细血管压 − 胶体渗透压）− 淋巴/利尿清除
      —— 替代原来"肺水肿只能靠模块直接给 SpO₂ 设上限"的写法 */
   S.pcwp = computePcwp(S);
@@ -1830,6 +1884,12 @@ function tick(S, dtSec) {
     const retention = Math.exp(-Math.LN2 / 90 * dialysisMinutes);
     S.cr = clamp(S.cr * retention, 40, 1400);
     S.bun = clamp(S.bun * retention, 1.5, 160);
+  }
+  if (crrtActive) {
+    // 连续清除逐步逼近置换液平衡，肾功能与自身尿量继续独立计算。
+    const removal = -Math.expm1(-Math.LN2 * dtMin / 150);
+    S.cr -= Math.max(0, S.cr - 75) * removal;
+    S.bun -= Math.max(0, S.bun - 4.5) * removal;
   }
 
   S.bun = clamp(S.bun + (S.cr * 0.045 + 1.2 - S.bun) * 0.004 * dtMin, 1.5, 160);
@@ -1866,10 +1926,11 @@ function tick(S, dtSec) {
   /* ---------- 6. 钾 ---------- */
   const kClear = 0.062 * (gfrNow / 110);
   const dialClear = 0.20 * Math.max(0, S.k - 3.2) * (dialysisMinutes / dtMin);
+  const crrtClear = crrtActive ? 0.14 * Math.max(0, S.k - 3.8) : 0;
   const insShift = (insulinEffect + S.insulinLoad * 0.4) * 0.080 * Math.max(0, S.k - 3.6);
   const acidShift = (S.ph < 7.30 ? (7.30 - S.ph) * 0.06 : -(S.ph - 7.30) * 0.04);
   const kExcrete = kClear * clamp((S.k - 3.7) / 1.3, 0, 2.2);   // 低钾时肾小管重吸收↑，排钾趋近 0
-  const dk = (S.kProd - kExcrete - dialClear - insShift) / S.ecfVd
+  const dk = (S.kProd - kExcrete - dialClear - crrtClear - insShift) / S.ecfVd
            + acidShift * 0.02;
   S.k = clamp(S.k + dk * dtMin, 1.2, 9.8);
 
@@ -1902,7 +1963,10 @@ function tick(S, dtSec) {
   const tidalVolume = S.vent ? ventilatorTidalVolume(ventilatorFlow(S)) * clamp(airwayVolumeFactor, 1 / 3, 1) : S.vt;
   const va = Math.max(0.35, tidalVolume * (1 - 0.40 * pleuralLoad) * (1 - vdvtEff) * S.rr / 1000);   // L/min
   /* PaCO₂ = 0.863 × VCO₂(mL/min) / VA(L/min) —— 肺泡通气方程 */
-  const paco2T = clamp(0.863 * S.vco2 / va, 10, 135);
+  const nativePaco2 = 0.863 * S.vco2 / va;
+  const sweep = ADVANCED.hasEcmo(S) ? 4 * ecmoGasExchangeFraction(S) : 0;
+  const co2Exchange = sweep * Math.max(0, nativePaco2 - 38) / (va + sweep);
+  const paco2T = clamp(nativePaco2 - co2Exchange, 10, 135);
   S.paco2 = lerp(S.paco2, paco2T, clamp(0.5 * dtMin, 0, 1));
   if (!S.vent) updateOxygenSupply(S);
   /* 通气肺毛细血管先响应 FiO₂；与分流血按氧含量混合后，再求动脉 PaO₂ 和 SaO₂。 */
@@ -1947,9 +2011,12 @@ function tick(S, dtSec) {
   S.spontaneousRr = inArrest ? 0 : rrT;
   S.spontaneousCO2 = 0.863 * S.vco2 / Math.max(0.35, vtT * (1 - 0.40 * pleuralLoad) * (1 - vdvtEff) * S.spontaneousRr / 1000);
   S.respiratoryAssessmentAt = S.t;
-  const onRespiratorySupport = S.vent || S.fio2 > 0.21 || S.o2;
+  const onRespiratorySupport = S.vent || S.fio2 > 0.21 || S.o2 || ADVANCED.hasEcmo(S);
   if (onRespiratorySupport) S.hadOxygenSupport = true;
-  if (inArrest || onRespiratorySupport || S.spo2 < 94 || roomAirSaturation(S) < 94) S.roomAirStableSince = null;
+  const inadequateNativeVentilation = ADVANCED.hadEcmo(S) && (S.spontaneousCO2 > 55 || S.paco2 > 55);
+  if (inArrest || onRespiratorySupport || inadequateNativeVentilation || S.spo2 < 94 || roomAirSaturation(S) < 94) {
+    S.roomAirStableSince = null;
+  }
   else if (S.roomAirStableSince == null) S.roomAirStableSince = S.t;
   /* 持续的大呼吸（Kussmaul / 代酸代偿）本身会消耗呼吸肌耐力
      —— 替代原来只有"气道阻力高才算做功"的写法 */
@@ -1987,7 +2054,7 @@ function tick(S, dtSec) {
   /* 高钾心电图：K>5.5 T 波高尖 → K>6.5 QRS 增宽 → K>7.5 正弦波 */
   S.qrsWide = Math.max(S.k > 6.2 ? clamp((S.k - 6.2) / 2.6, 0, 1) : 0, clamp(S.tca || 0, 0, 1));
   S.prLong  = S.k > 6.0 ? clamp((S.k - 6.0) / 3.0, 0, 1) : 0;
-  const hrTarget = clamp(78 + symp * 32 + (S.hrDrive || 0) + (S.mod.hr || 0) + toxHr + envHr + wdHr
+  const hrTarget = clamp(78 + symp * 32 + (S.hrDrive || 0) - 47 * (S.digoxinLoad || 0) + (S.mod.hr || 0) + toxHr + envHr + wdHr
                          - 55 * (S.cholinergic || 0) + clamp((S.temp - 37) * 8, 0, 26) + kHr - 32 * thyroidDepression
                          - clamp(((S.icp || 0) - 0.60) * 70, 0, 40) + (S.flushHr || 0), 28, 200);   // Cushing：颅压高 → 心率慢
   if (!inArrest) {
@@ -2155,6 +2222,7 @@ function tick(S, dtSec) {
   const hco3Gen = clamp(0.004 * (24 - S.hco3) / 8 + 0.004, 0.0015, 0.020)
                 * clamp(gfrNow / 110, 0.12, 1.1)
                 + 0.05 * (dialysisMinutes / dtMin)
+                + (crrtActive ? 0.018 * Math.max(0, 24 - S.hco3) : 0)
                 + ketoRecover
                 + (S.hco3Boost || 0);
   const hco3Cons = 0.004
@@ -2182,12 +2250,14 @@ function tick(S, dtSec) {
       - clamp((S.temp - 40) * 4, 0, 6)
       - (S.hco3 < 10 ? 2 : 0)), 3, 15);
   if (S.odsDamage) S.gcs = Math.min(S.gcs, 8);
+  PE_INTERVENTION.advance(S);
 
   /* ---------- 17. 心律 ---------- */
   evaluateRhythm(S, dtMin);
   if (inAsystole) evaluateAsystole(S, dtMin, nativeSv, arrestEpinephrine);
   /* 所有致心律失常的来源都在累积损伤前同步为骤停状态。 */
   if (S.rhythm === 'sinus' && (S._vfRisk || 0) > 1.15) triggerVf(S);
+  ADVANCED.monitor(S);
 
   /* ---------- 18. 累积损伤（剂量×时间积分，替代"某指标超阈值 N 分钟"计时器） ---------- */
   const ins = S.insult;
@@ -2236,7 +2306,7 @@ function tick(S, dtSec) {
 
   finishDelivery(S);
   trackCirculationObservation(S);
-  if (S.tags.includes('aki')) trackAkiObservation(S, previousTime);
+  if (needsRenalObservation(S)) trackAkiObservation(S, previousTime);
 
   /* ---------- 19. 历史 ---------- */
   if (!S._lastHist || S.t - S._lastHist >= 10) {
@@ -2256,9 +2326,28 @@ function tick(S, dtSec) {
   return S;
 }
 
-function cardiacOutput(S) {
+function nativeCardiacOutput(S) {
   if (S.rhythm === 'sinus') return S.hr * S.sv / 1000;
   return 1.8 * clamp((S.mapBoost || 0) / 25, 0, 1);
+}
+
+function vaEcmoOutput(S, nativeFlow) {
+  return ADVANCED.ecmoFlow(S) * Math.max(0.12, 1 - nativeFlow / 7);
+}
+
+function cardiacOutput(S) {
+  const nativeFlow = nativeCardiacOutput(S);
+  return ADVANCED.active(S, 'vaEcmo') ? nativeFlow + vaEcmoOutput(S, nativeFlow) : nativeFlow;
+}
+
+function ecmoGasExchangeFraction(S) {
+  const nativeFlow = nativeCardiacOutput(S);
+  if (ADVANCED.active(S, 'vaEcmo')) {
+    const circuitFlow = vaEcmoOutput(S, nativeFlow);
+    return circuitFlow / (nativeFlow + circuitFlow);
+  }
+  // VV 回流经右心进入肺循环；考虑再循环，估计参与气体交换的有效比例。
+  return nativeFlow > 0 ? Math.min(0.82, 0.78 * ADVANCED.ecmoFlow(S) / nativeFlow) : 0;
 }
 
 function computeMap(S) {
@@ -2404,6 +2493,8 @@ function note(S, id, msg, lvl) {
 
 function endCase(S, type, reason, dischargeOutcome = null) {
   if (S.death || S.discharged || S.dischargeOutcome) return;
+  if (type === 'discharge' && dischargeOutcome?.status !== 'failed' && ADVANCED.dischargeBlockers(S).length) return;
+  ADVANCED.finish(S);
   S.running = false;
   if (type === 'death') {
     S.death = { t: S.t, reason };
@@ -2430,6 +2521,7 @@ function observationTime(seconds) {
 
 function assessCirculationObservation(S, pressure) {
   if (!S.hadCirculatorySupport) return null;
+  if (ADVANCED.active(S, 'vaEcmo')) return { phase: 'active', remainingSeconds: null };
   const { running, timed } = activeCirculationSupport(S);
   const minutes = CIRCULATION_OBSERVATION / 60;
   if (running.length) {
@@ -2456,6 +2548,7 @@ function assessCirculationObservation(S, pressure) {
 }
 
 function assessAkiDischarge(S, add, observationDeadlines) {
+  if (ADVANCED.active(S, 'crrt')) return;
   const minutes = AKI_OBSERVATION / 60;
   if (S.dialysisUntil > S.t) {
     add('血液透析仍在进行，需在结束后复评肾功能', true);
@@ -2489,7 +2582,7 @@ function assessAkiDischarge(S, add, observationDeadlines) {
   const since = Math.max(samples[0]?.t ?? S.t, Math.min(standardSince, mildSince));
   const endsAt = since + AKI_OBSERVATION;
   if ((spontaneous >= AKI_URINE_TARGET || canObserveMild) && S.t < endsAt - 1e-7) {
-    const phase = S.dialysisUntil > 0 ? '透析后' : '急性肾损伤';
+    const phase = S.advancedCare?.crrt?.stoppedAt != null ? 'CRRT 撤除后' : S.dialysisUntil > 0 ? '透析后' : '急性肾损伤';
     const remaining = observationTime(Math.ceil(endsAt - S.t - 1e-7));
     add(`${phase}需连续留观 ${minutes} 个模拟分钟，还需 ${remaining}，复评自身尿量与肌酐趋势`, false);
     observationDeadlines.push(endsAt);
@@ -2512,6 +2605,8 @@ function dischargeCheck(S) {
   const lowSodium = tags.includes('hypona');
   const hyperosmolar = tags.includes('hhs');
   const observationDeadlines = S.cas?.observations?.(S).map(window => window.endsAt) ?? [];
+  for (const reason of ADVANCED.dischargeBlockers(S)) add(reason, true);
+  if (PE_INTERVENTION.active(S)) add('肺动脉导管取栓进行中', true);
   if (S.rhythm !== 'sinus') add('心律异常', true);
   if (b.sys < CIRCULATION_MIN_SYSTOLIC) add(`收缩压 ${b.sys}`, b.sys < 80 || b.map < CIRCULATION_MIN_MAP);
   const minHr = S.cas?.minDischargeHR ?? 50;
@@ -2525,8 +2620,10 @@ function dischargeCheck(S) {
   else if (S.fio2 > 0.21 || S.o2) {
     add('仍在吸氧，需评估室内空气血氧', roomAirSaturation(S) < 90);
   }
-  else if (S.hadOxygenSupport && (S.roomAirStableSince == null || S.t - S.roomAirStableSince < ROOM_AIR_OBSERVATION)) {
-    bad.push('撤除呼吸支持后，室内空气血氧需稳定至少 5 分钟');
+  else if (!ADVANCED.hasEcmo(S) && S.hadOxygenSupport &&
+           (S.roomAirStableSince == null || S.t - S.roomAirStableSince < ROOM_AIR_OBSERVATION)) {
+    if (ADVANCED.hadEcmo(S)) bad.push('撤除 ECMO 后，需确认自主换气与室内空气血氧稳定至少 5 分钟');
+    else bad.push('撤除呼吸支持后，室内空气血氧需稳定至少 5 分钟');
     if (S.roomAirStableSince != null) observationDeadlines.push(S.roomAirStableSince + ROOM_AIR_OBSERVATION);
   }
   const circulationObservation = assessCirculationObservation(S, b);
@@ -2587,7 +2684,7 @@ function dischargeCheck(S) {
     }
     if (S.paco2 > 50) add(`二氧化碳分压 ${Math.round(S.paco2)} mmHg`, S.paco2 >= 65);
   }
-  if (tags.includes('aki')) assessAkiDischarge(S, add, observationDeadlines);
+  if (needsRenalObservation(S)) assessAkiDischarge(S, add, observationDeadlines);
   if (S.cas?.extra) bad.push(...S.cas.extra(S, issue));
   const observationEndsAt = observationDeadlines.length ? Math.min(...observationDeadlines) : null;
   return { ok: bad.length === 0, reasons: [...new Set(bad)], majorReasons: [...new Set(major)],
@@ -2804,7 +2901,7 @@ function testSample(S, id) {
     sample.plt = Number.isFinite(S.plt) ? Math.round(S.plt) : null;
   }
   if (id === 'ecg') {
-    Object.assign(sample, { stemi: S.stemi || 0, qrsWide: S.qrsWide || 0, tca: S.tca || 0 });
+    Object.assign(sample, { stemi: S.stemi || 0, qrsWide: S.qrsWide || 0, tca: S.tca || 0, digoxin: S.digoxinLoad || 0 });
   }
   const test = TESTS[id];
   const rows = id === 'ecg' ? DIAGNOSTICS.ecgRows(sample) : test.group === 'imaging'
@@ -2988,7 +3085,8 @@ function scoreBreakdown(S) {
   if (dischargeStatus === 'penalized') add('出院条件未达标', -30);
   if (dischargeStatus === 'failed') add('出院存在重大问题', -base);
   if (S.death) add('死亡结局', -45);
-  add('诊疗费用', -Math.min(15, Math.max(0, (S.cost - 800) / 120)));
+  const routineCost = S.cost - (S.deviceCost || 0) - (S.rescueDrugCost || 0) - (S.peIntervention?.cost || 0);
+  add('诊疗费用', -Math.min(15, Math.max(0, (routineCost - 800) / 120)));
 
   const penalties = +(S.penalties || 0);
   const penaltyDelta = -penalties * 6;
@@ -3034,6 +3132,9 @@ function finalScore(S) {
 const API = {
   setIdentity(p) { IDENTITY = p || null; }, CASES, DRUGS, ACTIONS, TESTS, DELIVERY_DURATION, create, restorePatient, tick, give, acetaminophenExposure, setEnv, finalScore, scoreBreakdown, bp, snapshot,
               ventilatorSettings, setVentilatorFlow, oxygenSettings, setOxygenFlow,
+              ADVANCED_DEVICES: ADVANCED.DEVICES, advancedDevice: ADVANCED.status, advancedDeviceAction,
+              advancedDeviceCost: S => S.deviceCost || 0, advancedDischargeBlockers: ADVANCED.dischargeBlockers,
+              eegReading: ADVANCED.eegReading,
               dischargeCheck, signDischarge, glucoseDischargeTarget, glucoseReviewStatus, potassiumTarget, convulsionSigns, conditionReviewBaseline, conditionReviewChange,
               EXAMS, EXAM_GROUPS, TEST_GROUPS, examine, reports, getReport, knownResults,
               auscultate, orderTest, pollTests, testValue, chestXrayReports, restoreChestXrayReports,

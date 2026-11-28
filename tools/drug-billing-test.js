@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const SUB = require('../prototype/substances');
 const CASEGEN = require('../prototype/generator');
 const E = require('../prototype/engine');
+const FINANCE = require('../prototype/finance');
 const ACHIEVEMENTS = require('../prototype/achievements');
 const SHARE = require('../prototype/share');
 
@@ -117,6 +118,68 @@ const reload = (scenario, saved) => {
   close(secondReload.cost, 170 + throughDeath, '旧档总费用保留并累加新费用');
 }
 
+{
+  const budgets = Array.from({ length: 2048 }, (_, seed) => FINANCE.initInsurance({ seed }).oopCap)
+    .sort((a, b) => a - b);
+  assert.ok(budgets[0] < 9000 && budgets[511] < 25000, '新预算仍覆盖困难家庭和相对有限的家庭');
+  assert.ok(budgets[1023] > 45000, '典型家庭的承受力提高');
+  assert.ok(budgets[1637] > 100000 && budgets[1945] > 160000, '预算高尾可承担长时高端设备运行');
+  assert.deepEqual(FINANCE.initInsurance({ seed: 42 }), FINANCE.initInsurance({ cas: { seed: 42 } }));
+
+  const old = { cost: 1000, bedCost: 25,
+    ins: { t: '职工医保', rate: 0.78, ded: 800, cap: 30000, income: 5000, oopCap: 16000 } };
+  assert.deepEqual(FINANCE.costSummary(old), {
+    total: 1025, reimb: 175.50, selfPay: 849.50, cap: 16000, selfPayOnly: 0, partialUpfront: 0, eligible: 1025,
+  });
+  const fractional = { ...old, cost: 1000.003 };
+  const withSelfPay = FINANCE.costSummary(fractional, 0.004, 'selfPay');
+  assert.equal(withSelfPay.total, 1025.01);
+  assert.equal(withSelfPay.eligible, 1025, '全自费亚分费用的取整不改变医保基数');
+  FINANCE.initInsurance(old, '居民医保');
+  assert.equal(old.ins.income, 5000);
+  assert.equal(old.ins.oopCap, 16000, '旧档预算在切换参保类型时也保留原值');
+}
+
+{
+  const S = bed();
+  const otherBed = bed();
+  FINANCE.initInsurance(S, '职工医保');
+  S.cost = 799;
+  const pcc = SUB.byId('pcc4');
+  const pccCost = E.drugPrice(pcc, pcc.dose / 2, S.patient);
+  const pccQuote = FINANCE.costSummary(S, pccCost, pcc.coverage);
+  E.give(S, pcc.id, pcc.dose / 2);
+  assert.deepEqual(FINANCE.costSummary(S), pccQuote);
+  assert.equal(pccQuote.partialUpfront, pccCost * 0.30);
+  assert.equal(pccQuote.eligible, 799 + pccCost - pccQuote.partialUpfront);
+  assert.equal(S.drugCost, pccCost);
+
+  const reversal = SUB.byId('idarucizumab');
+  const price = E.drugPrice(reversal, reversal.dose, S.patient);
+  const reversalQuote = FINANCE.costSummary(S, price, reversal.coverage);
+  E.give(S, reversal.id);
+  assert.deepEqual(FINANCE.costSummary(S), reversalQuote);
+  assert.equal(reversalQuote.selfPayOnly, price);
+  assert.equal(reversalQuote.reimb, pccQuote.reimb, '全自费药不进入起付线或报销基数');
+
+  const { startCost, hourlyCost, coverage } = E.ADVANCED_DEVICES.crrt;
+  const deviceQuote = FINANCE.costSummary(S, startCost, coverage);
+  assert.ok(E.advancedDeviceAction(S, 'crrt', true).ok);
+  assert.deepEqual(FINANCE.costSummary(S), deviceQuote);
+  E.tick(S, 60);
+  assert.equal(S.deviceSetupCost, startCost);
+  close(S.deviceRunningCost, hourlyCost / 60, '按 CRRT 实际运行时间计费');
+  assert.equal(otherBed.cost, 0);
+  assert.equal(otherBed.coverageCost, undefined, '同病房的另一床无本床结算分项');
+
+  const { cas, ...state } = S;
+  const resumed = reload(cas, JSON.parse(JSON.stringify(state)));
+  assert.deepEqual(FINANCE.costSummary(resumed), FINANCE.costSummary(S), '存档保留器械费和医保分项');
+  E.tick(resumed, 60);
+  close(resumed.deviceRunningCost, hourlyCost / 30, '恢复后从已有运行费继续累加');
+  close(resumed.deviceCost, resumed.deviceSetupCost + resumed.deviceRunningCost, '启动费和运行费合计等于器械费');
+}
+
 const earnedNoPressor = S => {
   ACHIEVEMENTS.reset();
   S.discharged = true;
@@ -171,4 +234,4 @@ const earnedNoPressor = S => {
   assert.equal(earnedNoPressor(reload(E.CASES.sepsis, oldSave)), true, '完整给药记录不受日志上限影响');
 }
 
-console.log('药费结算与升压药成就回归通过');
+console.log('药费、器械费用、医保预算与升压药成就回归通过');

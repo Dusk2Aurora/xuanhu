@@ -29,15 +29,20 @@ const EXAMS = {
   temp: { group: 'skin', name: '测量体温', desc: '记录当时测得的体温。' },
 };
 
+const ABG_FIELDS = ['ph', 'paco2', 'pao2', 'hco3', 'lac', 'k'];
+
 const TESTS = {
   glucose: { group: 'urgent', name: '指尖血糖', min: 1, cost: 10, fields: ['glu'], desc: '快速筛查血糖异常，可复测变化。' },
   ketones: { group: 'urgent', name: '床旁血酮', min: 3, cost: 30, fields: [], desc: '记录模拟的定性血酮结果，结合血糖、血气与渗透压鉴别。' },
   ecg: { group: 'urgent', name: '12 导联心电图', min: 5, cost: 40, fields: ['ecg'], desc: '记录节律、传导和 ST–T 改变。' },
-  abg: { group: 'blood', name: '动脉血气', min: 8, cost: 120, fields: ['ph', 'paco2', 'pao2', 'hco3', 'lac', 'k'], desc: '评估氧合、通气和酸碱状态。' },
+  poct_abg: { group: 'urgent', name: '床旁快速血气', min: 2, cost: 350, fields: ABG_FIELDS, desc: '用床旁设备快速取得动脉血气，评估氧合、通气和酸碱状态。' },
+  abg: { group: 'blood', name: '动脉血气', min: 8, cost: 120, fields: ABG_FIELDS, desc: '评估氧合、通气和酸碱状态。' },
   bmp: { group: 'blood', name: '电解质+肾功', min: 35, cost: 180, fields: ['k', 'na', 'cl', 'ca', 'cr', 'bun'], desc: '查电解质、肌酐和尿素氮。' },
   cbc: { group: 'blood', name: '血常规', min: 25, cost: 60, fields: ['hb', 'wbc', 'plt'], desc: '查血红蛋白、白细胞和血小板。' },
   lac: { group: 'blood', name: '乳酸', min: 10, cost: 50, fields: ['lac'], desc: '评估乳酸积累及复苏后的变化。' },
-  coag: { group: 'targeted', name: '凝血功能', min: 25, cost: 110, fields: ['coag'], desc: '关注活动性出血或肝损伤时的凝血变化。' },
+  coag: { group: 'targeted', name: '凝血功能', min: 25, cost: 110, fields: ['coag', 'inr', 'thrombinTime', 'fibrinogen'], desc: '测凝血指数、INR、凝血酶时间与纤维蛋白原。' },
+  digoxin_level: { group: 'targeted', name: '游离地高辛浓度', min: 20, cost: 160, fields: ['digoxinLevel'], desc: '针对地高辛暴露，有助于解释缓慢心律、传导异常与高钾。' },
+  methotrexate_level: { group: 'targeted', name: '甲氨蝶呤浓度（色谱）', min: 25, cost: 230, fields: ['mtxLevel'], desc: '结合输注至采样的间隔与肌酐评估延迟清除，可在酶解救援后复查。' },
   troponin: { group: 'targeted', name: '高敏肌钙蛋白 I', min: 30, cost: 170, fields: ['troponin'], desc: '评估心肌损伤，可复查采样比较变化。' },
   coox: { group: 'targeted', name: '血液共氧测定', min: 10, cost: 150, fields: ['cohb'], desc: '测碳氧血红蛋白，辅助评估一氧化碳暴露。' },
   cholinesterase: { group: 'targeted', name: '胆碱酯酶活性', min: 30, cost: 110, fields: ['ache'], desc: '评估胆碱酯酶受抑程度。' },
@@ -203,6 +208,11 @@ const METRICS = {
   cohb: ['碳氧血红蛋白（COHb）', '%'],
   ache: ['胆碱酯酶相对活性', '（模拟值）', 0.75],
   coag: ['凝血功能指数', '（模拟值）', 0.8],
+  inr: ['国际标准化比值（INR）', '', null, 1.2],
+  thrombinTime: ['凝血酶时间（TT）', 's', null, 21],
+  fibrinogen: ['纤维蛋白原', 'g/L', 1.7],
+  digoxinLevel: ['游离地高辛', 'ng/mL', null, 2],
+  mtxLevel: ['血浆甲氨蝶呤', 'µmol/L'],
   hepato: ['肝损伤指数', '（模拟值）', null, 0.25],
   troponin: ['高敏肌钙蛋白 I', 'ng/L（模拟值）', null, 26],
   anionGap: ['阴离子间隙（计算）', 'mmol/L'],
@@ -221,8 +231,10 @@ function valueRow(field, value) {
 
 function labRows(type, sample, fields = TESTS[type].fields) {
   const rows = fields.filter(field => Object.hasOwn(METRICS, field)).map(field => valueRow(field, sample[field]));
-  if (type === 'abg' && Number.isFinite(sample.fio2)) rows.unshift(row('采样时 FiO₂', rounded(sample.fio2 * 100) + '%'));
-  if (type === 'abg' && sample.oxygenModelVersion == null) rows.push(row('氧合模型', '旧版存档结果，可复查血气'));
+  if (type === 'abg' || type === 'poct_abg') {
+    if (Number.isFinite(sample.fio2)) rows.unshift(row('采样时 FiO₂', rounded(sample.fio2 * 100) + '%'));
+    if (sample.oxygenModelVersion == null) rows.push(row('氧合模型', '旧版存档结果，可复查血气'));
+  }
   return rows;
 }
 
@@ -231,6 +243,7 @@ function ecgRows(sample) {
   const rows = [row('心律', rhythms[sample.rhythm] || '未记录', sample.rhythm && sample.rhythm !== 'sinus' && '异常')];
   if (sample.rhythm !== 'sinus') return rows;
   rows.push(row('心率', sample.hr + ' 次/分'));
+  if (sample.digoxin >= 0.35) rows.push(abnormal('房室传导', '房室传导延迟，伴间发室性早搏'));
   if (Number.isFinite(sample.qrsWide) && Number.isFinite(sample.stemi) && Number.isFinite(sample.tca)) {
     const wide = Math.max(sample.qrsWide, sample.tca, (sample.k - 6.2) / 2.6);
     const waves = [];
@@ -260,12 +273,25 @@ function targetedSample(S, type, sample, E) {
     case 'coox':
       sample.cohb = Number.isFinite(S.coHb) ? rounded(S.coHb * 100, 1) : null;
       return labRows(type, sample);
-    case 'coag':
+    case 'coag': {
+      const fibrinogen = S.fibrinogen ?? 2.6;
+      sample.coag = Number.isFinite(S.coag) ? rounded(S.coag, 2) : null;
+      sample.inr = rounded(1 + 4.8 * (root.SUBSTANCES?.warfarinEffect(S) || 0) + 2 * (S.hepatotox || 0), 2);
+      sample.thrombinTime = rounded(17 + 81 * (S.dabigatranLoad || 0) + 9 * Math.max(0, 1.7 - fibrinogen), 1);
+      sample.fibrinogen = rounded(fibrinogen, 2);
+      return labRows(type, sample);
+    }
     case 'liver':
       sample.coag = Number.isFinite(S.coag) ? rounded(S.coag, 2) : null;
-      return [...labRows(type, sample), row('结果说明', type === 'liver'
-        ? '肝损伤指数升高提示损伤加重，凝血功能指数下降提示凝血异常加重。为便于复查，保留模拟指数。'
-        : '凝血功能指数下降提示凝血异常加重。')];
+      return [...labRows(type, sample), row('结果说明', '肝损伤指数升高提示损伤加重，凝血功能指数下降提示凝血异常加重。为便于复查，保留模拟指数。')];
+    case 'digoxin_level':
+      sample.digoxinLevel = rounded(6.1 * (S.digoxinLoad || 0), 2);
+      return [...labRows(type, sample), row('检测范围', '结果为模拟游离浓度。Fab 治疗后的总地高辛可能受结合物影响。')];
+    case 'methotrexate_level': {
+      sample.mtxLevel = rounded(S.mtxLevel || 0, 2);
+      const hours = S.mtxHoursAtArrival == null ? '记录中未提供输注时刻' : `约 ${rounded(S.mtxHoursAtArrival + S.t / 3600, 1)} 小时`;
+      return [...labRows(type, sample), row('开始输注至采样', hours), row('方法', '色谱法，结合输注时刻和肾功能解读。')];
+    }
     case 'apap': {
       const exposure = E.acetaminophenExposure(S);
       const result = exposure.known ? '存在暴露标志' :

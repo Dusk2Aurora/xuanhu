@@ -82,7 +82,9 @@ const potassiumTarget = `${DISCHARGE_K_MIN}–${DISCHARGE_K_MAX} mmol/L`;
 const AKI_OBSERVATION = 30 * 60;
 const AKI_URINE_TARGET = 0.5;
 const AKI_SEVERE_OLIGURIA = 0.3;
+const AKI_URINE_FALL = 0.03;
 const AKI_CREATININE_RISE = 5;
+const AKI_CREATININE_LIMIT = 400;
 
 function glucoseDischargeTarget(hasDka, includeDkaMinimum = false) {
   if (!hasDka) return `${DISCHARGE_GLUCOSE_MIN}–${DISCHARGE_GLUCOSE_MAX} mmol/L`;
@@ -1520,6 +1522,21 @@ function akiUrineRates(S) {
   return { measured, spontaneous, weight };
 }
 
+function canObserveMildOliguria(S, spontaneous) {
+  const potassium = r1(S.k);
+  if (!(spontaneous >= AKI_SEVERE_OLIGURIA && S.cr <= AKI_CREATININE_LIMIT &&
+      potassium >= DISCHARGE_K_MIN && potassium <= DISCHARGE_K_MAX &&
+      S.hco3 >= 14 && S.ph >= 7.28 && circulationStable(S, bp(S)))) return false;
+  if (!S.hadCirculatorySupport) return true;
+  const { running, timed } = activeCirculationSupport(S);
+  return !running.length && !timed.length;
+}
+
+function akiObservationWorsened(window, spontaneous, creatinine) {
+  return window.urinePeak - spontaneous >= AKI_URINE_FALL ||
+    creatinine - window.creatinineNadir >= AKI_CREATININE_RISE;
+}
+
 function trackAkiObservation(S, previousTime = S.t) {
   // 跨过透析结束的这一拍仍含透析效应，以本拍结束为最早观察起点。
   if (S.dialysisUntil > S.t || !Number.isFinite(S.cr)) {
@@ -1530,6 +1547,20 @@ function trackAkiObservation(S, previousTime = S.t) {
   const observation = S.akiObservation ??= { samples: [], urineStableSince: null };
   const { spontaneous } = akiUrineRates(S);
   observation.urineStableSince = spontaneous >= AKI_URINE_TARGET ? (observation.urineStableSince ?? S.t) : null;
+
+  // 轻度少尿沿用同一个留观窗口，按每拍估算的自身尿量和肌酐判断是否恶化。
+  if (canObserveMildOliguria(S, spontaneous)) {
+    let window = observation.mildOliguria;
+    if (!window || akiObservationWorsened(window, spontaneous, S.cr)) {
+      window = { since: S.t, urinePeak: spontaneous, creatinineNadir: S.cr };
+      observation.mildOliguria = window;
+    } else {
+      window.urinePeak = Math.max(window.urinePeak, spontaneous);
+      window.creatinineNadir = Math.min(window.creatinineNadir, S.cr);
+    }
+  } else {
+    observation.mildOliguria = null;
+  }
 
   const { samples } = observation;
   const cutoff = S.t - AKI_OBSERVATION;
@@ -2433,28 +2464,35 @@ function assessAkiDischarge(S, add, observationDeadlines) {
   }
 
   const { measured, spontaneous, weight } = akiUrineRates(S);
+  const observation = S.akiObservation;
+  const canObserveMild = canObserveMildOliguria(S, spontaneous);
   if (spontaneous == null) add('需复核尿量与体重，评估自身尿量', false);
-  else if (spontaneous < AKI_URINE_TARGET) {
+  else if (spontaneous < AKI_URINE_TARGET && !canObserveMild) {
     const stimulated = (S.diuresis > 0 || S.glu > 12) && measured - spontaneous * weight >= 1;
     const assistance = stimulated ? '，读数受利尿或渗透性利尿影响' : '';
-    add(`尿量 ${r2(measured)} mL/h${assistance}，需确认自身尿量持续 ≥${AKI_URINE_TARGET} mL/kg/h（约 ${r2(AKI_URINE_TARGET * weight)} mL/h）`,
-      spontaneous < AKI_SEVERE_OLIGURIA);
+    const severe = spontaneous < AKI_SEVERE_OLIGURIA;
+    const reason = severe
+      ? `自身尿量低于 ${AKI_SEVERE_OLIGURIA} mL/kg/h（约 ${r2(AKI_SEVERE_OLIGURIA * weight)} mL/h）`
+      : '自身尿量偏低，需在循环及代谢稳定、肌酐达标后留观';
+    add(`尿量 ${r2(measured)} mL/h${assistance}，${reason}`, severe);
   }
 
-  const samples = S.akiObservation?.samples ?? [];
+  const samples = observation?.samples ?? [];
   const nadir = Math.min(...samples.map(sample => sample.cr));
   if (S.cr - nadir >= AKI_CREATININE_RISE) {
     add(`肾功能观察期间肌酐回升（${Math.round(nadir)} → ${Math.round(S.cr)} µmol/L），需继续复查趋势`, false);
   }
 
-  const since = Math.max(samples[0]?.t ?? S.t, S.akiObservation?.urineStableSince ?? S.t);
+  const standardSince = spontaneous >= AKI_URINE_TARGET ? observation?.urineStableSince ?? S.t : S.t;
+  const mild = observation?.mildOliguria;
+  const mildSince = canObserveMild && mild && !akiObservationWorsened(mild, spontaneous, S.cr) ? mild.since : S.t;
+  const since = Math.max(samples[0]?.t ?? S.t, Math.min(standardSince, mildSince));
   const endsAt = since + AKI_OBSERVATION;
-  if (S.t < endsAt - 1e-7) {
+  if ((spontaneous >= AKI_URINE_TARGET || canObserveMild) && S.t < endsAt - 1e-7) {
     const phase = S.dialysisUntil > 0 ? '透析后' : '急性肾损伤';
-    const observing = spontaneous >= AKI_URINE_TARGET;
-    const remaining = observing ? `，还需 ${observationTime(Math.ceil(endsAt - S.t - 1e-7))}` : '';
-    add(`${phase}需连续留观 ${minutes} 个模拟分钟${remaining}，复评自身尿量与肌酐趋势`, false);
-    if (observing) observationDeadlines.push(endsAt);
+    const remaining = observationTime(Math.ceil(endsAt - S.t - 1e-7));
+    add(`${phase}需连续留观 ${minutes} 个模拟分钟，还需 ${remaining}，复评自身尿量与肌酐趋势`, false);
+    observationDeadlines.push(endsAt);
   }
 }
 

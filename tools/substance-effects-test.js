@@ -25,10 +25,11 @@ function compare(fixture, id, minutes, multiplier = 1) {
 }
 
 for (const [mode, fixture] of fixtures) {
-  const [standardMg, controlMg] = compare(fixture, 'magnesium', 18);
-  const [excessMg] = compare(fixture, 'magnesium', 18, 5);
+  const magnesiumMinutes = SUBSTANCES.infusionMinutesFor(SUBSTANCES.byId('magnesium').routes[0]);
+  const [standardMg, controlMg] = compare(fixture, 'magnesium', magnesiumMinutes);
+  const [excessMg] = compare(fixture, 'magnesium', magnesiumMinutes, 5);
   assert.equal(standardMg.mod.rr, controlMg.mod.rr, `${mode} 常规硫酸镁未触发过量呼吸抑制`);
-  assert.ok(excessMg.rr < standardMg.rr - 2 && excessMg.hr < standardMg.hr - 2,
+  assert.ok(excessMg.mod.rr < standardMg.mod.rr - 2 && excessMg.rr < standardMg.rr && excessMg.hr < standardMg.hr - 2,
     `${mode} 硫酸镁蓄积应降低呼吸频率与心率`);
 
   const [insulin, controlInsulin] = compare(fixture, 'insulin', 35);

@@ -19,6 +19,15 @@ const reload = (scenario, saved) => {
   return S;
 };
 
+for (const sub of SUB.ALL) {
+  for (const route of sub.routes || []) {
+    if (!/静滴|静脉滴注|输液|挂液|输血|输注|泵入/.test(route.r)) continue;
+    const minutes = SUB.infusionMinutesFor(route, route.d);
+    assert.ok(Boolean(minutes > 0) !== Boolean(route.pumpHalfLife > 0),
+      `${sub.n}（${route.r}）应能按定时输注或持续泵管理`);
+  }
+}
+
 {
   const S = bed();
   const calcium = SUB.byId('calcium');

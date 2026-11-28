@@ -31,6 +31,7 @@ function start(S) {
   const previousSuccessAt = lastSuccessfulCompletion(S);
   const reassessedAfterLysis = (S.given || []).some(order =>
     order.id === 'alteplase' && order.d > 0 && S.t - order.t >= 15 * 60 &&
+    (!order.infusionMinutes || root.LIFE?.infusionProgress(S, order)?.deliveredDose > 0) &&
     (previousSuccessAt == null || order.t > previousSuccessAt));
   if (previousSuccessAt != null) {
     if (!(report.sampledAt > previousSuccessAt && report.values?.pulmonaryClotBurden >= repeatClotLoad)) {

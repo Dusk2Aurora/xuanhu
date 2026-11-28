@@ -252,9 +252,9 @@ const MODULES = [
     /* 神经体液血管收缩驱动：替代原来"只能靠 init.svr 一次性设定、随即被压力反射拉回"
        的写法。扩血管药（硝酸甘油/硝普钠/米力农）直接削减这个驱动 → 后负荷下降 →
        衰竭心肌每搏量上升（engine 的 afterloadF）→ CO 上升 → 心率回落。 */
-    advance(S, dtMin) {
-      const vaso = (active(S,'nitroglycerin') ? 0.55 : 0)
-                 + (active(S,'nitroprusside') ? 0.95 : 0)
+    advance(S, dtMin, E) {
+      const vaso = 0.55 * E.infusedDrugActivity(S, 'nitroglycerin')
+                 + 0.95 * Math.max(E.pumpEffect(S, 'nitroprusside'), E.infusedDrugActivity(S, 'nitroprusside'))
                  + (active(S,'hydralazine') ? 0.40 : 0)
                  + (active(S,'captopril') ? 0.25 : 0)
                  + (active(S,'milrinone') ? 0.45 : 0);
@@ -368,11 +368,11 @@ const MODULES = [
     check:S=>[ (1-(S.acheActivity==null?1:S.acheActivity))>0.25 ? '胆碱酯酶仍被抑制、分泌物多' : null ].filter(Boolean),
     hint:'阿托品对抗毒蕈碱样症状，碘解磷定复活胆碱酯酶。先给氧再解毒。',
     advance(S, dtMin, E) {
-      const pra = active(S,'pralidoxime');
+      const pra = E.infusedDrugActivity(S, 'pralidoxime');
       const atro = active(S,'atropine');
       /* 胆碱酯酶活性：老化（不可逆）继续下降，解磷定复活；>6 h 后老化使复活效率大减 */
       const aging = S.t > 6 * 3600 ? 0.20 : 1;
-      let react = (pra ? 0.030 * aging : 0) - 0.0016;
+      const react = 0.030 * aging * pra - 0.0016;
       S.acheActivity = clamp((S.acheActivity == null ? 0.12 : S.acheActivity) + react * dtMin, 0, 0.95);
       S.opTox = 1 - S.acheActivity;      // 兼容 mentor.js / check() 的旧字段名
       /* 阿托品只是阻断毒蕈碱受体，不恢复酶活性 */
@@ -402,15 +402,15 @@ const MODULES = [
     ...observeAfter(() => 0, 2 * 3600, '对乙酰氨基酚中毒需观察 2 小时（肝损窗口）'),
     hint:'早期没有症状不等于安全。N-乙酰半胱氨酸越早给越有效，8 小时后疗效明显下降。',
     advance(S, dtMin, E) {
-      const nac = active(S,'nacetylcysteine');
+      const nac = E.infusedDrugActivity(S, 'nacetylcysteine');
       /* NAPQI 生成（CYP 2E1）→ 与 GSH 结合解毒；GSH 耗竭后与肝细胞蛋白共价结合 */
       const load = S.apapLoad ?? 1;
       const form = 0.016 * load;
       S.apapLoad = load * Math.exp(-Math.LN2 * dtMin / 240);
-      const conj = 1.8 * (S.gsh || 0) * (S.napqi || 0) + (nac ? 0.8 : 0) * (S.napqi || 0);
+      const conj = (1.8 * (S.gsh || 0) + 0.8 * nac) * (S.napqi || 0);
       const hydr = 0.04 * (S.napqi || 0);
       S.napqi = clamp((S.napqi || 0) + (form - conj - hydr) * dtMin, 0, 3);
-      const gshSyn = 0.0035 + (nac ? 0.020 : 0);         // NAC 是 GSH 前体
+      const gshSyn = 0.0035 + 0.020 * nac;                // NAC 是 GSH 前体
       S.gsh = clamp((S.gsh || 0) + (gshSyn - 2.4 * (S.gsh || 0) * (S.napqi || 0)) * dtMin, 0, 1.2);
       /* 只有 GSH 明显耗竭（<0.25）时 NAPQI 才造成肝细胞坏死 */
       const bind = 0.055 * (S.napqi || 0) * ((S.gsh || 0) < 0.25 ? (1 - (S.gsh || 0) / 0.25) : 0);
@@ -453,9 +453,9 @@ const MODULES = [
     hint:'高血压急症要平稳降压。可持续静脉泵入尼卡地平，根据血压和心率调速。',
     advance(S, dtMin, E) {
       const potency = 0.12 * (E?.pumpEffect?.(S, 'nicardipine') || 0)
-                    + (active(S,'nitroprusside') ? 0.95 : 0)
+                    + 0.95 * Math.max(E.pumpEffect(S, 'nitroprusside'), E.infusedDrugActivity(S, 'nitroprusside'))
                     + (active(S,'labetalol') ? 0.35 : 0)
-                    + (active(S,'nitroglycerin') ? 0.25 : 0)
+                    + 0.25 * E.infusedDrugActivity(S, 'nitroglycerin')
                     + (active(S,'nifedipine') ? 0.18 : 0)
                     + (active(S,'hydralazine') ? 0.35 : 0)
                     + (active(S,'captopril') ? 0.15 : 0)
@@ -514,7 +514,7 @@ const MODULES = [
     check:S=>[ (S.clot||0)>0.25 ? '右心负荷仍未减轻（血栓未清除）' : null ].filter(Boolean),
     hint:'大面积肺栓塞先给氧、抗凝，血流动力学不稳时溶栓。补液要小心，右心已经撑不住了。',
     advance(S, dtMin, E) {
-      const lysis = active(S,'alteplase') ? 0.050 : 0;
+      const lysis = 0.050 * E.infusedDrugActivity(S, 'alteplase');
       const hep = 0.012 * clamp((E?.heparinActivity(S) || 0) * 2, 0, 1);
       S.clot = clamp((S.clot == null ? 0.90 : S.clot) + (0.003 - lysis - hep) * dtMin, 0, 1);
       /* 血栓负荷 → 肺血管阻力（替代原来的 svr 上限钳制） */

@@ -300,7 +300,7 @@ const TREAT = {
 
   tca(S) {
     S._bicN = S._bicN || 0;
-    if (S._bicN < 4 && (S.tca || 0) > 0.25) { S._bicN++; E.give(S, 'bicarb', 150); }
+    if (S._bicN < 4 && (S.tca || 0) > 0.25) { S._bicN++; E.give(S, 'bicarb', 150, '静推'); }
     if (S.gcs <= 8) E.ACTIONS.intubate.apply(S);
   },
 

@@ -80,12 +80,13 @@ function contrast(g, modA, modB, key, expect, minAbs) {
  *    审查要求的那组：同样 500 mL 生理盐水，一个 SpO₂ 掉、一个升
  * ========================================================================= */
 {
-  const g = group('晶体液 1500 mL / 40 min（同样补液，一个淹肺、一个救命）',
+  const g = group('晶体液 1500 mL / 45 min（同样补液，一个淹肺、一个救命）',
     '只有 30% 留在血管内；其余进组织间液并抬高肺毛细血管压 → 肺水↑（未治疗肺水已到上限，故用 PCWP 与 SpO₂ 观察）');
-  const ed = diff('edema', S => E.give(S, 'nacl', 1500), 22);   /* 40 min 时对照已跌到血氧地板，看不出差别 */
-  add(g, 'edema', 'spo2', ed, 'down', 2);
+  const edEarly = diff('edema', S => E.give(S, 'nacl', 1500), 22); // 对照血氧尚未跌至模型下限
+  add(g, 'edema', 'spo2', edEarly, 'down', 2);
+  const ed = diff('edema', S => E.give(S, 'nacl', 1500), 45);
   add(g, 'edema', 'pcwp', ed, 'up', 3);  /* 斜率按生理校正为 5 mmHg/L 后，1.5 L 约 +3 */
-  const bl = diff('bleed', S => E.give(S, 'nacl', 1500), 40);
+  const bl = diff('bleed', S => E.give(S, 'nacl', 1500), 45);
   add(g, 'bleed', 'map', bl, 'up', 5);
   add(g, 'bleed', 'vol', bl, 'up', 0.2);
   add(g, 'bleed', 'lw', bl, 'flat', 0.05);

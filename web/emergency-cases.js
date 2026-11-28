@@ -165,7 +165,10 @@ function standardCareVariant(module) {
         if (module.id === 'digoxinTox' && !S.tests.ecg?.done) reasons.push('需复查心电图');
       } else {
         if (!S.tests.methotrexate_level?.done) reasons.push('需复查甲氨蝶呤浓度');
-        if (!S.given?.some(order => order.id === 'leucovorin')) reasons.push('尚未继续亚叶酸钙救援');
+        if (!S.given?.some(order => order.id === 'leucovorin' &&
+            (!order.infusionMinutes || root.LIFE?.infusionProgress(S, order)?.deliveredDose > 0))) {
+          reasons.push('尚未继续亚叶酸钙救援');
+        }
       }
       return reasons;
     },

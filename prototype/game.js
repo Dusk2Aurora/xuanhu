@@ -860,7 +860,7 @@ function infusionRecords(patient) {
 
 function infusionSnapshot(patient) {
   const records = infusionRecords(patient);
-  const timed = [], history = [], pumps = [];
+  const timed = [], history = [];
   for (const record of records) {
     if (record.pumpAction && record.pumpAction !== 'stop') {
       if (record.endedAt != null && record.pumpSeconds > 0) history.push({ ...record, eventAt: record.endedAt });
@@ -871,6 +871,12 @@ function infusionSnapshot(patient) {
     else history.push({ ...record, progress, eventAt: progress?.stoppedAt ??
       (progress && !progress.running ? progress.completedAt : record.t) });
   }
+  history.reverse().sort((a, b) => (b.eventAt ?? -1) - (a.eventAt ?? -1));
+  return { timed, pumps: currentPumps(patient, records), history: history.slice(0, 8) };
+}
+
+function currentPumps(patient, records = []) {
+  const pumps = [];
   for (const [id, pump] of Object.entries(patient.pumps || {})) {
     if (!(pump?.rate > 0 || pump?.pausedRate > 0)) continue;
     const sub = window.SUBSTANCES?.byId(id);
@@ -889,8 +895,51 @@ function infusionSnapshot(patient) {
     pumps.push({ id, n: sub?.n || id, unit: route?.unit || sub?.unit, route,
       rate: pump.rate, pausedRate: pump.pausedRate, startedAt, adjustedAt, delivery });
   }
-  history.reverse().sort((a, b) => (b.eventAt ?? -1) - (a.eventAt ?? -1));
-  return { timed, pumps, history: history.slice(0, 8) };
+  return pumps;
+}
+
+let bedsideInfusionPatient, bedsideInfusionMarkup = '';
+function renderBedsideInfusions(patient) {
+  const panel = $('#infusionPanel'), list = $('#infusionList');
+  const changedBed = bedsideInfusionPatient !== patient;
+  bedsideInfusionPatient = patient;
+  const timed = [], rows = [];
+  if (patient?.running) {
+    for (const order of patient.pk || []) {
+      const progress = E.infusionProgress(patient, order);
+      if (!progress?.running) continue;
+      timed.push({ progress, unit: order.unit });
+      const name = escapeHtml(order.n || order.id);
+      rows.push(`<li class="infusion-row"><div class="infusion-line"><strong class="infusion-name">${name}</strong><span class="infusion-state">${escapeHtml(order.route)}</span></div>
+        <progress class="infusion-progress" max="${order.infusionMinutes}" value="0" aria-label="${name}输注进度"></progress>
+        <div class="infusion-meta" data-bedside-remaining></div></li>`);
+    }
+    for (const pump of currentPumps(patient)) {
+      const paused = pump.pausedRate > 0;
+      const name = escapeHtml(pump.n);
+      rows.push(`<li class="infusion-row is-pump${paused ? ' is-paused' : ''}"><div class="infusion-line"><strong class="infusion-name">${name}</strong>
+        <span class="infusion-state">${paused ? '已暂停' : '持续泵入'}</span></div>
+        ${paused ? '' : `<progress class="infusion-progress" aria-label="${name}持续泵入"></progress>`}
+        <div class="infusion-meta">${paused ? '暂停前泵速' : '泵速'} ${infusionAmount(pump.rate || pump.pausedRate, pump.unit)}</div></li>`);
+    }
+  }
+  const markup = rows.join('');
+  panel.hidden = !markup;
+  if (changedBed || bedsideInfusionMarkup !== markup) {
+    const top = changedBed ? 0 : list.scrollTop;
+    list.innerHTML = bedsideInfusionMarkup = markup;
+    list.scrollTop = top;
+  }
+  timed.forEach(({ progress, unit }, index) => {
+    const row = list.children[index];
+    row.querySelector('progress').value = progress.elapsedMinutes;
+    const remaining = row.querySelector('[data-bedside-remaining]');
+    const seconds = Math.ceil(progress.remainingMinutes * 60 - 1e-8);
+    const amount = Number.isFinite(progress.totalDose)
+      ? `已输 ${infusionNumber.format(progress.deliveredDose)} / ${infusionNumber.format(progress.totalDose)}${unit ? ' ' + unit : ''} · ` : '';
+    const label = amount + '剩余 ' + infusionDuration(seconds);
+    if (remaining.textContent !== label) remaining.textContent = label;
+  });
 }
 
 function infusionSection(label, content) {
@@ -1091,7 +1140,7 @@ function openGiveConfig(it, patient, back, { backLabel = '返回药物列表', r
   const render = () => {
     if (!isCurrentPatient(patient)) return;
     const rt = routes[ri];
-    const infusion = rt.infusionMinutes;
+    const infusion = window.SUBSTANCES.infusionMinutesFor(rt, dose);
     const pump = rt.pumpHalfLife;
     const unit = rt.unit || it.unit;
     const minimum = rt.pumpStep ?? 0.01;
@@ -1142,6 +1191,7 @@ function openGiveConfig(it, patient, back, { backLabel = '返回药物列表', r
           ${rt.maxDose ? `本方案${doseLabel}上限 ${rt.maxDose} ${unit}<br>` : ''}
           ${infusion ? `${rt.r} · 输注时长 ${infusion} 分钟<br>` : ''}
           ${pump ? `持续至手动停泵 · 模拟血药浓度半衰期约 ${pump} 分钟`
+            : infusion && (it.cls === '扩容' || it.cls === '血液成分') ? '按实际已输量逐步生效'
             : `起效 ${rt.on} min · ${infusion ? '药效' : ''}维持 ${rt.du} min`} · 效应 ${describeEff(it.eff) || '—'}
           ${it.adverse ? '<br>较大暴露时可能出现：' + describeEff(it.adverse.eff) : ''}
           ${it.note ? '<br>' + escapeHtml(it.note) : ''}
@@ -1270,7 +1320,7 @@ function drugRows() {
       judge('drug', id, null, result.entry, patient);
       saveGame();
       closeSheet();
-      toast(`已给予 ${d.name} ${d.defaultDose}${d.unit}（${route}）`);
+      toast(escapeHtml(result.entry?.[1] || `已开立 ${d.name} ${d.defaultDose}${d.unit}（${route}）`));
       openDetail(d.name, `${d.defaultDose} ${d.unit} · ${route}`, [['说明', d.desc]], '');
       renderAll();
     },
@@ -2409,6 +2459,7 @@ function renderBudget() {
 }
 
 function renderHUD() {
+  renderBedsideInfusions(S);
   renderBudget();
   renderBedBar();
   $('#clock').textContent = E.fmt(S.t);
@@ -4098,6 +4149,7 @@ function bind() {
   $('#btnBody').addEventListener('click', () => openChecks(S));
   $('#btnBlood').addEventListener('click', openReports);
   $('#btnMenu').addEventListener('click', () => openBedsideMenu());
+  $('#bedsideInfusionDetails').addEventListener('click', () => openInfusions(S));
   $('#mask').addEventListener('click', dismissSheet);
   $('#detailX').addEventListener('click', closeDetail);
   $('#detail').addEventListener('click', e => { if (e.target.id === 'detail') closeDetail(); });
@@ -4109,6 +4161,7 @@ function bind() {
       if (observation) stopObservation();
       paused = !paused;
       syncSpeedUI();
+      renderBedsideInfusions(S);
       return;
     }
     if (p.id === 'conditionWait') { startConditionReview(); return; }
@@ -4548,6 +4601,7 @@ function renderPatient() {
 }
 
 function renderAll() {
+  renderBedsideInfusions(S);
   renderBudget();
   renderPatient();
   mountBedBar();
@@ -4570,6 +4624,7 @@ function renderAll() {
 /* 更新公告：每次发版在这里加一条（新的放最前面） */
 const RELEASES = [
   { v: '1.57.3', notes: [
+    '病床主界面可查看本床输液进度、剩余时间和持续泵速。生理盐水等静滴及血制品按模拟时间输入，提前结束可查看已输量。',
     '每床共用一条血管通路。在操作中选择并确认置管，建好后回药库开药。更换方式时原通路保留至置管成功，出院无需拔管。',
     '新增艾司洛尔短效静脉泵入，支持调速、暂停和恢复。新增氯胺酮静脉镇静镇痛，可在插管或胸腔引流前单独开立。',
     '新接诊病例的医保、真实出院和禁用暂停，每项全程开启可在结算时额外获得 15 分。重大问题签字失败仍为 0 分。',

@@ -264,7 +264,7 @@ const DRUGS = {
     ke: 1.2, dur: 45,
     desc: '提高心肌阈电位，拮抗高钾的心脏毒性。起效 1–3 min，持续 30–60 min。不降钾。',
     apply: (S, dose) => { S.caProtectUntil = S.t + 45 * 60; S.log.push(['给药', '葡萄糖酸钙 10 mL 静推', 'good']); } },
-  insulin: { cost: 28, name: '胰岛素', unit: 'U', defaultDose: 10, routes: ['静推', '输液'],
+  insulin: { cost: 28, name: '胰岛素', unit: 'U', defaultDose: 10, routes: ['静推', '输液', '泵入'],
     ke: 0.045, dur: 300,
     desc: '促钾向细胞内转移，同时降糖。起效 15–30 min，峰值 30–60 min，持续 4–6 h。必须配伍葡萄糖。',
     apply: (S, dose) => {
@@ -278,21 +278,22 @@ const DRUGS = {
       S.glu += dose * 0.5 * 50 / 10.8 / 10;
       S.log.push(['给药', `50% 葡萄糖 ${dose} mL 静推`, 'good']);
     } },
-  bicarb: { cost: 22, name: '碳酸氢钠', unit: 'mL', defaultDose: 100, routes: ['静滴'],
+  bicarb: { cost: 22, name: '碳酸氢钠', unit: 'mL', defaultDose: 100, routes: ['静滴', '静推'],
     ke: 0.3, dur: 60,
     desc: '纠正代谢性酸中毒。仅在合并酸中毒时对降钾有效；过量致碱中毒、低钾、低钙抽搐。',
-    apply: (S, dose) => {
+    apply: (S, dose, log = true, route = '静滴') => {
       /* 碳酸氢钠现在直接加 HCO₃ 状态量（替代原来加 hco3Extra 再被每拍重算覆盖） */
       const add = dose * (S.ph < 7.20 ? 0.055 : 0.030);
       S.hco3 = clamp(S.hco3 + add, 2, 40);
-      S.log.push(['给药', `碳酸氢钠 ${dose} mL 静滴`, S.ph < 7.20 ? 'good' : 'warn']);
+      if (S.tca > 0) applyDelta(S, 'tca', -0.12 * dose / 150);
+      if (log) S.log.push(['给药', `碳酸氢钠 ${dose} mL ${route}`, S.ph < 7.20 ? 'good' : 'warn']);
     } },
-  kcl: { cost: 12, name: '氯化钾', unit: 'mmol', defaultDose: 20, routes: ['口服', '静滴'],
+  kcl: { cost: 12, name: '氯化钾', unit: 'mmol', defaultDose: 20, routes: ['静滴', '口服'],
     ke: 0.25, dur: 60,
     desc: '补充钾储备。禁止静脉推注。外周浓度 ≤40 mmol/L，速度 ≤10 mmol/h。',
-    apply: (S, dose) => {
+    apply: (S, dose, log = true) => {
       S.k = clamp(S.k + dose / 12 * 0.45, 1.5, 9.5);
-      S.log.push(['给药', `氯化钾 ${dose} mmol`, 'warn']);
+      if (log) S.log.push(['给药', `氯化钾 ${dose} mmol`, 'warn']);
     } },
   norepi: { cost: 60, name: '去甲肾上腺素', unit: 'μg/min', defaultDose: 8, routes: ['泵入'],
     ke: 1.6, dur: 8,
@@ -324,25 +325,34 @@ const DRUGS = {
   saline: { cost: 26, name: '生理盐水', unit: 'mL', defaultDose: 500, routes: ['静滴'],
     ke: 2.0, dur: 30,
     desc: '等渗晶体液，扩容。快速大量可致高氯性酸中毒。',
-    apply: (S, dose) => {
+    apply: (S, dose, log = true) => {
       /* 晶体液按 30% 留血管内 / 70% 进组织间液分布（替代原来全额加到 vol） */
       applyDelta(S, 'vol', dose / 1000);
       S.cl = clamp(S.cl + dose * 0.0025, 95, 118);
-      S.log.push(['给药', `生理盐水 ${dose} mL`, 'good']);
+      if (log) S.log.push(['给药', `生理盐水 ${dose} mL`, 'good']);
     } },
   prbc: { cost: 520, name: '浓缩红细胞', unit: 'U', defaultDose: 2, routes: ['输血'],
     ke: 1.0, dur: 60,
     desc: '提升携氧能力。1 U 约提升 Hb 10 g/L。',
-    apply: (S, dose) => {
+    apply: (S, dose, log = true) => {
       /* 输血增加红细胞质量而不是直接写 hb（替代原来 S.hb += dose*10） */
       S.rbcMass += dose * 10 * S.vol;
       applyDelta(S, 'vol', dose * 0.25);
-      S.log.push(['给药', `红细胞 ${dose} U`, 'good']);
+      if (log) S.log.push(['给药', `红细胞 ${dose} U`, 'good']);
     } },
   ppi: { cost: 35, name: '质子泵抑制剂', unit: 'mg', defaultDose: 80, routes: ['静推'],
     ke: 0.2, dur: 240,
     desc: '抑酸，稳定血凝块。上消化道出血的基础用药。',
     apply: (S, dose) => { S.eff.ppi += dose / 80; S.log.push(['给药', `PPI ${dose} mg`, 'good']); } },
+};
+
+// 手工药物库在物质目录未加载时也要走相同的输注时长。
+const LEGACY_INFUSIONS = {
+  insulin: { r: '输液', infusionMinutes: 60 },
+  bicarb: { r: '静滴', infusionMinutesPerUnit: 0.1 },
+  kcl: { r: '静滴', infusionMinutes: 30 },
+  saline: { r: '静滴', infusionMinutesPerUnit: 0.03 },
+  prbc: { r: '输血', infusionMinutesPerUnit: 10 },
 };
 
 /* ---------------- 操作 ---------------- */
@@ -714,7 +724,9 @@ const ACTIONS = {
       }
       if (S.rhythm === 'vf') {
         const early = Math.max(0, 1 - ((S._vfMin || 0) / 3.5));
-        const pressorActivity = Math.max(S.eff.norepi || 0, pumpEffect(S, 'norepi'));
+        const timedEpinephrine = (S.pk || []).reduce((activity, order) => order.id === 'epi' && order.infusionMinutes
+          ? activity + order.dose / 8 * infusionResponse(order, S.t) : activity, 0);
+        const pressorActivity = Math.max((S.eff.norepi || 0) + timedEpinephrine, pumpEffect(S, 'norepi'), pumpEffect(S, 'dopamine'));
         const drugBonus = (S.eff.amio > 0.2 ? 0.15 : 0) + (pressorActivity > 0.3 ? 0.1 : 0);
         const prob = clamp(0.20 + 0.35 * early + drugBonus, 0.05, 0.85);
         if (Math.random() < prob) {
@@ -986,6 +998,7 @@ function create(caseId, identity = IDENTITY) {
     const given0 = (S.given || []).slice(), pk0 = (S.pk || []).slice();
     const cost0 = S.cost, drugCost0 = S.drugCost, rescueDrugCost0 = S.rescueDrugCost;
     const coverageCost0 = S.coverageCost ? { ...S.coverageCost } : undefined;
+    S.pk = pk0.filter(order => !order.infusionMinutes);
     try { tick(S, 1); } catch (err) { /* 首帧失败不影响创建 */ }
     S.t = t0; S.log = log0; S.history = hist0;
     S.given = given0; S.pk = pk0; S.cost = cost0; S.drugCost = drugCost0;
@@ -1094,7 +1107,7 @@ const OXYGEN_MAX_FLOW = 60;
 const CIRCULATION_OBSERVATION = 15 * 60;
 const CIRCULATION_MIN_SYSTOLIC = 90;
 const CIRCULATION_MIN_MAP = 65;
-const CIRCULATORY_PUMPS = new Set(['norepi', 'dobutamine', 'isoproterenol', 'vasopressin']);
+const CIRCULATORY_PUMPS = new Set(['norepi', 'dobutamine', 'isoproterenol', 'vasopressin', 'dopamine']);
 const TIMED_PRESSORS = new Set(['epi', 'dopamine', 'phenylephrine']);
 const DAY = 24 * 60 * 60;
 /* 血钠升幅按滚动 24 小时计算，游戏内超限后留观 2 个模拟小时。 */
@@ -1467,7 +1480,7 @@ function stopInfusion(S, order) {
 }
 
 function infusionDeliveredMinutes(order) {
-  return order.stoppedAt == null ? order.infusionMinutes : (order.stoppedAt - order.t) / 60;
+  return order.stoppedAt == null ? order.infusionMinutes : clamp((order.stoppedAt - order.t) / 60, 0, order.infusionMinutes);
 }
 
 // 恒速输入和一阶清除后剩余的比例，以本次医嘱的总量为 1。
@@ -1475,6 +1488,40 @@ function infusionActivity(elapsed, duration, ke, deliveredMinutes) {
   const supplied = clamp(elapsed, 0, deliveredMinutes);
   const timeAfter = Math.max(0, elapsed - deliveredMinutes);
   return -Math.expm1(-ke * supplied) * Math.exp(-ke * timeAfter) / (ke * duration);
+}
+
+// 病程内的解毒和溶栓用同一输注浓度，参考剂量在输注与起效延迟均结束时达峰。
+function infusionResponse(order, now) {
+  const age = (now - order.t) / 60 - Math.max(0, order.onset || 0) * 0.35;
+  const ke = Math.LN2 / Math.max(1, order.dur / 4.5);
+  const duration = order.infusionMinutes;
+  const peak = infusionActivity(duration, duration, ke, duration);
+  return infusionActivity(age, duration, ke, infusionDeliveredMinutes(order)) / peak;
+}
+
+function infusedDrugActivity(S, id, maxAge = Infinity) {
+  let activity = 0;
+  for (const p of S.pk || []) {
+    if (p.id !== id || S.t - p.t >= maxAge * 60) continue;
+    if (!p.infusionMinutes) return 1;
+    activity += p.scale * infusionResponse(p, S.t);
+  }
+  return clamp(activity, 0, 1);
+}
+
+const DELIVERY_EFFECTS = new Set(['vol', 'halfSaline', 'freeWater', 'hb', 'wbc', 'plt', 'coag',
+  'k', 'na', 'cl', 'ca', 'hco3', 'glu', 'icp', 'uo']);
+
+function applyInfusedDose(S, order, fraction) {
+  if (!(fraction > 0)) return;
+  const dose = order.dose * fraction;
+  if (order.legacyInfusion) {
+    if (order.id !== 'insulin') DRUGS[order.id].apply(S, dose, false);
+    return;
+  }
+  if (order.id === 'nacetylcysteine') S.tox.apap = Math.max(0, S.tox.apap - (order.apapReduction || 0) * fraction);
+  if (order.id === 'pralidoxime') S.tox.op = Math.max(0, S.tox.op - dose * 2);
+  if (order.id === 'bicarb' && S.tca > 0) applyDelta(S, 'tca', -0.12 * order.scale * fraction);
 }
 
 function pumpRate(S, drugId) {
@@ -1618,7 +1665,12 @@ function coagulation(S) {
     if (order.id !== 'alteplase' && !(heparin > 0 && order.id === 'aspirin')) continue;
     const elapsed = (S.t - order.t) / 60;
     const lag = Math.max(0, order.onset || 0) * 0.35;
-    if (elapsed < lag || elapsed > order.dur * 1.8) continue;
+    if (elapsed < lag || S.t > timedSupportEndsAt(order)) continue;
+    if (order.id === 'alteplase' && order.infusionMinutes) {
+      const activity = infusionResponse(order, S.t);
+      thrombolysis += (order.eff?.coag ?? 0) * pumpEffectScale(order.scale * activity);
+      continue;
+    }
     const modifier = bolusEffectModifier(order, elapsed, lag, Math.LN2 / Math.max(1, order.dur / 4.5));
     if (order.id === 'alteplase') thrombolysis += (order.eff?.coag ?? 0) * pumpEffectScale(order.scale) * modifier;
     else aspirin = Math.max(aspirin, order.scale * modifier);
@@ -1673,12 +1725,13 @@ function circulationStable(S, pressure) {
 function activeCirculationSupport(S) {
   const running = Object.keys(S.pumps || {}).filter(id => CIRCULATORY_PUMPS.has(id) && pumpRate(S, id) > 0);
   // 旧版泵入医嘱仍走原有 PK 时程，维持和衰减直到该条 PK 记录移除。
-  const timed = (S.pk || []).filter(p => p.scale > 0 && isTimedCirculatorySupport(p) && S.t + 1e-7 < timedSupportEndsAt(p));
+  const timed = (S.pk || []).filter(p => p.scale > 0 && isTimedCirculatorySupport(p) &&
+    (!p.infusionMinutes || infusionDeliveredMinutes(p) > 0) && S.t + 1e-7 < timedSupportEndsAt(p));
   return { running, timed };
 }
 
 function timedSupportEndsAt(order) {
-  return order.t + (order.dur * 1.8 + (order.infusionMinutes || 0)) * 60;
+  return order.t + (order.dur * 1.8 + (order.infusionMinutes ? infusionDeliveredMinutes(order) : 0)) * 60;
 }
 
 function trackCirculationObservation(S) {
@@ -1913,6 +1966,11 @@ function restoreKetoneBurden(S) {
   }
 }
 
+function logInfusionStart(S, order) {
+  const label = `开始${order.route} ${order.n}（${infusionDetails(order.dose, order.unit, order.infusionMinutes)}）`;
+  S.log.push([fmt(S.t), label, 'good', S.t, null, true]);
+}
+
 function give(S, drugId, dose, route, bill = true) {
   const SUB = root.SUBSTANCES;
   if (SUB) {
@@ -1926,19 +1984,20 @@ function give(S, drugId, dose, route, bill = true) {
         if (!(Number.isFinite(rate) && rate > 0) || rate > (pumpRoute.maxDose ?? Infinity)) return null;
         return changePump(S, s, pumpRoute, rate);
       }
-      if (!selectedRoute && (s.routes?.some(rt => rt.pumpHalfLife) ||
-          (s.routes?.length === 1 && s.routes[0].infusionMinutes))) return null;
-      const infusionMinutes = selectedRoute?.infusionMinutes;
-      const d = dose ?? (infusionMinutes ? selectedRoute.d : s.dose);
+      if (!selectedRoute && s.routes?.some(rt => rt.pumpHalfLife || rt.infusionMinutes || rt.infusionMinutesPerUnit)) return null;
+      const timedRoute = selectedRoute?.infusionMinutes || selectedRoute?.infusionMinutesPerUnit;
+      const d = dose ?? (timedRoute ? selectedRoute.d : s.dose);
       if (s.id === 'ketamine' && (!selectedRoute || !(Number.isFinite(d) && d > 0))) return null;
-      if (infusionMinutes && (!(Number.isFinite(d) && d > 0) || d > (selectedRoute.maxDose ?? Infinity))) return null;
-      if (s.id === 'heparin' && !(Number.isFinite(d) && d > 0)) return null;
+      if (timedRoute && (!(Number.isFinite(d) && d > 0) || d > (selectedRoute.maxDose ?? Infinity))) return null;
+      if ((s.id === 'heparin' || s.id === 'bicarb') && !(Number.isFinite(d) && d > 0)) return null;
+      const infusionMinutes = timedRoute ? SUB.infusionMinutesFor(selectedRoute, d) : undefined;
+      if (timedRoute && (!(infusionMinutes > 0) || !Number.isFinite(infusionMinutes))) return null;
       const cost = bill ? drugPrice(s, d, S.patient) : 0;
       chargeSubstance(S, s, cost);
       const on = selectedRoute?.on ?? s.onset;
       const du = selectedRoute?.du ?? s.dur;
-      // 以同等总量的静推剂量作效应标尺，泵速只决定送入体内的时间。
-      const refDose = infusionMinutes ? s.dose : (selectedRoute?.d ?? s.dose);
+      // 静滴按该途径的默认总量换算强度；旧胰岛素有限泵入沿用 10 U 标尺。
+      const refDose = s.id === 'insulin' && infusionMinutes ? s.dose : (selectedRoute?.d ?? s.dose);
       const perKg = /\/kg/.test(s.unit || '');
       const wScale = perKg && s.id !== 'ketamine' ? (S.weight || 70) / 70 : 1;
       const scale = (d / (refDose || 1)) * wScale;
@@ -1950,13 +2009,15 @@ function give(S, drugId, dose, route, bill = true) {
       }
       const order = { id: s.id, n: s.n, t: S.t, route: selectedRoute?.r || s.route,
                       onset: on, dur: du * pkMul, eff: s.eff, scale,
-                      ...(infusionMinutes ? { infusionMinutes, dose: d, unit: s.unit, givenIndex: S.given.length } : {}) };
+                      ...(infusionMinutes ? { infusionMinutes, dose: d, unit: s.unit, givenIndex: S.given.length,
+                        doseEffectsOnDelivery: true } : {}) };
+      if (infusionMinutes && s.id === 'nacetylcysteine') order.apapReduction = (S.tox.apap || 0) * d / refDose;
       S.pk.push(order);
       if (s.id === 'protamine') neutralizeHeparin(S, scale);
       if (scale > 0 && isTimedCirculatorySupport(order)) markCirculatorySupport(S);
       S.given.push({ id: s.id, n: s.n, d, unit: s.unit, route: route || s.route, t: S.t, cost,
                      ...(infusionMinutes ? { infusionMinutes } : {}) });
-      if (root.TRAITS) root.TRAITS.onDrug(S, s, d);
+      if (!infusionMinutes) root.TRAITS?.onDrug(S, s, d);
       /* 性激素类药物：给药后进入体内激素库（12 h 半衰期），由 tick 里的激素段合并到 S.estrogen/testosterone */
       if (s.eff && s.eff.estrogen) S.estrogenExo = clamp((S.estrogenExo || 0) + s.eff.estrogen * scale, -1, 1.6);
       if (s.eff && s.eff.testosterone) S.testosteroneExo = clamp((S.testosteroneExo || 0) + s.eff.testosterone * scale, -1, 1.6);
@@ -1983,24 +2044,25 @@ function give(S, drugId, dose, route, bill = true) {
       /* —— 特殊机制 —— */
       if (s.cls === '阿片') { S.lastOpioidAt = S.t; S.addict = clamp((S.addict || 0) + d / 60, 0, 1); }
       if (s.id === 'paracetamol' || s.id === 'acetaminophen') S.tox.apap += d;
-      if (s.id === 'nacetylcysteine') S.tox.apap = 0;
+      if (s.id === 'nacetylcysteine' && !infusionMinutes) S.tox.apap = 0;
       if (s.id === 'organophosphate') S.tox.op += d;
-      if (s.id === 'pralidoxime') S.tox.op = Math.max(0, S.tox.op - d * 2);
+      if (s.id === 'pralidoxime' && !infusionMinutes) S.tox.op = Math.max(0, S.tox.op - d * 2);
       if (s.id === 'atropine' && S.tox.op > 0) S.tox.op = Math.max(0, S.tox.op - d);
-      const label = infusionMinutes
-        ? `开始${selectedRoute.r} ${s.n}（${infusionDetails(d, s.unit, infusionMinutes)}）`
-        : `给予 ${s.n} ${d}${s.unit}（${route || s.route || '静推'}${s.id === 'ketamine' ? '，共 ' + r1(d * S.patient.weight) + ' mg' : ''}）`;
-      S.log.push([fmt(S.t), label, 'good', S.t, null, true]);
+      if (infusionMinutes) logInfusionStart(S, order);
+      else {
+        const label = `给予 ${s.n} ${d}${s.unit}（${route || s.route || '静推'}${s.id === 'ketamine' ? '，共 ' + r1(d * S.patient.weight) + ' mg' : ''}）`;
+        S.log.push([fmt(S.t), label, 'good', S.t, null, true]);
+      }
       if (s.id === 'calcium' || s.id === 'calcium_cl') S.caProtectUntil = S.t + (s.dur || 45) * 60;
       if (s.id === 'insulin' && !infusionMinutes) S.eff.insulin = Math.min(3.5, S.eff.insulin + d / 10);
-      if (s.id === 'mannitol') S.icp = Math.max(0, (S.icp || 0) - 0.30 * d / 250);
+      if (s.id === 'mannitol' && !infusionMinutes) S.icp = Math.max(0, (S.icp || 0) - 0.30 * d / 250);
       /* 苯二氮卓：终止癫痫发作（但也会压低意识——这是本病例的教学点） */
       if ((s.id === 'diazepam' || s.id === 'lorazepam' || s.id === 'midazolam') && (S.seizure || 0) > 0)
         S.seizure = Math.max(0, (S.seizure || 0) - 0.55 * (d / 10));   // 渗透性脱水
       /* 碳酸氢钠：三环类中毒的解毒机制（碱化血液 + 钠负荷，窄化 QRS） */
-      if (s.id === 'bicarb' && (S.tca || 0) > 0) S.tca = Math.max(0, (S.tca || 0) - 0.12);
+      if (s.id === 'bicarb' && !infusionMinutes && S.tca > 0) applyDelta(S, 'tca', -0.12 * scale);
       /* 儿茶酚胺的"在体"标记：供除颤成功率等旧逻辑使用（SVR 走 S.mod.svr 的乘法路径） */
-      if (s.id === 'norepi' || s.id === 'epi' || s.id === 'dopamine') {
+      if (!infusionMinutes && (s.id === 'norepi' || s.id === 'epi' || s.id === 'dopamine')) {
         S.eff.norepi = Math.min(2, (S.eff.norepi || 0) + d / 8);
       }
       if (s.id === 'naloxone') {
@@ -2015,11 +2077,32 @@ function give(S, drugId, dose, route, bill = true) {
       return d;
     }
   }
-  const D = DRUGS[drugId]; if (!D) return null;
+  const D = Object.hasOwn(DRUGS, drugId) ? DRUGS[drugId] : null;
+  if (!D) return null;
   const d = (dose == null ? D.defaultDose : dose);
-  if (drugId === 'norepi' && !(Number.isFinite(d) && d > 0)) return null;
-  if (bill) chargeSubstance(S, D, drugPrice(D, d, S.patient));
-  D.apply(S, d, route);
+  const timedRoute = Object.hasOwn(LEGACY_INFUSIONS, drugId) ? LEGACY_INFUSIONS[drugId] : null;
+  const selectedRoute = route || D.routes[0];
+  if (timedRoute && !D.routes.includes(selectedRoute)) return null;
+  const scheduled = timedRoute?.r === selectedRoute || (drugId === 'insulin' && selectedRoute === '泵入');
+  if ((scheduled || drugId === 'norepi' || drugId === 'bicarb') && !(Number.isFinite(d) && d > 0)) return null;
+  const infusionMinutes = scheduled ? timedRoute.infusionMinutes ?? d * timedRoute.infusionMinutesPerUnit : undefined;
+  if (scheduled && (!(infusionMinutes > 0) || !Number.isFinite(infusionMinutes))) return null;
+  const cost = bill ? drugPrice(D, d, S.patient) : 0;
+  if (bill) chargeSubstance(S, D, cost);
+  if (scheduled) {
+    const { name: n, unit } = D;
+    const t = S.t;
+    S.pk ||= [];
+    S.given ||= [];
+    const order = { id: drugId, n, dose: d, unit, t, route: selectedRoute, infusionMinutes,
+                    dur: drugId === 'insulin' ? D.dur : 0, scale: d / D.defaultDose,
+                    givenIndex: S.given.length, legacyInfusion: true };
+    S.pk.push(order);
+    S.given.push({ id: drugId, n, d, unit, t, route: selectedRoute, infusionMinutes, cost });
+    logInfusionStart(S, order);
+    return d;
+  }
+  D.apply(S, d, true, selectedRoute);
   return d;
 }
 
@@ -2340,6 +2423,15 @@ function advancePhysiology(S, dtSec) {
         S.log.push([fmt(finishedAt), `${p.n} ${p.route || '泵入'}完成（${infusionDetails(p.dose, p.unit, infusion)}）`, 'good', finishedAt, null, true]);
       }
       const deliveredMinutes = infusionDeliveredMinutes(p);
+      const delivered = (clamp(el, 0, deliveredMinutes) - clamp(previousElapsed, 0, deliveredMinutes)) / infusion;
+      if (p.doseEffectsOnDelivery || p.legacyInfusion) {
+        if (sub && delivered > 0 && previousElapsed <= 0) root.TRAITS?.onDrug(S, sub, p.dose);
+        applyInfusedDose(S, p, delivered);
+      }
+      if (p.legacyInfusion && p.id !== 'insulin') {
+        if (el >= deliveredMinutes) S.pk.splice(i, 1);
+        continue;
+      }
       const age = el - lag;
       const previousAge = previousElapsed - lag;
       const active = infusionActivity(age, infusion, ke, deliveredMinutes);
@@ -2349,11 +2441,16 @@ function advancePhysiology(S, dtSec) {
       for (const key in p.eff) {
         if (key === 'coag' && temporaryCoagulation) continue;
         if (MOD_KEYS.includes(key)) {
-          drugMod[key] += p.eff[key] * effectScale;
+          const effect = p.eff[key] * effectScale;
+          if (key === 'temp' && effect < 0 && ['NSAID', '解热镇痛', '糖皮质激素'].includes(sub?.cls)) feverReduction -= effect;
+          else drugMod[key] += effect;
         } else {
           // 止惊效应随已送达剂量累积，避免把完整负荷量算成瞬时静推。
-          const continuousEffect = key === 'seizure' || root.SUBSTANCES?.isRescueInfusionEffect?.(key);
-          applyDelta(S, key, p.eff[key] * p.scale * (continuousEffect ? supplied : released));
+          const continuousEffect = key === 'seizure' || (p.doseEffectsOnDelivery && key === 'infection') ||
+            root.SUBSTANCES?.isRescueInfusionEffect?.(key);
+          const fraction = p.doseEffectsOnDelivery && DELIVERY_EFFECTS.has(key) ? delivered : continuousEffect ? supplied : released;
+          if (key === 'icp' && p.doseEffectsOnDelivery) S.icp = clamp((S.icp || 0) + p.eff[key] * p.scale * fraction, 0, 2.2);
+          else applyDelta(S, key, p.eff[key] * p.scale * fraction);
         }
       }
       concOf[p.n] = Math.max(concOf[p.n] || 0, p.scale * active);
@@ -3175,6 +3272,7 @@ function endCase(S, type, reason, dischargeOutcome = null) {
   if (S.death || S.discharged || S.dischargeOutcome) return;
   if (type === 'discharge' && dischargeOutcome?.status !== 'failed' && ADVANCED.dischargeBlockers(S).length) return;
   finishPumps(S);
+  for (const order of S.pk || []) if (order.infusionMinutes) stopInfusion(S, order);
   ADVANCED.finish(S);
   S.running = false;
   closeVascularAccess(S);
@@ -3868,7 +3966,7 @@ const API = {
               EXAMS, EXAM_GROUPS, TEST_GROUPS, examine, reports, getReport, knownResults,
               auscultate, orderTest, pollTests, testValue, chestXrayReports, restoreChestXrayReports,
               computeMap, fmt, endCase, setBleedingRate, restoreBleeding, caseDifficulty, allowsRiskyActions, procedureRisk, procedureRetryBlock, resolveProcedure,
-              benzodiazepineExposure, restoreBenzodiazepines, temperatureStatus, restoreTemperature, infusionDetails, infusionProgress,
+              benzodiazepineExposure, restoreBenzodiazepines, temperatureStatus, restoreTemperature, infusionDetails, infusionProgress, infusedDrugActivity,
               stopInfusion, insulinActivity,
                pumpRate, pumpOrder, pumpEffect, pumpDelivery, pausePump, stopPump, finishPumps, drugPrice, restoreDrugCost,
                coagulation, heparinActivity, activeCirculationSupport,

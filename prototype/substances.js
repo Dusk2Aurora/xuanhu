@@ -127,7 +127,7 @@ const DRUGS = [
   ['calcium_cl','氯化钙',      '电解质',   10, 'mL',     38, { r:'静推', on:1, du:40, e:{ca:+0.5}, note:'补钙并保护心肌。', clinicalNote:'外渗可造成局部组织损伤。' }],
   ['magnesium','硫酸镁',       '电解质',   2,  'g',      26, { r:'静滴', e:{ca:-0.05}, adverse:{threshold:2.5, eff:{rr:-8, hr:-12}}, note:'用于子痫与尖端扭转型室速；蓄积可抑制呼吸。' }],
   ['nacl',     '生理盐水',     '扩容',     500,'mL',     26, { e:{vol:+0.5}, note:'等渗晶体液' }],
-  ['half_saline', '0.45% 氯化钠', '扩容', 500, 'mL', 26, { r:'静滴', on:10, du:360, e:{halfSaline:+0.5}, note:'低渗补液；高渗高血糖状态下，容量恢复后仍需根据血钠和渗透压决定是否使用。' }],
+  ['half_saline', '0.45% 氯化钠', '扩容', 500, 'mL', 26, { r:'静滴', on:10, du:360, e:{vol:0, halfSaline:+0.5}, note:'低渗补液；高渗高血糖状态下，容量恢复后仍需根据血钠和渗透压决定是否使用。' }],
   ['ringer',   '乳酸林格液',   '扩容',     500,'mL',     34, { e:{vol:+0.5, hco3:+0.5, ca:+0.05}, note:'平衡晶体液，用于补充循环容量。' }],
   ['colloid',  '羟乙基淀粉',   '扩容',     500,'mL',     120,{ e:{vol:+0.65, coag:-0.08, cr:+18}, note:'胶体扩容；留意出血和肾损伤。' }],
   ['prbc',     '浓缩红细胞',   '扩容',     2,  'U',      520,{ r:'输血', e:{vol:+0.3, hb:+20}, note:'1 U 约提升 Hb 10 g/L' }],
@@ -218,7 +218,7 @@ const EXTRA = [
   ['arginine_hcl',     '盐酸精氨酸',   '酸化药',   20, 'g',      68, { e:{hco3:-4.0}, adverse:{threshold:1.5, eff:{k:+0.8}}, note:'纠正重症碱中毒；过量可升高血钾。' }],
   ['acetazolamide',    '乙酰唑胺',     '利尿脱水', 250,'mg',     18, { r:'口服', e:{hco3:-2.0, uo:+0.8, k:-0.2}, note:'用于碱中毒；留意酸中毒和低血钾。' }],
   ['hypertonic_saline','3% 高渗盐水',  '高渗液',   150,'mL',     42, { e:{vol:+0.35, na:+7}, note:'低钠血症纠正；速度过快致渗透性脱髓鞘' }],
-  ['mannitol',         '甘露醇',       '利尿脱水', 250,'mL',     38, { e:{uo:+1.4, gcs:+1, icp:-0.30}, note:'降颅压，渗透性利尿' }],
+  ['mannitol',         '甘露醇',       '利尿脱水', 250,'mL',     38, { r:'静滴', e:{uo:+1.4, gcs:+1, icp:-0.30}, note:'降颅压，渗透性利尿' }],
 
   /* 血管活性 / 强心 */
   ['nitroprusside',    '硝普钠',       '血管活性', 0.5,'μg/kg/min', 72, { on:1, du:10, e:{svr:-4.0, hr:+4}, adverse:{threshold:4, eff:{lac:+4}}, note:'快速扩血管；监测低血压，高剂量可致氰化物毒性。' }],
@@ -380,13 +380,17 @@ const INTERACTIONS = [
 /* ---------- 多途径：同一种药合并成一条，给药时再选途径 ---------- */
 const ROUTE_MAP = {
   norepi:     [{ r:'持续静脉泵入', on:1, pumpHalfLife:2 }],
+  dopamine:   [{ r:'持续静脉泵入', pumpHalfLife:2 }],
   vasopressin: [{ r:'持续静脉泵入', pumpHalfLife:5, pumpStep:0.005 }],
   dobutamine: [{ r:'持续静脉泵入', on:2, pumpHalfLife:2 }],
   isoproterenol: [{ r:'持续静脉泵入', on:0, pumpHalfLife:3 }],
   nicardipine: [{ r:'持续静脉泵入', on:0, pumpHalfLife:30, pumpStep:2.5, maxDose:15 }],
   esmolol:    [{ r:'持续静脉泵入', pumpHalfLife:9, pumpStep:25, maxDose:200, pumpPause:true }],
-  epi:         [{ r:'泵入', d:1, on:1, du:8 }, { r:'静推', d:1, on:1, du:5 }],
+  nitroprusside: [{ r:'持续静脉泵入', pumpHalfLife:2 }],
+  epi:        [{ r:'静推', d:1, on:1, du:5 }, { r:'泵入', d:1, on:1, du:8, infusionMinutes:5 }],
+  phenylephrine: [{ r:'泵入', infusionMinutes:5 }],
   levothyroxine: [{ r:'口服', d:100, on:240, du:1440 }, { r:'静推', d:100, on:60, du:1440 }],
+  bicarb:     [{ r:'静滴' }, { r:'静推' }],
   kcl:        [{ r:'静滴', d:20, on:5,  du:60  }, { r:'口服', d:20, on:45, du:120 }],
   kcl_oral:   null,
   furosemide: [{ r:'静推', d:20, on:5,  du:120 }, { r:'口服', d:40, on:60, du:300 }],
@@ -396,14 +400,14 @@ const ROUTE_MAP = {
   propranolol:[{ r:'口服', d:20, on:20, du:180 }, { r:'静推', d:1,  on:2,  du:40 }],
   lorazepam:  [{ r:'静推', d:2,  on:3,  du:120 }, { r:'口服', d:0.5,on:30, du:180 }],
   morphine_oral: null,
-  nitroglycerin:[{ r:'舌下', d:0.5,on:2,  du:30  }, { r:'泵入', d:5,  on:2,  du:120 }],
+  nitroglycerin:[{ r:'舌下', d:0.5,on:2,  du:30  }, { r:'泵入', d:5,  on:2,  du:120, infusionMinutes:30 }],
   dexamethasone:[{ r:'静推', d:8,  on:30, du:300 }, { r:'口服', d:8,  on:45, du:360 }],
   omeprazole: [{ r:'静推', d:80, on:15, du:360 }, { r:'口服', d:40, on:60, du:480 }],
   ranitidine: null,
   acetaminophen:[{ r:'口服', d:500,on:30, du:240 }, { r:'栓剂', d:500,on:20, du:240 }],
   ceftriaxone:[{ r:'静滴', d:2,  on:20, du:120 }, { r:'肌注', d:1,  on:30, du:180 }],
   levofloxacin:[{ r:'静滴', d:500,on:20, du:120 }, { r:'口服', d:500,on:40, du:240 }],
-  octreotide: [{ r:'静推', d:50, on:5,  du:120 }, { r:'泵入', d:25, on:5,  du:240 }],
+  octreotide: [{ r:'静推', d:50, on:5,  du:120 }, { r:'泵入', d:25, on:5,  du:240, infusionMinutes:60 }],
   furosemide2: null,
   salbutamol: [{ r:'吸入', d:2.5,on:3,  du:60  }, { r:'静滴', d:5,  on:5,  du:60 }],
   insulin:    [{ r:'静推', d:10, on:15, du:240 }, { r:'泵入', d:2,  on:30, du:720, infusionMinutes:60 }],
@@ -419,6 +423,40 @@ const ROUTE_MAP = {
                { r:'持续静脉泵入', d:1200, unit:'U/h', pumpHalfLife:60, pumpStep:100, maxDose:5000, pumpPause:true }],
   naloxone:   [{ r:'静推', d:0.4,on:1,  du:45  }, { r:'肌注', d:0.8,on:5,  du:90 }],
 };
+
+/* 游戏模拟输注时长。药效持续时间仍使用各途径的 du。 */
+const TIMED_INFUSION_ROUTES = new Set(['静滴', '静脉滴注', '输液', '挂液', '输血', '输注']);
+const INFUSION_MINUTES_PER_UNIT = {
+  nacl: 15 / 500, half_saline: 120 / 500, ringer: 15 / 500, colloid: 15 / 500,
+  bicarb: 15 / 150, dextrose10: 30 / 500, hypertonic_saline: 15 / 150, mannitol: 20 / 250,
+  prbc: 10, ffp: 10, c_rbc: 10, c_wbc: 30, c_plt: 15, c_plasma: 10,
+};
+const INFUSION_MINUTES = {
+  kcl: 30, magnesium: 20, salbutamol: 10, theophylline: 20,
+  ceftriaxone: 30, levofloxacin: 30, meropenem: 30, vancomycin: 60, piperacillin: 30,
+  ammonium_chloride: 30, arginine_hcl: 45, alteplase: 30,
+  nacetylcysteine: 30, pralidoxime: 20, fomepizole: 20, sodium_thiosulfate: 20,
+  acyclovir: 30, ganciclovir: 45, ribavirin: 30,
+  fluconazole: 30, voriconazole: 45, caspofungin: 45, amphotericin_b: 60,
+};
+
+function infusionMinutesFor(route, dose = route?.d) {
+  if (!route || route.pumpHalfLife || !(Number.isFinite(dose) && dose > 0)) return undefined;
+  const minutes = route.infusionMinutesPerUnit != null ? route.infusionMinutesPerUnit * dose : route.infusionMinutes;
+  return Number.isFinite(minutes) && minutes > 0 ? minutes : undefined;
+}
+
+function withInfusionTiming(id, route) {
+  if (route.infusionMinutes || !TIMED_INFUSION_ROUTES.has(route.r)) return route;
+  const perUnit = INFUSION_MINUTES_PER_UNIT[id];
+  if (perUnit) {
+    route.infusionMinutesPerUnit = perUnit;
+    route.infusionMinutes = infusionMinutesFor(route);
+  } else if (INFUSION_MINUTES[id]) {
+    route.infusionMinutes = INFUSION_MINUTES[id];
+  }
+  return route;
+}
 
 /* ---------- 食物 / 饮料（末列为一份的模拟饮食费，单位为元） ---------- */
 const FOODS = [
@@ -534,6 +572,7 @@ function build() {
     } else {
       item.routes = [{ r: item.route, d: item.dose, on: item.onset, du: item.dur }];
     }
+    item.routes = item.routes.map(route => withInfusionTiming(id, route));
     /* 允许超量：给出安全区间供 UI 提示 */
     const d0 = item.dose || 1;
     item.doseRange = [Math.max(0.01, +(d0 * 0.2).toFixed(2)), +(d0 * 10).toFixed(2)];
@@ -544,9 +583,10 @@ function build() {
     const isCell = opt.cls === '血液成分';
     const route = opt.route || '模拟暴露';
     const dose = opt.dose || 1;
+    const delivery = withInfusionTiming(id, { r: route, d: dose, on: opt.on, du: opt.du });
     out.push({ id, n, cls: opt.cls, route, dose, unit: opt.unit || '次', onset: opt.on, dur: opt.du,
                cost: isCell ? opt.cost : 0, eff, note: opt.note, kind: isCell ? 'cell' : 'virus',
-               routes: [{ r: route, d: dose, on: opt.on, du: opt.du }],
+               routes: [delivery],
                doseRange: [0.2, 10] });
   }
   for (const [id, n, eff, cost, opt] of FOODS) {
@@ -756,7 +796,8 @@ function applyRescueEffect(S, key, amount) {
       }
       break;
     case 'mtxCellProtection':
-      if (S.mtxCellularStress > 0 && !S.given?.some(order => order.id === 'glucarpidase' && S.t - order.t < 2 * 3600)) {
+      if (S.mtxCellularStress > 0 && !S.given?.some(order => order.id === 'glucarpidase' && S.t - order.t < 2 * 3600 &&
+          (!order.infusionMinutes || Math.min(S.t, order.stoppedAt ?? S.t) > order.t))) {
         S.mtxFolinicReserve = Math.min(1, (S.mtxFolinicReserve || 0) + amount);
       }
       break;
@@ -771,7 +812,7 @@ function applyRescueEffect(S, key, amount) {
 }
 
 const API = { ALL, INTERACTIONS, ALIASES, DRUGS: ALL.filter(x => x.kind === 'drug'), FOODS: ALL.filter(x => x.kind === 'food'),
-              CODEX, byId, byClass, aliasesFor, search, searchUnlistedDrugs, CLS, applyRescueEffect,
+              CODEX, byId, byClass, aliasesFor, search, searchUnlistedDrugs, CLS, infusionMinutesFor, applyRescueEffect,
               isRescueInfusionEffect, warfarinEffect, advanceWarfarin };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 root.SUBSTANCES = API;

@@ -21,6 +21,8 @@ async function main() {
     const rows = page.locator('#sheetList');
     const detail = page.locator('#detail');
     const contents = detail.locator('#dKv');
+    const bedside = page.locator('#infusionPanel');
+    const liveBars = () => bedside.locator('progress[value]').evaluateAll(bars => bars.map(bar => bar.position));
     const choose = name => rows.getByText(name, { exact: true }).click();
     const closeSheet = () => page.locator('#sheetClose').click();
     const closeDetail = async () => {
@@ -123,6 +125,8 @@ async function main() {
     const initialProgress = await progress();
     const elapsedFractions = [1 / 15, 3 / 15];
     assert.deepEqual([...initialProgress].sort((a, b) => a - b), elapsedFractions);
+    assert.deepEqual(await liveBars(), initialProgress);
+    assert.match(await bedside.innerText(), /去甲肾上腺素.*持续泵入.*8 μg\/min/s);
     await page.evaluate(() => {
       window.advanceWardFrame();
       window.advanceWardFrame();
@@ -132,7 +136,8 @@ async function main() {
     await page.reload();
     await enterWard(page);
     assert.equal(await time(), pauseStarted);
-    await openInfusions();
+    assert.deepEqual(await liveBars(), initialProgress);
+    await bedside.getByRole('button', { name: '详情' }).click();
     assert.deepEqual(await progress(), initialProgress);
 
     const timed = detail.locator('button[data-infusion-id="levetiracetam"]');
@@ -142,6 +147,7 @@ async function main() {
     await page.locator('#detail.on[data-view="infusions"]').waitFor();
     assert.equal(await timed.count(), 1);
     assert.deepEqual(await progress(), [elapsedFractions[0]]);
+    assert.deepEqual(await liveBars(), [elapsedFractions[0]]);
     await pump.click();
     await page.getByRole('button', { name: '停止泵入', exact: true }).click();
     await page.locator('#detail.on[data-view="infusions"]').waitFor();
@@ -156,6 +162,7 @@ async function main() {
       window.advanceWardFrame();
     });
     assert.equal(await timed.count(), 0);
+    assert.equal(await bedside.isVisible(), false);
     assert.match(await contents.innerText(), /左乙拉西坦.*已完成/s);
     await closeDetail();
     await openLog();
@@ -169,6 +176,7 @@ async function main() {
     await menu('病房床位');
     await choose('开一个新病例（占用空床）');
     await page.locator('#admissionIntro').click();
+    assert.equal(await bedside.isVisible(), false);
     await openLog();
     assert.doesNotMatch(await contents.innerText(), /左乙拉西坦|去甲肾上腺素|胺碘酮/);
     await closeDetail();
@@ -202,6 +210,7 @@ async function main() {
     await heparin.click();
     await rows.getByRole('button', { name: '暂停泵入', exact: true }).click();
     assert.match(await heparinRow.innerText(), /已暂停.*1300 U\/h.*已泵入 20 U/s);
+    assert.match(await bedside.innerText(), /肝素.*已暂停.*1300 U\/h/s);
     await advanceHeparin();
     await heparin.click();
     await rows.getByRole('button', { name: /恢复泵入 肝素.*1300 U\/h/ }).click();
@@ -219,6 +228,28 @@ async function main() {
     const ketamineOrders = await page.evaluate(() => window.__LIFE_GAME.S.given.filter(o => o.id === 'ketamine'));
     assert.equal(ketamineOrders.length, 1);
     assert.equal(ketamineOrders[0].route, '缓慢静注');
+    await closeSheet();
+
+    for (const multiplier of [1, 2]) {
+      await selectDrug('生理盐水', 'nacl');
+      await rows.locator(`[data-mul="${multiplier}"]`).click();
+      assert.match(await rows.locator('#dGo').innerText(), new RegExp('开始静滴.*' + 500 * multiplier + ' mL.*分钟'));
+      await rows.locator('#dGo').click();
+      await closeSheet();
+    }
+    const saline = bedside.locator('li').filter({ hasText: '生理盐水' });
+    assert.equal(await saline.count(), 2);
+    const durations = await saline.locator('progress').evaluateAll(bars => bars.map(bar => bar.max));
+    assert.ok(durations[0] > 0);
+    assert.equal(durations[1], durations[0] * 2);
+    for (const viewport of [{ width: 390, height: 844 }, { width: 1440, height: 900 }]) {
+      await page.setViewportSize(viewport);
+      const scroll = await page.locator('#infusionList').evaluate(el => {
+        el.scrollTop = el.scrollHeight;
+        return { extra: el.scrollHeight - el.clientHeight, top: el.scrollTop };
+      });
+      assert.ok(scroll.extra > 0 && scroll.top > 0, '多项输注在固定区域内滚动');
+    }
     assert.deepEqual(errors, []);
     console.log('床旁操作日志、定时输注进度、普通肝素泵药管理、刷新及床位隔离均通过。');
   } finally {

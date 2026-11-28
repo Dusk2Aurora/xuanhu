@@ -87,6 +87,26 @@ async function main() {
     await close();
     await runClock(13 * 60);
     assert.ok(await page.evaluate(() => window.__LIFE_GAME.S.tevarCompletedAt > 0));
+    for (const [id, wrong, correct] of [
+      ['spleen', '创伤手术止血', '急诊手术止血'],
+      ['fallTrauma', '急诊手术止血', '创伤手术止血'],
+    ]) {
+      await start(id);
+      await page.locator('#admissionIntro').click();
+      await page.locator('#btnOps').click();
+      assert.match(await rows.getByRole('button', { name: /^急诊手术止血/ }).innerText(), /脾破裂、宫外孕破裂或肢体创伤出血/);
+      assert.match(await rows.getByRole('button', { name: /^创伤手术止血/ }).innerText(), /坠落多发伤的腹腔出血/);
+      const bleeding = () => page.evaluate(id => window.__LIFE_GAME.S.bleedingSites[id], id);
+      const initialRate = await bleeding();
+      assert.ok(initialRate > 0);
+      await choose(wrong);
+      assert.equal(await bleeding(), initialRate);
+      const log = await page.evaluate(() => window.__LIFE_GAME.S.log.map(entry => entry[1]).join('\n'));
+      assert.ok(log.includes('「' + correct + '」'));
+      await choose(correct);
+      assert.equal(await bleeding(), 0);
+      await close();
+    }
     assert.deepEqual(errors, []);
     console.log('CTA 分型、A 型术前控温与置换、术后复温及复杂 B 型 TEVAR 开单通过');
   } finally { await browser.close(); }

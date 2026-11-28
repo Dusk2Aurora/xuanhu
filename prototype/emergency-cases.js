@@ -253,14 +253,15 @@ function actions({ setBleedingRate, resolveProcedure }) {
     },
     [TRAUMA_HEMOSTASIS]: {
       name: hemostasisName, cost: hemostasisCost,
-      desc: '严重钝性创伤伴腹腔出血时，由创伤外科控制出血源。持续复苏并复查灌注。',
+      scope: '坠落多发伤的腹腔出血（含脾裂伤）',
+      desc: '控制高处坠落多发伤所致的腹腔出血。持续复苏并复查灌注。',
       apply(S) {
         if (S.fallTraumaHemostasisAt != null) {
           S.log.push(['操作', '创伤出血源已处理', 'info']);
           return;
         }
         if (!(S.bleedingSites?.[FALL_SITE] > 0)) {
-          S.log.push(['操作', '未发现需要这项手术的创伤出血源', 'warn']);
+          S.log.push(['操作', '创伤手术止血未启动。本术式用于坠落多发伤的腹腔出血。脾破裂病例请选「急诊手术止血」。', 'warn']);
           return;
         }
         if (resolveProcedure && !resolveProcedure(S, TRAUMA_HEMOSTASIS, hemostasisName, hemostasisCost, 0.06, { essential:true }).ok) return;

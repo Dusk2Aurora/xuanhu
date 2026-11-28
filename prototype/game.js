@@ -1619,7 +1619,7 @@ function actionRows(patient) {
       related: { label: a.name, run: () => performAction(id, a) } };
     const name = id === 'oxygen_off' && S.vent ? '将呼吸机 FiO₂ 调至 21%' :
       id === 'oxygen' && S.vent ? '将呼吸机 FiO₂ 调至 100%' : a.name;
-    return { n: name, tag: '', amt: a.cost ? '¥' + a.cost : '—', run: () => performAction(id, a) };
+    return { n: name, tag: a.scope || '', amt: a.cost ? '¥' + a.cost : '—', run: () => performAction(id, a) };
   });
   return [{ n: '血管通路', tag: accessSummaryTag(patient), amt: '查看',
       run: () => openRoutineAccess(patient) },
@@ -3578,7 +3578,7 @@ function openFeedback() {
 }
 
 /* ---------------- 版本 / 更新检查 ---------------- */
-const APP_VERSION = '1.57.3';
+const APP_VERSION = '1.57.4';
 const releaseRoot = document.querySelector('meta[name="xuanhu-release-root"]')?.content;
 const releaseBase = releaseRoot ? new URL(releaseRoot, location.href).href.replace(/\/$/, '') : '';
 const platformName = location.protocol === 'file:' ? '离线 HTML' :
@@ -4628,6 +4628,9 @@ function renderAll() {
 
 /* 更新公告：每次发版在这里加一条（新的放最前面） */
 const RELEASES = [
+  { v: '1.57.4', notes: [
+    '两项手术止血在操作列表中标明适用的出血来源。选错术式时，操作日志也会说明区别。',
+  ] },
   { v: '1.57.3', notes: [
     '病床主界面可查看本床输液进度、剩余时间和持续泵速。生理盐水等静滴及血制品按模拟时间输入，提前结束可查看已输量。',
     '每床共用一条血管通路。在操作中选择并确认置管，建好后回药库开药。更换方式时原通路保留至置管成功，出院无需拔管。',

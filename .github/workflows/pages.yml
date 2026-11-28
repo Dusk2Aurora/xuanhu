@@ -23,7 +23,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Build game and offline edition
-        run: python3 tools/build_site.py
+        run: python3 tools/build_site.py --github-pages
       - uses: actions/upload-pages-artifact@v4
         with:
           path: dist/部署包

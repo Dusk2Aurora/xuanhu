@@ -3,11 +3,23 @@
 from site_assets import DIST, latest_apk, version
 
 
-def build_download_page(ver, apk):
-    android = f"""<div class="card">
+def build_download_page(ver, apk, github_pages=False):
+    if apk:
+        android = f"""<div class="card">
     <h2>安卓安装包</h2>
     <a class="btn primary" href="./xuanhu.apk" download>下载 APK（{apk.stat().st_size / 1048576:.2f} MB）</a>
-  </div>""" if apk else ""
+  </div>"""
+    elif github_pages:
+        android = """<div class="card">
+    <h2>安卓安装包</h2>
+    <p>本站的本次构建未附 APK。Netlify 单独发布安卓版本，请以其下载页标注的版本号为准。</p>
+    <a class="btn ghost" href="https://xuanhu.netlify.app/download.html">查看 Netlify 安卓下载</a>
+  </div>"""
+    else:
+        android = """<div class="card">
+    <h2>安卓安装包</h2>
+    <p>本次构建未附 APK，可使用上方网页版或离线 HTML。</p>
+  </div>"""
     html = f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>

@@ -26,11 +26,11 @@ def sync_web(check):
         sys.exit("web/ 与 prototype/ 不一致：" + ", ".join(differences))
 
 
-def build():
+def build(github_pages=False):
     release = version()
     single = build_singlefile()
     apk = latest_apk()
-    download = build_download_page(release, apk)
+    download = build_download_page(release, apk, github_pages=github_pages)
     privacy = build_privacy()
     (DEPLOY / "web").mkdir(parents=True, exist_ok=True)
     for source, name in web_files():
@@ -49,9 +49,11 @@ def build():
         shutil.copyfile(apk, apk_target)
     elif apk_target.is_file():
         apk_target.unlink()
+    # Older installed clients concatenate the root site's base URL and apk field.
+    apk_path = "./xuanhu.apk" if github_pages else "/xuanhu.apk"
     manifest = {
-        "version": release, "web": "/", "single": "/" + SINGLE,
-        "download": "/download.html", "apk": "/xuanhu.apk" if apk else None,
+        "version": release, "web": "./", "single": "./" + SINGLE,
+        "download": "./download.html", "apk": apk_path if apk else None,
         "apkName": apk.name if apk else "", "apkSize": apk.stat().st_size if apk else 0,
         "at": "build",
     }
@@ -64,8 +66,9 @@ if __name__ == "__main__":
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--sync-web", action="store_true", help="从 prototype/ 更新 web/")
     mode.add_argument("--check-web", action="store_true", help="校验 web/ 是否已同步")
+    mode.add_argument("--github-pages", action="store_true", help="构建支持项目子目录和备用安卓下载入口的 Pages 站点")
     args = parser.parse_args()
     if args.sync_web or args.check_web:
         sync_web(check=args.check_web)
     else:
-        build()
+        build(github_pages=args.github_pages)

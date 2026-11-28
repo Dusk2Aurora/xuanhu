@@ -3619,7 +3619,7 @@ function openFeedback() {
 }
 
 /* ---------------- 版本 / 更新检查 ---------------- */
-const APP_VERSION = '1.57.8';
+const APP_VERSION = '1.57.9';
 const releaseRoot = document.querySelector('meta[name="xuanhu-release-root"]')?.content;
 const releaseBase = releaseRoot ? new URL(releaseRoot, location.href).href.replace(/\/$/, '') : '';
 const platformName = location.protocol === 'file:' ? '离线 HTML' :
@@ -3760,6 +3760,14 @@ async function checkUpdate() {
   const newer = cmpVer(info.version, APP_VERSION) > 0;
   const size = info.apkSize ? (info.apkSize / 1048576).toFixed(2) + ' MB' : '';
   const dl = downloadPageUrl(usedBase);
+  let apkUrl = '';
+  if (typeof info.apk === 'string' && info.apk) {
+    try {
+      const path = info.apk === '/xuanhu.apk' ? './xuanhu.apk' : info.apk;
+      const url = new URL(path, usedBase + '/');
+      if (url.protocol === 'https:' || url.protocol === 'http:') apkUrl = url.href;
+    } catch {}
+  }
   list.innerHTML =
     '<div style="padding:14px;font-size:13px;line-height:1.8">' +
       '<div>当前版本：<b>' + APP_VERSION + '</b></div>' +
@@ -3771,7 +3779,7 @@ async function checkUpdate() {
     '<div class="sec">获取新版本</div>' +
     '<div style="padding:0 14px 10px;display:flex;gap:8px">' +
       '<a href="' + dl + '" target="_blank" class="pill" style="flex:1;padding:11px;text-align:center;text-decoration:none;background:rgba(211,58,58,.10);color:#a33;font-weight:700;border-radius:12px">下载页</a>' +
-      (info.apk ? '<a href="' + escapeHtml(usedBase + info.apk) + '" target="_blank" class="pill" style="flex:1;padding:11px;text-align:center;text-decoration:none;border-radius:12px">下载 APK</a>' : '') +
+      (apkUrl ? '<a href="' + escapeHtml(apkUrl) + '" target="_blank" class="pill" style="flex:1;padding:11px;text-align:center;text-decoration:none;border-radius:12px">下载 APK</a>' : '') +
     '</div>' +
     '<div style="padding:0 14px 16px">' +
       '<a href="' + usedBase + '/web/" target="_blank" class="pill" style="display:block;padding:11px;text-align:center;text-decoration:none;border-radius:12px">打开在线版（永远最新）</a>' +
@@ -4662,6 +4670,9 @@ function renderAll() {
 
 /* 更新公告：每次发版在这里加一条（新的放最前面） */
 const RELEASES = [
+  { v: '1.57.9', notes: [
+    '修正 Pages 版本清单中的网页与离线版路径。下载页会说明本站是否附带 APK，并在需要时提供 Netlify 安卓下载入口。',
+  ] },
   { v: '1.57.8', notes: [
     '新增 GitHub Pages 在线入口。该站点支持复制病例报告并前往 GitHub 反馈。',
   ] },

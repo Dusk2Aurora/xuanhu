@@ -15,6 +15,63 @@ const out = [];
 function check(name, ok, detail) { out.push({ name, ok, detail }); }
 
 {
+  const makeBed = () => E.create({ id: 'oxygen-flow-test', init: { ...G.BASE } });
+  const low = makeBed(), high = makeBed(), rapid = makeBed();
+  rapid.rr = 35;
+  const lowLogCount = low.log.length;
+  const changed = E.setOxygenFlow(low, 5);
+  const unchanged = !E.setOxygenFlow(low, 5) && !E.setOxygenFlow(low, NaN);
+  E.setOxygenFlow(rapid, 5);
+  E.ACTIONS.oxygen.apply(high);
+  for (const bed of [low, high, rapid]) E.tick(bed, 10);
+  const lowSettings = E.oxygenSettings(low);
+  check('自主呼吸时供氧流量与吸气需求影响 FiO₂', changed && unchanged && lowSettings.flow === 5 &&
+    low.log.length === lowLogCount + 1 && low.log.at(-1)[1].includes('5 L/min') &&
+    high.oxygenFlow === lowSettings.maxFlow && high.fio2 === 1 && high.pao2 > low.pao2 &&
+    lowSettings.fio2 > rapid.fio2 && rapid.fio2 > 0.21,
+    `供氧 5 L/min，通常呼吸 ${Math.round(low.fio2 * 100)}%，快呼吸 ${Math.round(rapid.fio2 * 100)}%`);
+
+  const legacy = { o2: 1, fio2: 0.60 };
+  const restored = Object.assign(makeBed(), legacy);
+  E.restoreCardiorespiratory(restored, legacy);
+  const savedFlow = { oxygenFlow: 7, o2: 1, fio2: 0.60 };
+  const restoredFlow = Object.assign(makeBed(), savedFlow);
+  E.restoreCardiorespiratory(restoredFlow, savedFlow);
+  check('恢复氧疗时兼容旧档并保留已存流量', restored.oxygenFlow > 0 && Math.abs(restored.fio2 - legacy.fio2) < 0.003 &&
+    restoredFlow.oxygenFlow === 7 && restoredFlow.fio2 !== savedFlow.fio2,
+    `旧 FiO₂ 60% → ${restored.oxygenFlow} L/min，当前档保持 7 L/min`);
+
+  const ventilated = makeBed();
+  E.setOxygenFlow(ventilated, 5);
+  ventilated.gcs = 8;
+  E.ACTIONS.intubate.apply(ventilated);
+  E.setVentilatorFlow(ventilated, 35);
+  const ventLogCount = ventilated.log.length;
+  const rejected = !E.setOxygenFlow(ventilated, 10) && ventilated.log.length === ventLogCount;
+  const fio2BeforeExtubation = ventilated.fio2;
+  const suspended = ventilated.oxygenFlow === 0;
+  Object.assign(ventilated, { gcs: 15, t: 10, respiratoryAssessmentAt: 10, spontaneousRr: 16, spontaneousCO2: 40 });
+  E.ACTIONS.extubate.apply(ventilated);
+  check('撤机按机控氧浓度衔接持续给氧', rejected && suspended && !ventilated.vent && ventilated.oxygenFlow > 5 &&
+    ventilated.ventFlow === 35 && Math.abs(ventilated.fio2 - fio2BeforeExtubation) < 0.003 &&
+    E.dischargeCheck(ventilated).reasons.some(reason => reason.includes('仍在吸氧')),
+    `FiO₂ ${Math.round(fio2BeforeExtubation * 100)}% → ${ventilated.oxygenFlow} L/min`);
+
+  const stopped = E.setOxygenFlow(low, 0);
+  E.tick(low, 1);
+  const stableAt = low.roomAirStableSince;
+  const observationRemaining = () => E.dischargeCheck(low).reasons.some(reason => reason.includes('室内空气血氧需稳定'));
+  const beganObservation = observationRemaining();
+  for (let i = 0; i < 5; i++) E.tick(low, 59);
+  const stillObserving = observationRemaining();
+  E.tick(low, 5);
+  check('0 L/min 撤氧后需连续观察室内空气血氧五分钟', stopped && low.oxygenFlow === 0 &&
+    !low.o2 && low.fio2 === 0.21 && stableAt != null && stableAt === low.roomAirStableSince &&
+    beganObservation && stillObserving && !observationRemaining(),
+    `室内空气稳定起点 ${stableAt} 秒，满 300 秒后结束留观`);
+}
+
+{
   const apap = E.create(G.generate(1, 123, ['apap']));
   const waiting = E.dischargeCheck(apap);
   apap.t = 2 * 3600;
@@ -587,6 +644,81 @@ for (const id of ['hyperkalemia', 'dka', 'bleed', 'sepsis', 'opioid']) {
     restored.pao2 < 200 && Math.abs(restored.spo2 - E.hill(restored.pao2) * 100) < 0.01 &&
     restored.labSnap.abg === oldSample && oldSample.s.pao2 === 631 && !oldSample.s.oxygenModelVersion,
     `实时 PaO₂ ${Math.round(restored.pao2)} mmHg，旧报告 631 mmHg`);
+}
+
+{
+  const makeBed = () => E.create({ id: 'ventilator-test', init: { ...G.BASE } });
+  const intubate = () => {
+    const bed = makeBed();
+    bed.gcs = 8;
+    E.ACTIONS.intubate.apply(bed);
+    return bed;
+  };
+  const low = intubate();
+  const baseline = intubate();
+  const high = intubate();
+  const roomAir = makeBed();
+  const initial = E.ventilatorSettings(baseline);
+  const before = low.log.length;
+  const fio2 = low.fio2;
+  const limited = E.setVentilatorFlow(low, 1);
+  const minimum = E.ventilatorSettings(low);
+  const redundant = E.setVentilatorFlow(low, -1);
+  const invalid = [NaN, Infinity, '30', null].every(flow => !E.setVentilatorFlow(low, flow));
+  const off = E.setVentilatorFlow(roomAir, 60);
+  check('呼吸机流量限幅，仅有效变更记录，其他床独立', limited && !redundant && invalid && !off &&
+    low.log.length === before + 1 && low.log.at(-1)[1].endsWith('10 L/min') && low.fio2 === fio2 &&
+    minimum.flow === initial.minFlow && minimum.deliveredTidalVolume === 200 && minimum.deliveryTime === 1.2 &&
+    initial.active && initial.flow === 45 && initial.targetTidalVolume === 450 &&
+    E.ventilatorSettings(baseline).flow === initial.flow && E.ventilatorSettings(roomAir).flow === initial.flow,
+    '有效范围 10–120 L/min，新床默认 45 L/min');
+
+  E.setVentilatorFlow(low, 15);
+  E.setVentilatorFlow(high, 1e4);
+  const maximum = E.ventilatorSettings(high);
+  for (let elapsed = 0; elapsed < 10 * 60; elapsed += 2) {
+    for (const bed of [low, baseline, high]) E.tick(bed, 2);
+  }
+  check('低吸气流量限制实际送气，高流量只缩短送气时长', E.ventilatorSettings(low).deliveredTidalVolume === 300 &&
+    maximum.flow === initial.maxFlow && maximum.deliveredTidalVolume === initial.deliveredTidalVolume &&
+    maximum.deliveryTime < initial.deliveryTime && low.rr === 14 && baseline.rr === 14 && high.rr === 14 &&
+    low.paco2 - baseline.paco2 > 15 && high.paco2 === baseline.paco2 && high.pao2 === baseline.pao2,
+    `PaCO₂：15 L/min ${low.paco2.toFixed(1)}、45 L/min ${baseline.paco2.toFixed(1)}、120 L/min ${high.paco2.toFixed(1)} mmHg`);
+
+  const samplePaCO2 = Math.round(low.paco2);
+  const samplePaO2 = Math.round(low.pao2);
+  const ready = E.orderTest(low, 'abg');
+  const saved = JSON.parse(JSON.stringify(low));
+  const legacySaved = JSON.parse(JSON.stringify(saved));
+  delete legacySaved.ventFlow;
+  const restored = Object.assign(makeBed(), saved);
+  E.restoreCardiorespiratory(restored, saved);
+  const savedSetting = E.ventilatorSettings(restored);
+  E.setVentilatorFlow(restored, 45);
+  for (let elapsed = low.t; elapsed < ready; elapsed += 2) E.tick(restored, 2);
+  E.pollTests(restored);
+  const sample = E.testValue(restored, 'abg');
+  const legacy = Object.assign(makeBed(), legacySaved);
+  E.restoreCardiorespiratory(legacy, legacySaved);
+  check('恢复机械通气流量及待出血气，旧档使用默认流量', savedSetting.active && savedSetting.flow === 15 &&
+    sample?.paco2 === samplePaCO2 && sample.pao2 === samplePaO2 &&
+    Math.round(restored.paco2) < samplePaCO2 && E.ventilatorSettings(legacy).flow === initial.flow &&
+    E.ventilatorSettings(low).flow === 15 && !E.testValue(low, 'abg'),
+    '档内流量分床保留，已取样血气仍显示原 PaCO₂、PaO₂');
+
+  const readyToWean = { gcs: 15, map: 85, spontaneousRr: 16, spontaneousCO2: 40 };
+  for (const bed of [low, baseline]) {
+    Object.assign(bed, readyToWean, { respiratoryAssessmentAt: bed.t });
+    E.ACTIONS.extubate.apply(bed);
+  }
+  const stopped = E.ventilatorSettings(low);
+  const control = Object.assign(makeBed(), JSON.parse(JSON.stringify(low)), { ventFlow: maximum.flow });
+  E.tick(low, 2);
+  E.tick(control, 2);
+  check('撤机后回到自主呼吸，保留本床参数供再次插管', !stopped.active && !baseline.vent &&
+    stopped.flow === 15 && stopped.deliveredTidalVolume === null && stopped.deliveryTime === null &&
+    low.paco2 === control.paco2 && low.rr === control.rr,
+    '停机时不同机控流量设定的自主通气结果一致');
 }
 
 {

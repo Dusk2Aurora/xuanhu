@@ -21,6 +21,42 @@ const lerp  = (a, b, k) => a + (b - a) * k;
 const r1 = x => Math.round(x * 10) / 10;
 const r2 = x => Math.round(x * 100) / 100;
 
+/* 简化恒流容控：固定机控频率及吸气时间上限，达到目标潮气量即结束送气。 */
+const VENT_RATE = 14;
+const VENT_TIDAL_VOLUME = 450;
+const VENT_INSPIRATORY_TIME = 1.2;
+const VENT_DEFAULT_FLOW = 45;
+const VENT_MIN_FLOW = 10;
+const VENT_MAX_FLOW = 120;
+
+function ventilatorFlow(S) {
+  return Number.isFinite(S.ventFlow) ? clamp(S.ventFlow, VENT_MIN_FLOW, VENT_MAX_FLOW) : VENT_DEFAULT_FLOW;
+}
+
+function ventilatorTidalVolume(flow) {
+  return Math.min(VENT_TIDAL_VOLUME, flow * VENT_INSPIRATORY_TIME * 1000 / 60);
+}
+
+function ventilatorSettings(S) {
+  const active = !!S.vent;
+  const flow = ventilatorFlow(S);
+  const deliveredTidalVolume = active ? ventilatorTidalVolume(flow) : null;
+  return {
+    active, flow, minFlow: VENT_MIN_FLOW, maxFlow: VENT_MAX_FLOW,
+    targetTidalVolume: VENT_TIDAL_VOLUME, deliveredTidalVolume,
+    deliveryTime: active ? deliveredTidalVolume * 60 / (flow * 1000) : null,
+  };
+}
+
+function setVentilatorFlow(S, flow) {
+  if (!S.vent || !Number.isFinite(flow)) return false;
+  const nextFlow = clamp(flow, VENT_MIN_FLOW, VENT_MAX_FLOW);
+  if (nextFlow === ventilatorFlow(S)) return false;
+  S.ventFlow = nextFlow;
+  S.log.push(['操作', `呼吸机吸气流量设为 ${nextFlow} L/min`, 'info']);
+  return true;
+}
+
 /* 氧解离曲线（Hill）：S = P^2.7 / (P^2.7 + 26.6^2.7) */
 const HILL_P50 = 26.6, HILL_N = 2.7;
 const HILL_P50_POWER = Math.pow(HILL_P50, HILL_N);
@@ -439,7 +475,8 @@ const ACTIONS = {
       if (S.vent) { S.log.push(['操作', '已在机械通气中', 'warn']); return; }
       if (S.gcs <= 8 || S.rr < 8 || S.spo2 < 88 || (S.airwayResistance || 0) > 0.55) {   // 气道水肿临近阻塞也是插管指征
         S.vent = 1;
-        if (S.rhythm !== 'sinus') S.rr = 14;
+        S.oxygenFlow = 0;
+        S.rr = VENT_RATE;
         S.fio2 = Math.max(S.fio2 || 0.21, 0.60);
         S.o2 = 1;
         S.hadOxygenSupport = true;
@@ -465,9 +502,12 @@ const ACTIONS = {
         return;
       }
       S.vent = 0;
+      S.oxygenFlow = oxygenFlowForFraction(S, S.fio2);
+      updateOxygenSupply(S);
       S.hadOxygenSupport = true;
       S.roomAirStableSince = null;
-      S.log.push(['操作', '撤除机械通气，继续评估并按氧合撤氧', 'good']);
+      const support = S.oxygenFlow ? `继续以 ${S.oxygenFlow} L/min 吸氧并观察` : '改室内空气观察';
+      S.log.push(['操作', `撤除机械通气，${support}`, 'good']);
     },
   },
   pace: {
@@ -595,9 +635,13 @@ const ACTIONS = {
   },
   oxygen: {
     name: '高流量吸氧', cost: 0,
-    desc: '提高吸入氧浓度，目标 SpO₂ ≥94%。',
+    desc: '以最大供氧流量启动氧疗。机械通气时提高 FiO₂。',
     apply: (S) => {
-      S.fio2 = 1.0;   // 高流量吸氧：FiO₂ 100%
+      if (!S.vent) {
+        if (!setOxygenFlow(S, OXYGEN_MAX_FLOW)) S.log.push(['操作', `当前供氧流量已为 ${OXYGEN_MAX_FLOW} L/min`, 'info']);
+        return;
+      }
+      S.fio2 = 1;
       S.o2 = 1;
       S.hadOxygenSupport = true;
       S.roomAirStableSince = null;
@@ -606,15 +650,17 @@ const ACTIONS = {
   },
   oxygen_off: {
     name: '停止吸氧', cost: 0,
-    desc: '将吸入氧浓度调至 21%。使用呼吸机时保留当前通气支持。',
+    desc: '将供氧流量调至 0 L/min。使用呼吸机时只将 FiO₂ 调至 21%。',
     apply: (S) => {
-      if (S.fio2 > 0.21 || S.o2 || S.vent) {
-        S.hadOxygenSupport = true;
-        S.roomAirStableSince = null;
+      if (!S.vent) {
+        if (!setOxygenFlow(S, 0)) S.log.push(['操作', '当前已改室内空气（0 L/min）', 'info']);
+        return;
       }
-      S.fio2 = 0.21; S.o2 = 0;
-      const message = S.vent ? '呼吸机 FiO₂ 已设为 21%，继续机械通气' : '停止吸氧，改室内空气（FiO₂ 21%）';
-      S.log.push(['操作', message, 'info']);
+      S.hadOxygenSupport = true;
+      S.roomAirStableSince = null;
+      S.fio2 = ROOM_AIR_OXYGEN;
+      S.o2 = 0;
+      S.log.push(['操作', '呼吸机 FiO₂ 已设为 21%，继续机械通气', 'info']);
     },
   },
   hyponatremia_care: {
@@ -693,10 +739,11 @@ function create(caseId, identity = IDENTITY) {
     log: [], tests: {}, labSnap: {}, labPrevious: {}, lungExam: { latest: null, previous: null }, xrayReports: [],
     score: 100, death: null, discharged: false,
     delivered: false, deliveryStartedAt: null, deliveryAt: null,
-    caProtectUntil: -1, dialysisUntil: -1, o2: 0, fio2: 0.21, mapBoost: 0,
+    caProtectUntil: -1, dialysisUntil: -1, o2: 0, fio2: ROOM_AIR_OXYGEN, oxygenFlow: 0, mapBoost: 0,
     bleedStopped: false, cost: 0, events: [], arrests: 0, infection: 0,
     coag: 1.0, tox: { benzo: 0, op: 0, apap: 0 }, env: makeEnv(),
-    tensionPTX: 0, bleedPressDep: 0, externalBleed: false, coHb: 0, vent: 0, paced: 0, tamponade: 0, tca: 0, hematoma: 0, stemi: 0, seizure: 0,
+    tensionPTX: 0, bleedPressDep: 0, externalBleed: false, coHb: 0, vent: 0, ventFlow: VENT_DEFAULT_FLOW,
+    paced: 0, tamponade: 0, tca: 0, hematoma: 0, stemi: 0, seizure: 0,
     addict: 0, lastOpioidAt: -1e9, withdraw: 0,
 
     /* ===== v0.3 新增状态量 ===== */
@@ -726,6 +773,7 @@ function create(caseId, identity = IDENTITY) {
   };
   /* 合并病例定义（后写覆盖前写） */
   Object.assign(S, C.init || {});
+  restoreOxygenFlow(S, C.init ?? {});
   S.bleedingSites = { ...(C.init?.bleedingSites || (C.id === 'bleed' ? { bleed: S.bleedRate } : {})) };
   if (Object.keys(S.bleedingSites).length) {
     S.bleedRate = Object.values(S.bleedingSites).reduce((sum, rate) => sum + rate, 0);
@@ -859,6 +907,8 @@ function computePcwp(S) {
 
 /* 模拟器在撤氧后拟合到室内空气；额外观察 5 分钟覆盖体征滞后。 */
 const ROOM_AIR_OBSERVATION = 5 * 60;
+const ROOM_AIR_OXYGEN = 0.21;
+const OXYGEN_MAX_FLOW = 60;
 /* 游戏内撤除循环支持后的连续稳定观察窗口。 */
 const CIRCULATION_OBSERVATION = 15 * 60;
 const CIRCULATION_MIN_SYSTOLIC = 90;
@@ -868,6 +918,55 @@ const TIMED_PRESSORS = new Set(['epi', 'dopamine', 'phenylephrine']);
 const DAY = 24 * 60 * 60;
 /* 游戏观察窗口，用近期超限拦截出院；超限提示风险，保留旧病历的既有损伤记录。 */
 const SODIUM_RISK_OBSERVATION = 2 * DAY;
+
+/* 游戏内以每分钟通气量和约三分之一的吸气占比估算吸气流量。 */
+function inspiratoryDemand(S) {
+  return Math.max(20, S.rr * S.vt * 3 / 1000);
+}
+
+function updateOxygenSupply(S) {
+  const flow = S.oxygenFlow;
+  /* 供气越充分，混入的室内空气越少。满流量保留原高流量吸氧医嘱的氧合。 */
+  const roomAirFlow = inspiratoryDemand(S) * (1 - flow / OXYGEN_MAX_FLOW);
+  const oxygenShare = flow ? flow / (flow + roomAirFlow) : 0;
+  S.fio2 = lerp(ROOM_AIR_OXYGEN, 1, oxygenShare);
+  S.o2 = Number(flow > 0);
+}
+
+function oxygenFlowForFraction(S, fio2) {
+  if (!(fio2 > ROOM_AIR_OXYGEN)) return 0;
+  const oxygenShare = (Math.min(fio2, 1) - ROOM_AIR_OXYGEN) / (1 - ROOM_AIR_OXYGEN);
+  const oxygenDemand = inspiratoryDemand(S) * oxygenShare;
+  return Math.max(0.1, r1(oxygenDemand / (1 - oxygenShare + oxygenDemand / OXYGEN_MAX_FLOW)));
+}
+
+function restoreOxygenFlow(S, saved) {
+  if (S.vent) {
+    S.oxygenFlow = 0;
+    return;
+  }
+  if (Number.isFinite(saved.oxygenFlow)) S.oxygenFlow = r1(clamp(saved.oxygenFlow, 0, OXYGEN_MAX_FLOW));
+  else if (saved.fio2 > ROOM_AIR_OXYGEN) S.oxygenFlow = oxygenFlowForFraction(S, saved.fio2);
+  else S.oxygenFlow = saved.o2 ? OXYGEN_MAX_FLOW : 0;
+  updateOxygenSupply(S);
+}
+
+function oxygenSettings(S) {
+  return { flow: S.oxygenFlow, minFlow: 0, maxFlow: OXYGEN_MAX_FLOW, fio2: S.fio2 };
+}
+
+function setOxygenFlow(S, flow) {
+  if (S.vent || !Number.isFinite(flow)) return false;
+  const nextFlow = r1(clamp(flow, 0, OXYGEN_MAX_FLOW));
+  if (nextFlow === S.oxygenFlow) return false;
+  S.oxygenFlow = nextFlow;
+  updateOxygenSupply(S);
+  S.hadOxygenSupport = true;
+  S.roomAirStableSince = null;
+  if (nextFlow === 0) S.log.push(['操作', '停止吸氧，改室内空气（0 L/min）', 'info']);
+  else S.log.push(['操作', `供氧流量设为 ${nextFlow} L/min（估算 FiO₂ ${Math.round(S.fio2 * 100)}%）`, 'good']);
+  return true;
+}
 
 function endCapillaryOxygenPressure(S, fio2, co2) {
   const ventilationDeficit = 5 + 25 * Math.max(0, S.vdvt - 0.33);
@@ -969,7 +1068,7 @@ function restoreDischargeObservation(S, saved) {
   }
   if (saved.respiratoryAssessmentAt == null) delete S.respiratoryAssessmentAt;
   if (saved.hadOxygenSupport == null && (S.vent || S.o2 || S.fio2 > 0.21 ||
-      saved.log?.some(([, text]) => /提高吸氧浓度至|停止吸氧|气管插管成功|撤除机械通气/.test(text)))) {
+      saved.log?.some(([, text]) => /提高吸氧浓度至|供氧流量设为|停止吸氧|气管插管成功|撤除机械通气/.test(text)))) {
     S.hadOxygenSupport = true;
     S.roomAirStableSince = null;
   }
@@ -1629,10 +1728,15 @@ function tick(S, dtSec) {
   const vdvtEff = clamp(Math.max(S.vdvt || 0.33, 0.33 + 0.18 * Math.max(0, S.lungWater - 0.25)), 0.33, 0.80);
   S.vdvt = vdvtEff;
   S.vco2 = 200 * (1 + 0.22 * (S.infection || 0)) + 9 * Math.max(0, S.temp - 37);
-  const va = Math.max(0.35, S.vt * (1 - 0.40 * pleuralLoad) * (1 - vdvtEff) * S.rr / 1000);   // L/min
+  if (S.vent) S.rr = VENT_RATE;
+  /* 设备送气量由吸气流量决定，保留气道阻力对有效肺通气的影响。 */
+  const airwayVolumeFactor = 1 - 0.38 * (S.airwayResistance || 0);
+  const tidalVolume = S.vent ? ventilatorTidalVolume(ventilatorFlow(S)) * clamp(airwayVolumeFactor, 1 / 3, 1) : S.vt;
+  const va = Math.max(0.35, tidalVolume * (1 - 0.40 * pleuralLoad) * (1 - vdvtEff) * S.rr / 1000);   // L/min
   /* PaCO₂ = 0.863 × VCO₂(mL/min) / VA(L/min) —— 肺泡通气方程 */
   const paco2T = clamp(0.863 * S.vco2 / va, 10, 135);
   S.paco2 = lerp(S.paco2, paco2T, clamp(0.5 * dtMin, 0, 1));
+  if (!S.vent) updateOxygenSupply(S);
   /* 通气肺毛细血管先响应 FiO₂；与分流血按氧含量混合后，再求动脉 PaO₂ 和 SaO₂。 */
   const capillaryTarget = endCapillaryOxygenPressure(S, S.fio2 ?? 0.21, S.paco2);
   S.endCapillaryPo2 = lerp(S.endCapillaryPo2, capillaryTarget, clamp(0.5 * dtMin, 0, 1));
@@ -1660,16 +1764,17 @@ function tick(S, dtSec) {
   const rrT = clamp((12 - 8 * depress - 7 * thyroidDepression + (S.mod.rr || 0) + chemo + hypoxDrive + 30 * workLoad
                      + toxRr + envRr + (S.tags.includes('dka') ? 6 : 0)) * fatigueF, 3, 55);
   if (S.vent) {
-    /* 呼吸机接管：频率固定 14 次/分，不再有呼吸肌疲劳，氧合由 FiO₂ + PEEP 保证 */
-    S.rr = lerp(S.rr, 14, clamp(0.6 * dtMin, 0, 1));
+    /* 机械通气消除呼吸肌疲劳，沿用低氧时自动提高 FiO₂ 的逻辑。 */
     S.fatigue = 0;
     if (S.spo2 < 92) S.fio2 = Math.min(1, (S.fio2 || 0.21) + 0.02);
   } else if (!inArrest) {
     S.rr = clamp(lerp(S.rr, rrT, clamp(0.35 * dtMin, 0, 1)), 3, 60);
   }
-  const vtT = clamp(450 * (1 - 0.38 * (S.airwayResistance || 0)) * (1 - 0.25 * S.fatigue)
+  /* 独立估算自主潮气量，供撤机评估及撤机后的自主呼吸使用。 */
+  const spontaneousRate = S.vent ? rrT : S.rr;
+  const vtT = clamp(450 * airwayVolumeFactor * (1 - 0.25 * S.fatigue)
                     * (1 - 0.45 * depress)
-                    * clamp(1 - 0.012 * Math.max(0, S.rr - 24), 0.6, 1), 150, 800);
+                    * clamp(1 - 0.012 * Math.max(0, spontaneousRate - 24), 0.6, 1), 150, 800);
   S.vt = lerp(S.vt, vtT, clamp(0.3 * dtMin, 0, 1));
   S.spontaneousRr = inArrest ? 0 : rrT;
   S.spontaneousCO2 = 0.863 * S.vco2 / Math.max(0.35, vtT * (1 - 0.40 * pleuralLoad) * (1 - vdvtEff) * S.spontaneousRr / 1000);
@@ -2025,6 +2130,9 @@ function evaluateAsystole(S, dtMin, nativeSv, epinephrine) {
 }
 
 function restoreCardiorespiratory(S, saved) {
+  S.ventFlow = ventilatorFlow(saved);
+  if (S.vent) S.rr = VENT_RATE;
+  restoreOxygenFlow(S, saved);
   const oldOxygenModel = !Number.isFinite(saved.endCapillaryPo2) && Number.isFinite(saved.pao2);
   if (oldOxygenModel) {
     /* 旧档的 pao2 实际保存的是分流前的值。保留过去已出具的检验报告。 */
@@ -2540,6 +2648,7 @@ function finalScore(S) {
 
 const API = {
   setIdentity(p) { IDENTITY = p || null; }, CASES, DRUGS, ACTIONS, TESTS, DELIVERY_DURATION, create, restorePatient, tick, give, acetaminophenExposure, setEnv, finalScore, scoreBreakdown, bp, snapshot,
+              ventilatorSettings, setVentilatorFlow, oxygenSettings, setOxygenFlow,
               dischargeCheck, glucoseDischargeTarget, glucoseReviewStatus, potassiumTarget, convulsionSigns, conditionReviewBaseline, conditionReviewChange,
               auscultate, orderTest, pollTests, testValue, chestXrayReports, restoreChestXrayReports,
               computeMap, fmt, endCase, setBleedingRate, restoreBleeding,

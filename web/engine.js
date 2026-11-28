@@ -21,6 +21,42 @@ const lerp  = (a, b, k) => a + (b - a) * k;
 const r1 = x => Math.round(x * 10) / 10;
 const r2 = x => Math.round(x * 100) / 100;
 
+/* 简化恒流容控：固定机控频率及吸气时间上限，达到目标潮气量即结束送气。 */
+const VENT_RATE = 14;
+const VENT_TIDAL_VOLUME = 450;
+const VENT_INSPIRATORY_TIME = 1.2;
+const VENT_DEFAULT_FLOW = 45;
+const VENT_MIN_FLOW = 10;
+const VENT_MAX_FLOW = 120;
+
+function ventilatorFlow(S) {
+  return Number.isFinite(S.ventFlow) ? clamp(S.ventFlow, VENT_MIN_FLOW, VENT_MAX_FLOW) : VENT_DEFAULT_FLOW;
+}
+
+function ventilatorTidalVolume(flow) {
+  return Math.min(VENT_TIDAL_VOLUME, flow * VENT_INSPIRATORY_TIME * 1000 / 60);
+}
+
+function ventilatorSettings(S) {
+  const active = !!S.vent;
+  const flow = ventilatorFlow(S);
+  const deliveredTidalVolume = active ? ventilatorTidalVolume(flow) : null;
+  return {
+    active, flow, minFlow: VENT_MIN_FLOW, maxFlow: VENT_MAX_FLOW,
+    targetTidalVolume: VENT_TIDAL_VOLUME, deliveredTidalVolume,
+    deliveryTime: active ? deliveredTidalVolume * 60 / (flow * 1000) : null,
+  };
+}
+
+function setVentilatorFlow(S, flow) {
+  if (!S.vent || !Number.isFinite(flow)) return false;
+  const nextFlow = clamp(flow, VENT_MIN_FLOW, VENT_MAX_FLOW);
+  if (nextFlow === ventilatorFlow(S)) return false;
+  S.ventFlow = nextFlow;
+  S.log.push(['操作', `呼吸机吸气流量设为 ${nextFlow} L/min`, 'info']);
+  return true;
+}
+
 /* 氧解离曲线（Hill）：S = P^2.7 / (P^2.7 + 26.6^2.7) */
 const HILL_P50 = 26.6, HILL_N = 2.7;
 const HILL_P50_POWER = Math.pow(HILL_P50, HILL_N);
@@ -47,6 +83,41 @@ function glucoseDischargeTarget(hasDka, includeDkaMinimum = false) {
   return `${minimum}<${DKA_DISCHARGE_GLUCOSE_MAX_EXCLUSIVE} mmol/L`;
 }
 
+function glucoseTargetSide(glucose, hasDka) {
+  if (glucose == null) return null;
+  if (glucose < DISCHARGE_GLUCOSE_MIN) return -1;
+  const aboveTarget = hasDka ? glucose >= DKA_DISCHARGE_GLUCOSE_MAX_EXCLUSIVE : glucose > DISCHARGE_GLUCOSE_MAX;
+  return aboveTarget ? 1 : 0;
+}
+
+function usesDkaGlucoseTarget(S) {
+  return S.caseId === 'dka' || S.tags?.includes('dka');
+}
+
+function monitoredGlucose(S) {
+  return Number.isFinite(S.glu) ? r1(S.glu) : null;
+}
+
+function assessDischargeGlucose(S) {
+  const hasDka = usesDkaGlucoseTarget(S);
+  const glucose = monitoredGlucose(S);
+  return { glucose, target: glucoseDischargeTarget(hasDka, true), side: glucoseTargetSide(glucose, hasDka), hasDka };
+}
+
+function glucoseReviewStatus(S, startGlucose) {
+  const { glucose, target, side, hasDka } = assessDischargeGlucose(S);
+  const inTarget = side === 0;
+  let reason = null;
+  if (glucose == null) reason = 'missing';
+  else if (inTarget) reason = 'target';
+  else if (Number.isFinite(startGlucose)) {
+    const start = r1(startGlucose);
+    const startSide = glucoseTargetSide(start, hasDka);
+    if (startSide && (side !== startSide || r1((glucose - start) * side) >= 2)) reason = 'worse';
+  }
+  return { glucose, target, inTarget, reason };
+}
+
 function temperatureStatus(temp) {
   if (!Number.isFinite(temp)) return '';
   if (temp < 35 || temp >= 39.5) return 'crit';
@@ -60,7 +131,8 @@ const CASES = {
     name: '高钾血症',
     comorbidities: ['慢性肾病'],
     age: 45, sex: '男', weight: 72, bloodType: 'A',
-    complaint: '突发心悸、乏力 6 小时，进行性加重。慢性肾病 3 期，近 2 日尿量减少。',
+    chief: '少尿伴心悸、乏力2天',
+      complaint: '2 天前起尿量明显减少，1 天前出现心悸、乏力并逐渐加重。既往慢性肾病 3 期。',
     init: {
       vol: 4.25, k: 6.8, na: 134, cl: 100, ca: 1.15, hco3: 14, lac: 3.4, glu: 5.6,
       cr: 268, bun: 18.2, hb: 112, wbc: 8.1, plt: 210,
@@ -78,7 +150,8 @@ const CASES = {
     id: 'dka', name: '糖尿病酮症酸中毒',
     comorbidities: ['1 型糖尿病'],
     age: 23, sex: '女', weight: 58, bloodType: 'O',
-    complaint: '多饮多尿 3 天，恶心呕吐 1 天，今晨嗜睡。1 型糖尿病，擅自停用胰岛素。',
+    chief: '多饮多尿3天，恶心呕吐伴嗜睡1天',
+      complaint: '3 天前起多饮、多尿，1 天前出现恶心、呕吐，今晨嗜睡。1 型糖尿病，自行停用胰岛素。',
     init: {
       vol: 3.6, k: 4.9, na: 130, cl: 98, ca: 1.12, hco3: 8, lac: 2.6, glu: 28.5,
       cr: 156, bun: 14.5, hb: 128, wbc: 14.2, plt: 260,
@@ -95,7 +168,8 @@ const CASES = {
     id: 'bleed', name: '上消化道大出血',
     comorbidities: ['消化性溃疡'],
     age: 61, sex: '男', weight: 78, bloodType: 'B',
-    complaint: '呕血 2 次、黑便 1 天，起身时晕厥。长期服用阿司匹林。',
+    chief: '呕血、黑便1天伴晕厥1次',
+      complaint: '1 天前起呕血 2 次、排黑便，起身时晕厥 1 次。长期服用阿司匹林。',
     init: {
       vol: 3.9, k: 4.1, na: 138, cl: 104, ca: 1.18, hco3: 21, lac: 2.9, glu: 7.2,
       cr: 96, bun: 24.5, hb: 78, wbc: 11.5, plt: 180,
@@ -118,7 +192,8 @@ const CASES = {
     id: 'sepsis', name: '感染性休克',
     comorbidities: ['肺部感染'],
     age: 67, sex: '男', weight: 70, bloodType: 'O',
-    complaint: '发热咳嗽 3 天，今日意识模糊、尿少，皮肤花斑。',
+    chief: '发热咳嗽3天，意识模糊伴尿少1天',
+      complaint: '3 天前起发热、咳嗽，1 天前出现意识模糊、尿量减少，皮肤花斑。',
     init: {
       vol: 3.70, k: 4.3, na: 132, cl: 98, ca: 1.15, hco3: 17, lac: 5.8, glu: 8.2,
       cr: 186, bun: 24.0, hb: 108, wbc: 19.5, plt: 140,
@@ -141,7 +216,8 @@ const CASES = {
     id: 'opioid', name: '阿片类药物过量',
     comorbidities: [],
     age: 29, sex: '女', weight: 55, bloodType: 'A',
-    complaint: '被发现倒在房间内，呼之不应，呼吸浅慢，针尖样瞳孔。',
+    chief: '被发现呼之不应、呼吸浅慢1小时',
+      complaint: '1 小时前被发现倒在房间内，呼之不应，呼吸浅慢，双侧瞳孔针尖样缩小。',
     init: {
       vol: 4.30, k: 4.2, na: 138, cl: 102, ca: 1.18, hco3: 26, lac: 1.6, glu: 5.4,
       cr: 78, bun: 4.5, hb: 128, wbc: 7.2, plt: 230,
@@ -399,7 +475,8 @@ const ACTIONS = {
       if (S.vent) { S.log.push(['操作', '已在机械通气中', 'warn']); return; }
       if (S.gcs <= 8 || S.rr < 8 || S.spo2 < 88 || (S.airwayResistance || 0) > 0.55) {   // 气道水肿临近阻塞也是插管指征
         S.vent = 1;
-        if (S.rhythm !== 'sinus') S.rr = 14;
+        S.oxygenFlow = 0;
+        S.rr = VENT_RATE;
         S.fio2 = Math.max(S.fio2 || 0.21, 0.60);
         S.o2 = 1;
         S.hadOxygenSupport = true;
@@ -425,9 +502,12 @@ const ACTIONS = {
         return;
       }
       S.vent = 0;
+      S.oxygenFlow = oxygenFlowForFraction(S, S.fio2);
+      updateOxygenSupply(S);
       S.hadOxygenSupport = true;
       S.roomAirStableSince = null;
-      S.log.push(['操作', '撤除机械通气，继续评估并按氧合撤氧', 'good']);
+      const support = S.oxygenFlow ? `继续以 ${S.oxygenFlow} L/min 吸氧并观察` : '改室内空气观察';
+      S.log.push(['操作', `撤除机械通气，${support}`, 'good']);
     },
   },
   pace: {
@@ -555,9 +635,13 @@ const ACTIONS = {
   },
   oxygen: {
     name: '高流量吸氧', cost: 0,
-    desc: '提高吸入氧浓度，目标 SpO₂ ≥94%。',
+    desc: '以最大供氧流量启动氧疗。机械通气时提高 FiO₂。',
     apply: (S) => {
-      S.fio2 = 1.0;   // 高流量吸氧：FiO₂ 100%
+      if (!S.vent) {
+        if (!setOxygenFlow(S, OXYGEN_MAX_FLOW)) S.log.push(['操作', `当前供氧流量已为 ${OXYGEN_MAX_FLOW} L/min`, 'info']);
+        return;
+      }
+      S.fio2 = 1;
       S.o2 = 1;
       S.hadOxygenSupport = true;
       S.roomAirStableSince = null;
@@ -566,15 +650,17 @@ const ACTIONS = {
   },
   oxygen_off: {
     name: '停止吸氧', cost: 0,
-    desc: '将吸入氧浓度调至 21%。使用呼吸机时保留当前通气支持。',
+    desc: '将供氧流量调至 0 L/min。使用呼吸机时只将 FiO₂ 调至 21%。',
     apply: (S) => {
-      if (S.fio2 > 0.21 || S.o2 || S.vent) {
-        S.hadOxygenSupport = true;
-        S.roomAirStableSince = null;
+      if (!S.vent) {
+        if (!setOxygenFlow(S, 0)) S.log.push(['操作', '当前已改室内空气（0 L/min）', 'info']);
+        return;
       }
-      S.fio2 = 0.21; S.o2 = 0;
-      const message = S.vent ? '呼吸机 FiO₂ 已设为 21%，继续机械通气' : '停止吸氧，改室内空气（FiO₂ 21%）';
-      S.log.push(['操作', message, 'info']);
+      S.hadOxygenSupport = true;
+      S.roomAirStableSince = null;
+      S.fio2 = ROOM_AIR_OXYGEN;
+      S.o2 = 0;
+      S.log.push(['操作', '呼吸机 FiO₂ 已设为 21%，继续机械通气', 'info']);
     },
   },
   hyponatremia_care: {
@@ -653,10 +739,11 @@ function create(caseId, identity = IDENTITY) {
     log: [], tests: {}, labSnap: {}, labPrevious: {}, lungExam: { latest: null, previous: null }, xrayReports: [],
     score: 100, death: null, discharged: false,
     delivered: false, deliveryStartedAt: null, deliveryAt: null,
-    caProtectUntil: -1, dialysisUntil: -1, o2: 0, fio2: 0.21, mapBoost: 0,
+    caProtectUntil: -1, dialysisUntil: -1, o2: 0, fio2: ROOM_AIR_OXYGEN, oxygenFlow: 0, mapBoost: 0,
     bleedStopped: false, cost: 0, events: [], arrests: 0, infection: 0,
     coag: 1.0, tox: { benzo: 0, op: 0, apap: 0 }, env: makeEnv(),
-    tensionPTX: 0, bleedPressDep: 0, externalBleed: false, coHb: 0, vent: 0, paced: 0, tamponade: 0, tca: 0, hematoma: 0, stemi: 0, seizure: 0,
+    tensionPTX: 0, bleedPressDep: 0, externalBleed: false, coHb: 0, vent: 0, ventFlow: VENT_DEFAULT_FLOW,
+    paced: 0, tamponade: 0, tca: 0, hematoma: 0, stemi: 0, seizure: 0,
     addict: 0, lastOpioidAt: -1e9, withdraw: 0,
 
     /* ===== v0.3 新增状态量 ===== */
@@ -686,6 +773,7 @@ function create(caseId, identity = IDENTITY) {
   };
   /* 合并病例定义（后写覆盖前写） */
   Object.assign(S, C.init || {});
+  restoreOxygenFlow(S, C.init ?? {});
   S.bleedingSites = { ...(C.init?.bleedingSites || (C.id === 'bleed' ? { bleed: S.bleedRate } : {})) };
   if (Object.keys(S.bleedingSites).length) {
     S.bleedRate = Object.values(S.bleedingSites).reduce((sum, rate) => sum + rate, 0);
@@ -819,6 +907,8 @@ function computePcwp(S) {
 
 /* 模拟器在撤氧后拟合到室内空气；额外观察 5 分钟覆盖体征滞后。 */
 const ROOM_AIR_OBSERVATION = 5 * 60;
+const ROOM_AIR_OXYGEN = 0.21;
+const OXYGEN_MAX_FLOW = 60;
 /* 游戏内撤除循环支持后的连续稳定观察窗口。 */
 const CIRCULATION_OBSERVATION = 15 * 60;
 const CIRCULATION_MIN_SYSTOLIC = 90;
@@ -828,6 +918,55 @@ const TIMED_PRESSORS = new Set(['epi', 'dopamine', 'phenylephrine']);
 const DAY = 24 * 60 * 60;
 /* 游戏观察窗口，用近期超限拦截出院；超限提示风险，保留旧病历的既有损伤记录。 */
 const SODIUM_RISK_OBSERVATION = 2 * DAY;
+
+/* 游戏内以每分钟通气量和约三分之一的吸气占比估算吸气流量。 */
+function inspiratoryDemand(S) {
+  return Math.max(20, S.rr * S.vt * 3 / 1000);
+}
+
+function updateOxygenSupply(S) {
+  const flow = S.oxygenFlow;
+  /* 供气越充分，混入的室内空气越少。满流量保留原高流量吸氧医嘱的氧合。 */
+  const roomAirFlow = inspiratoryDemand(S) * (1 - flow / OXYGEN_MAX_FLOW);
+  const oxygenShare = flow ? flow / (flow + roomAirFlow) : 0;
+  S.fio2 = lerp(ROOM_AIR_OXYGEN, 1, oxygenShare);
+  S.o2 = Number(flow > 0);
+}
+
+function oxygenFlowForFraction(S, fio2) {
+  if (!(fio2 > ROOM_AIR_OXYGEN)) return 0;
+  const oxygenShare = (Math.min(fio2, 1) - ROOM_AIR_OXYGEN) / (1 - ROOM_AIR_OXYGEN);
+  const oxygenDemand = inspiratoryDemand(S) * oxygenShare;
+  return Math.max(0.1, r1(oxygenDemand / (1 - oxygenShare + oxygenDemand / OXYGEN_MAX_FLOW)));
+}
+
+function restoreOxygenFlow(S, saved) {
+  if (S.vent) {
+    S.oxygenFlow = 0;
+    return;
+  }
+  if (Number.isFinite(saved.oxygenFlow)) S.oxygenFlow = r1(clamp(saved.oxygenFlow, 0, OXYGEN_MAX_FLOW));
+  else if (saved.fio2 > ROOM_AIR_OXYGEN) S.oxygenFlow = oxygenFlowForFraction(S, saved.fio2);
+  else S.oxygenFlow = saved.o2 ? OXYGEN_MAX_FLOW : 0;
+  updateOxygenSupply(S);
+}
+
+function oxygenSettings(S) {
+  return { flow: S.oxygenFlow, minFlow: 0, maxFlow: OXYGEN_MAX_FLOW, fio2: S.fio2 };
+}
+
+function setOxygenFlow(S, flow) {
+  if (S.vent || !Number.isFinite(flow)) return false;
+  const nextFlow = r1(clamp(flow, 0, OXYGEN_MAX_FLOW));
+  if (nextFlow === S.oxygenFlow) return false;
+  S.oxygenFlow = nextFlow;
+  updateOxygenSupply(S);
+  S.hadOxygenSupport = true;
+  S.roomAirStableSince = null;
+  if (nextFlow === 0) S.log.push(['操作', '停止吸氧，改室内空气（0 L/min）', 'info']);
+  else S.log.push(['操作', `供氧流量设为 ${nextFlow} L/min（估算 FiO₂ ${Math.round(S.fio2 * 100)}%）`, 'good']);
+  return true;
+}
 
 function endCapillaryOxygenPressure(S, fio2, co2) {
   const ventilationDeficit = 5 + 25 * Math.max(0, S.vdvt - 0.33);
@@ -929,7 +1068,7 @@ function restoreDischargeObservation(S, saved) {
   }
   if (saved.respiratoryAssessmentAt == null) delete S.respiratoryAssessmentAt;
   if (saved.hadOxygenSupport == null && (S.vent || S.o2 || S.fio2 > 0.21 ||
-      saved.log?.some(([, text]) => /提高吸氧浓度至|停止吸氧|气管插管成功|撤除机械通气/.test(text)))) {
+      saved.log?.some(([, text]) => /提高吸氧浓度至|供氧流量设为|停止吸氧|气管插管成功|撤除机械通气/.test(text)))) {
     S.hadOxygenSupport = true;
     S.roomAirStableSince = null;
   }
@@ -1589,10 +1728,15 @@ function tick(S, dtSec) {
   const vdvtEff = clamp(Math.max(S.vdvt || 0.33, 0.33 + 0.18 * Math.max(0, S.lungWater - 0.25)), 0.33, 0.80);
   S.vdvt = vdvtEff;
   S.vco2 = 200 * (1 + 0.22 * (S.infection || 0)) + 9 * Math.max(0, S.temp - 37);
-  const va = Math.max(0.35, S.vt * (1 - 0.40 * pleuralLoad) * (1 - vdvtEff) * S.rr / 1000);   // L/min
+  if (S.vent) S.rr = VENT_RATE;
+  /* 设备送气量由吸气流量决定，保留气道阻力对有效肺通气的影响。 */
+  const airwayVolumeFactor = 1 - 0.38 * (S.airwayResistance || 0);
+  const tidalVolume = S.vent ? ventilatorTidalVolume(ventilatorFlow(S)) * clamp(airwayVolumeFactor, 1 / 3, 1) : S.vt;
+  const va = Math.max(0.35, tidalVolume * (1 - 0.40 * pleuralLoad) * (1 - vdvtEff) * S.rr / 1000);   // L/min
   /* PaCO₂ = 0.863 × VCO₂(mL/min) / VA(L/min) —— 肺泡通气方程 */
   const paco2T = clamp(0.863 * S.vco2 / va, 10, 135);
   S.paco2 = lerp(S.paco2, paco2T, clamp(0.5 * dtMin, 0, 1));
+  if (!S.vent) updateOxygenSupply(S);
   /* 通气肺毛细血管先响应 FiO₂；与分流血按氧含量混合后，再求动脉 PaO₂ 和 SaO₂。 */
   const capillaryTarget = endCapillaryOxygenPressure(S, S.fio2 ?? 0.21, S.paco2);
   S.endCapillaryPo2 = lerp(S.endCapillaryPo2, capillaryTarget, clamp(0.5 * dtMin, 0, 1));
@@ -1620,16 +1764,17 @@ function tick(S, dtSec) {
   const rrT = clamp((12 - 8 * depress - 7 * thyroidDepression + (S.mod.rr || 0) + chemo + hypoxDrive + 30 * workLoad
                      + toxRr + envRr + (S.tags.includes('dka') ? 6 : 0)) * fatigueF, 3, 55);
   if (S.vent) {
-    /* 呼吸机接管：频率固定 14 次/分，不再有呼吸肌疲劳，氧合由 FiO₂ + PEEP 保证 */
-    S.rr = lerp(S.rr, 14, clamp(0.6 * dtMin, 0, 1));
+    /* 机械通气消除呼吸肌疲劳，沿用低氧时自动提高 FiO₂ 的逻辑。 */
     S.fatigue = 0;
     if (S.spo2 < 92) S.fio2 = Math.min(1, (S.fio2 || 0.21) + 0.02);
   } else if (!inArrest) {
     S.rr = clamp(lerp(S.rr, rrT, clamp(0.35 * dtMin, 0, 1)), 3, 60);
   }
-  const vtT = clamp(450 * (1 - 0.38 * (S.airwayResistance || 0)) * (1 - 0.25 * S.fatigue)
+  /* 独立估算自主潮气量，供撤机评估及撤机后的自主呼吸使用。 */
+  const spontaneousRate = S.vent ? rrT : S.rr;
+  const vtT = clamp(450 * airwayVolumeFactor * (1 - 0.25 * S.fatigue)
                     * (1 - 0.45 * depress)
-                    * clamp(1 - 0.012 * Math.max(0, S.rr - 24), 0.6, 1), 150, 800);
+                    * clamp(1 - 0.012 * Math.max(0, spontaneousRate - 24), 0.6, 1), 150, 800);
   S.vt = lerp(S.vt, vtT, clamp(0.3 * dtMin, 0, 1));
   S.spontaneousRr = inArrest ? 0 : rrT;
   S.spontaneousCO2 = 0.863 * S.vco2 / Math.max(0.35, vtT * (1 - 0.40 * pleuralLoad) * (1 - vdvtEff) * S.spontaneousRr / 1000);
@@ -1985,6 +2130,9 @@ function evaluateAsystole(S, dtMin, nativeSv, epinephrine) {
 }
 
 function restoreCardiorespiratory(S, saved) {
+  S.ventFlow = ventilatorFlow(saved);
+  if (S.vent) S.rr = VENT_RATE;
+  restoreOxygenFlow(S, saved);
   const oldOxygenModel = !Number.isFinite(saved.endCapillaryPo2) && Number.isFinite(saved.pao2);
   if (oldOxygenModel) {
     /* 旧档的 pao2 实际保存的是分流前的值。保留过去已出具的检验报告。 */
@@ -2166,12 +2314,9 @@ function dischargeCheck(S) {
   else if (potassium < DISCHARGE_K_MIN || potassium > DISCHARGE_K_MAX) {
     bad.push(`血钾 ${potassium.toFixed(1)} mmol/L，出院目标 ${potassiumTarget}`);
   }
-  const hasDka = S.caseId === 'dka' || S.tags?.includes('dka');
-  const glucoseTarget = glucoseDischargeTarget(hasDka, true);
-  const glucose = Number.isFinite(S.glu) ? r1(S.glu) : null;  /* 与监护快照的血糖精度一致。 */
+  const { glucose, target: glucoseTarget, side: glucoseSide } = assessDischargeGlucose(S);
   if (glucose == null) bad.push(`血糖需复测，出院目标 ${glucoseTarget}`);
-  else if (glucose < DISCHARGE_GLUCOSE_MIN ||
-           (hasDka ? glucose >= DKA_DISCHARGE_GLUCOSE_MAX_EXCLUSIVE : glucose > DISCHARGE_GLUCOSE_MAX)) {
+  else if (glucoseSide !== 0) {
     bad.push(`血糖 ${glucose.toFixed(1)} mmol/L，出院目标 ${glucoseTarget}`);
   }
   const needsFullConsciousness = opioid || lowSodium || hyperosmolar;
@@ -2199,6 +2344,82 @@ function convulsionSigns(S) {
   const visibleThreshold = S.tags?.includes('hypona') ? 0.1 : 0.15;
   if (activity >= 0.6) return S.tags?.includes('seizure') ? '持续肢体抽搐，伴牙关紧闭' : '持续肢体抽搐';
   return activity > visibleThreshold ? '间断可见肢体抽动' : null;
+}
+
+/* 与床旁读数使用同一精度。跨过监护阈值也需达到最小幅度，避免卡在阈值附近反复复评。 */
+const CONDITION_REVIEW_METRICS = [
+  { key: 'hr', label: '心率', unit: '次/分', read: S => S.hr, delta: 15, thresholds: [50, 121], edgeDelta: 3 },
+  { key: 'rr', label: '呼吸频率', unit: '次/分', read: S => S.rr, delta: 5, thresholds: [8, 25], edgeDelta: 2 },
+  { key: 'sys', label: '收缩压', unit: 'mmHg', read: S => bp(S).sys, delta: 15, thresholds: [CIRCULATION_MIN_SYSTOLIC], edgeDelta: 3 },
+  { key: 'spo2', label: '血氧 SpO₂', unit: '%', read: pulseOximetry, delta: 4, thresholds: [92], edgeDelta: 2 },
+  { key: 'temp', label: '体温', unit: '℃', read: S => S.temp, precision: 1, delta: 0.5, thresholds: [35, 39.5], edgeDelta: 0.2 },
+  { key: 'gcs', label: 'GCS', unit: '分', read: S => S.gcs, delta: 2, thresholds: [12], edgeDelta: 1 },
+  { key: 'k', label: '血钾', unit: 'mmol/L', read: S => S.k, precision: 1, delta: 0.5,
+    thresholds: [DISCHARGE_K_MIN, DISCHARGE_K_MAX + 0.1], edgeDelta: 0.2 },
+];
+const CONDITION_REVIEW_RHYTHMS = { sinus: '窦性心律', vf: '心室颤动', asystole: '心静止' };
+const CONDITION_REVIEW_BLEEDING_SITES = [
+  ['bleed', '上消化道出血'], ['trauma', '创伤出血'], ['ectopic', '盆腔出血'], ['spleen', '脾脏出血'],
+];
+
+function conditionReviewReading(S, metric) {
+  const value = metric.read(S);
+  if (!Number.isFinite(value)) return null;
+  return metric.precision ? r1(value) : Math.round(value);
+}
+
+function conditionReviewBaseline(S) {
+  const baseline = { rhythm: S.rhythm, convulsions: convulsionSigns(S), delivered: !!S.delivered,
+    bleeding: {}, glu: monitoredGlucose(S) };
+  for (const [site] of CONDITION_REVIEW_BLEEDING_SITES) baseline.bleeding[site] = S.bleedingSites?.[site] > 0;
+  for (const metric of CONDITION_REVIEW_METRICS) baseline[metric.key] = conditionReviewReading(S, metric);
+  return baseline;
+}
+
+function conditionReviewChange(S, baseline) {
+  if (S.rhythm !== baseline.rhythm) {
+    return `心律 ${CONDITION_REVIEW_RHYTHMS[baseline.rhythm] ?? '未记录'} → ${CONDITION_REVIEW_RHYTHMS[S.rhythm] ?? '未记录'}`;
+  }
+  const convulsions = convulsionSigns(S);
+  if (convulsions !== baseline.convulsions) {
+    return `抽搐征象 ${baseline.convulsions ?? '未见抽搐'} → ${convulsions ?? '未见抽搐'}`;
+  }
+  if (S.delivered && !baseline.delivered) return '分娩已完成，胎盘已娩出，进入产后观察';
+  for (const [site, label] of CONDITION_REVIEW_BLEEDING_SITES) {
+    const active = S.bleedingSites?.[site] > 0;
+    if (active !== baseline.bleeding[site]) {
+      return `${label} ${active ? '未见活动性出血 → 活动性出血' : '活动性出血 → 已止血'}`;
+    }
+  }
+
+  const glucose = monitoredGlucose(S), startGlucose = baseline.glu;
+  if (glucose !== startGlucose) {
+    const hasDka = usesDkaGlucoseTarget(S);
+    const side = glucoseTargetSide(glucose, hasDka);
+    const startSide = glucoseTargetSide(startGlucose, hasDka);
+    if (side !== startSide || r1(Math.abs(glucose - startGlucose)) >= 2) {
+      const before = startGlucose == null ? '缺测' : `${startGlucose.toFixed(1)} mmol/L`;
+      const current = glucose == null ? '缺测' : `${glucose.toFixed(1)} mmol/L`;
+      let result = `血糖 ${before} → ${current}`;
+      if (side === 0 && startSide !== 0) result += `，进入本病例目标范围（${glucoseDischargeTarget(hasDka, true)}）`;
+      if (startSide === 0 && side) result += `，偏离本病例目标范围（${glucoseDischargeTarget(hasDka, true)}）`;
+      return result;
+    }
+  }
+
+  for (const metric of CONDITION_REVIEW_METRICS) {
+    const start = baseline[metric.key], current = conditionReviewReading(S, metric);
+    if (start == null || current == null || start === current) continue;
+    const absoluteChange = Math.abs(current - start);
+    const difference = metric.precision ? r1(absoluteChange) : absoluteChange;
+    const crossedThreshold = difference >= metric.edgeDelta &&
+      metric.thresholds.some(threshold => (start < threshold) !== (current < threshold));
+    if (difference >= metric.delta || crossedThreshold) {
+      const digits = metric.precision ?? 0;
+      return `${metric.label} ${start.toFixed(digits)} → ${current.toFixed(digits)} ${metric.unit}`;
+    }
+  }
+  return null;
 }
 
 /* --- 主动听诊、开检验 --- */
@@ -2427,7 +2648,9 @@ function finalScore(S) {
 
 const API = {
   setIdentity(p) { IDENTITY = p || null; }, CASES, DRUGS, ACTIONS, TESTS, DELIVERY_DURATION, create, restorePatient, tick, give, acetaminophenExposure, setEnv, finalScore, scoreBreakdown, bp, snapshot,
-              dischargeCheck, glucoseDischargeTarget, potassiumTarget, convulsionSigns, auscultate, orderTest, pollTests, testValue, chestXrayReports, restoreChestXrayReports,
+              ventilatorSettings, setVentilatorFlow, oxygenSettings, setOxygenFlow,
+              dischargeCheck, glucoseDischargeTarget, glucoseReviewStatus, potassiumTarget, convulsionSigns, conditionReviewBaseline, conditionReviewChange,
+              auscultate, orderTest, pollTests, testValue, chestXrayReports, restoreChestXrayReports,
               computeMap, fmt, endCase, setBleedingRate, restoreBleeding,
               benzodiazepineExposure, restoreBenzodiazepines, temperatureStatus, restoreTemperature, infusionDetails, insulinActivity,
               pumpRate, pumpOrder, pumpEffect, stopPump,

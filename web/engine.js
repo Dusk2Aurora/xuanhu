@@ -2740,9 +2740,9 @@ function advancePhysiology(S, dtSec) {
   const dialysisMinutes = clamp((S.dialysisUntil - previousTime) / 60, 0, dtMin);
   if (dialysisMinutes > 0) {
     const retention = Math.exp(-Math.LN2 / 90 * dialysisMinutes);
-    S.cr = clamp(S.cr * retention, 40, 1400);
+    S.cr = Math.min(S.cr, Math.max(40, S.cr * retention));
     S.bun = clamp(S.bun * retention, 1.5, 160);
-    if (S.t >= S.dialysisUntil) S.log.push([fmt(S.t), '血液透析已结束，需复查血钾并观察反跳', 'info', S.t, null, true]);
+    if (S.t >= S.dialysisUntil) S.log.push([fmt(S.dialysisUntil), '血液透析已结束，需复查血钾并观察反跳', 'info', S.dialysisUntil, null, true]);
   }
   if (crrtActive) {
     // 连续清除逐步逼近置换液平衡，肾功能与自身尿量继续独立计算。

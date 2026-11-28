@@ -26,6 +26,17 @@ const assert = require('node:assert/strict');
   assert.deepEqual(burn.check({ map: 68 }), []);
 }
 
+{
+  const make = () => E.create({ id: 'renal-clearance', init: { ...G.BASE } });
+  const treated = make(), control = make();
+  for (const patient of [treated, control]) patient.cr = 30;
+  treated.dialysisUntil = 20;
+  E.tick(treated, 30);
+  E.tick(control, 30);
+  assert.equal(treated.cr, control.cr);
+  assert.equal(treated.log.find(entry => entry[1].includes('血液透析已结束'))[3], 20);
+}
+
 const out = [];
 function check(name, ok, detail) { out.push({ name, ok, detail }); }
 

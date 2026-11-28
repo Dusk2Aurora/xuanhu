@@ -73,6 +73,27 @@ const PAGES = [
       </table>`,
   },
   {
+    id: 'results', title: '怎么看检查结果', html: `
+      <div class="tut-h">先分类，再判断</div>
+      <div class="tut-row"><b>血气</b><span>四步：pH 判酸碱 → PaCO₂ 判呼吸 → HCO₃⁻ 判代谢 → 两者同向为单纯、反向为混合。PaO₂ 低说明氧合有问题。</span></div>
+      <div class="tut-row"><b>血常规</b><span>白细胞看感染、血红蛋白看携氧、血小板看止血。急性失血早期 Hb 可以正常，6–8 小时后才被稀释下降。</span></div>
+      <div class="tut-row"><b>电解质</b><span>血钾看心律风险（>6.5 危险）、血钠看渗透压（纠正过快会脱髓鞘）、血钙看抽搐与 QT。</span></div>
+      <div class="tut-row"><b>肾功</b><span>肌酐滞后真实滤过率 24–48 小时。急性肾损伤早期肌酐可以不高，要看尿量与趋势。</span></div>
+      <div class="tut-row"><b>肝功与凝血</b><span>INR 与白蛋白比转氨酶更能反映肝衰竭程度；转氨酶下降但 INR 恶化，是病情在变坏。</span></div>
+      <div class="tut-row"><b>肌钙蛋白</b><span>起病 3–4 小时后才升高。刚发作就抽，阴性不能排除心梗，要复查。</span></div>
+      <div class="tut-h" style="margin-top:14px">影像与心电</div>
+      <div class="tut-row"><b>心电图</b><span>顺序：节律 → 心率 → QRS 宽度 → ST-T → QT。高钾先 T 波高尖、再 QRS 增宽；宽 QRS 心动过速按室速处理。</span></div>
+      <div class="tut-row"><b>床旁胸片</b><span>看气管位置、肺野透亮度、心影、肋膈角。气管偏移 + 一侧透亮 = 张力性气胸。</span></div>
+      <div class="tut-row"><b>肺超声</b><span>B 线增多提示肺水；胸膜滑动消失 + 肺点提示气胸。</span></div>
+      <div class="tut-row"><b>心脏超声</b><span>EF 低提示收缩性心衰；心包积液 + 右心塌陷提示填塞；右心扩大提示肺栓塞。</span></div>
+      <div class="tut-row"><b>CT</b><span>出血是高密度、梗死是低密度、夹层看内膜片与真假腔、血栓看充盈缺损。</span></div>
+      <div class="tut-h" style="margin-top:14px">三条通用原则</div>
+      <div class="tut-row"><b>看趋势</b><span>单点值只能说明"此刻"，复查才能说明"在变好还是变坏"。</span></div>
+      <div class="tut-row"><b>看幅度</b><span>轻微超出参考范围未必有意义；明显异常或与症状对应才关键。</span></div>
+      <div class="tut-row"><b>看时机</b><span>采样时刻决定结果含义：补液前的血红蛋白、溶栓前的凝血，参考价值完全不同。</span></div>
+      <div class="tut-note">术语表里「结果解读」分类有 13 条逐项说明，界面上的化验项也能点开看。</div>`,
+  },
+  {
     id: 'drug', title: '怎么给药', html: `
       <div class="tut-h">四步</div>
       <div class="tut-row"><b>1 选药</b><span>「给药」里按类别展开，或直接搜药名、别名（如"泰诺"能搜到对乙酰氨基酚）。</span></div>

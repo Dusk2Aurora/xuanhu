@@ -31,8 +31,21 @@ async function main() {
     assert.equal(oxygen[2], false);
 
     await page.evaluate(() => { window.__LIFE_GAME.S.gcs = 6; });
+    /* 做完操作后面板会留在操作页，先收起再点第二次 */
+    const closeSheetIfOpen = async () => {
+      await page.evaluate(() => {
+        const sheet = document.getElementById('sheet');
+        if (sheet && sheet.classList.contains('on')) {
+          const btn = document.getElementById('sheetClose');
+          if (btn) btn.click();
+        }
+      });
+      await page.waitForTimeout(200);
+    };
+    await closeSheetIfOpen();
     await page.locator('#btnOps').click();
     await page.locator('#sheetList .drow').filter({ hasText: '气管插管 + 机械通气' }).click();
+    await closeSheetIfOpen();
     await page.locator('#btnOps').click();
     await page.locator('#sheetList .drow').filter({ hasText: '调节呼吸机吸气流量' }).click();
     await applyFlow(page, 15);

@@ -3578,7 +3578,7 @@ function openFeedback() {
 }
 
 /* ---------------- 版本 / 更新检查 ---------------- */
-const APP_VERSION = '1.57.4';
+const APP_VERSION = '1.57.5';
 const releaseRoot = document.querySelector('meta[name="xuanhu-release-root"]')?.content;
 const releaseBase = releaseRoot ? new URL(releaseRoot, location.href).href.replace(/\/$/, '') : '';
 const platformName = location.protocol === 'file:' ? '离线 HTML' :
@@ -4628,6 +4628,12 @@ function renderAll() {
 
 /* 更新公告：每次发版在这里加一条（新的放最前面） */
 const RELEASES = [
+  { v: '1.57.5', notes: [
+    '术语表 494 条：新增「结果解读」13 条，教你怎么看血气、血常规、电解质、肝功、肌钙蛋白、心电、胸片、超声与 CT',
+    '新增玩法术语：血管通路、ECMO、CRRT、持续脑电、肺动脉取栓、输液泵药、探索床、亚低温、设备试撤、现实规则计分',
+    '教程新增「怎么看检查结果」一页，共 15 页',
+    '把此前漏测的呼吸流量测试修好并纳入浏览器测试清单',
+  ] },
   { v: '1.57.4', notes: [
     '两项手术止血在操作列表中标明适用的出血来源。选错术式时，操作日志也会说明区别。',
   ] },

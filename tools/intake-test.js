@@ -157,6 +157,8 @@ assert.equal(I.ask(arrested, 'patient', 'present').status, 'unavailable');
 
 // Inquiry evidence keeps its original source and timestamp after reloading.
 const unconscious = E.create('opioid');
+// This scenario needs a patient who recalls and discloses the medication.
+unconscious.seed = 42;
 I.init(unconscious, 6);
 assert.equal(I.view(unconscious).chief.source, 'ems');
 assert.equal(I.ask(unconscious, 'patient', 'medications').status, 'unavailable');

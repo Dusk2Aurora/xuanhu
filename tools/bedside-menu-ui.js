@@ -178,8 +178,37 @@ async function main() {
     await choose('床位 1');
     await openInfusions();
     assert.match(await contents.innerText(), /去甲肾上腺素/);
+    await closeDetail();
+
+    await selectDrug('普通肝素', 'heparin');
+    await rows.getByRole('button', { name: '持续静脉泵入', exact: true }).click();
+    assert.match(await rows.locator('#dGo').innerText(), /1200 U\/h/);
+    await rows.locator('#dGo').click();
+    await closeSheet();
+    const advanceHeparin = () => page.evaluate(() => {
+      const { S, E } = window.__LIFE_GAME;
+      for (let step = 0; step < 6; step++) E.tick(S, 10);
+    });
+    await advanceHeparin();
+    await openInfusions();
+    const heparin = detail.locator('button[data-pump-id="heparin"]');
+    const heparinRow = heparin.locator('xpath=ancestor::article');
+    assert.match(await heparinRow.innerText(), /1200 U\/h.*已泵入 20 U.*¥0\.18/s);
+    await heparin.click();
+    await rows.locator('#dPlus').click();
+    await rows.getByRole('button', { name: /调整 肝素 泵速至 1300 U\/h/ }).click();
+    assert.match(await contents.innerText(), /已完成泵入时段.*1200 U\/h.*20 U.*¥0\.18/s);
+    await heparin.click();
+    await rows.getByRole('button', { name: '暂停泵入', exact: true }).click();
+    assert.match(await heparinRow.innerText(), /已暂停.*1300 U\/h.*已泵入 20 U/s);
+    await advanceHeparin();
+    await heparin.click();
+    await rows.getByRole('button', { name: /恢复泵入 肝素.*1300 U\/h/ }).click();
+    assert.match(await heparinRow.innerText(), /持续泵入.*1300 U\/h.*已泵入 20 U/s);
+    await heparinRow.getByRole('button', { name: '凝血复查', exact: true }).click();
+    assert.equal(await rows.getByText('凝血功能', { exact: true }).isVisible(), true);
     assert.deepEqual(errors, []);
-    console.log('床旁操作日志、定时输注进度、停用、刷新及床位隔离均通过。');
+    console.log('床旁操作日志、定时输注进度、普通肝素泵药管理、刷新及床位隔离均通过。');
   } finally {
     await browser.close();
   }

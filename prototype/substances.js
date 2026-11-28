@@ -109,7 +109,7 @@ const DRUGS = [
   ['hydralazine','肼屈嗪',     '血管扩张', 10, 'mg',     15, { r:'静推', on:3, du:40, e:{svr:-1.8, hr:+10}, note:'扩张小动脉；可反射性加快心率。' }],
   ['furosemide','呋塞米',      '袢利尿',   20, 'mg',     9,  { note:'利尿；留意低血钾与容量不足。' }],
   ['spironolactone','螺内酯',  '保钾利尿', 20, 'mg',     11, { note:'保钾利尿；留意高血钾。' }],
-  ['heparin',  '肝素',         '抗凝',     5000,'U',     45, { e:{coag:-0.35}, note:'抗凝；留意出血。' }],
+  ['heparin',  '肝素',         '抗凝',     5000,'U',     45, { e:{coag:-0.35}, note:'普通肝素。持续静脉泵入期间可复查凝血功能中的 aPTT 和抗 Xa，留意出血。' }],
   ['warfarin', '华法林',       '抗凝',     5,  'mg',     10, { r:'口服', e:{coag:-0.40}, on:120, du:720, note:'口服抗凝，起效慢；留意出血和相互作用。' }],
   ['aspirin',  '阿司匹林',     '抗血小板', 300,'mg',     6,  { e:{coag:-0.06}, note:'抗血小板；留意消化道出血。' }],
   ['clopidogrel','氯吡格雷',   '抗血小板', 300,'mg',     28, { e:{coag:-0.06}, note:'抗血小板；奥美拉唑可减弱其效果。' }],
@@ -410,7 +410,8 @@ const ROUTE_MAP = {
   digoxinFab: [{ r:'静滴', infusionMinutes:20, maxDose:20 }],
   glucarpidase: [{ r:'静滴', infusionMinutes:2, maxDose:50 }],
   leucovorin: [{ r:'静滴', infusionMinutes:10, maxDose:500 }],
-  heparin:    [{ r:'静推', d:5000,on:5, du:180 }, { r:'皮下', d:5000,on:30,du:360 }],
+  heparin:    [{ r:'静推', d:5000,on:0, du:180 }, { r:'皮下', d:5000,on:30,du:360 },
+               { r:'持续静脉泵入', d:1200, unit:'U/h', pumpHalfLife:60, pumpStep:100, maxDose:5000, pumpPause:true }],
   naloxone:   [{ r:'静推', d:0.4,on:1,  du:45  }, { r:'肌注', d:0.8,on:5,  du:90 }],
 };
 
@@ -515,8 +516,10 @@ function build() {
         on: x.on != null ? x.on : item.onset,
         du: x.du != null ? x.du : item.dur,
         ...(x.infusionMinutes ? { infusionMinutes: x.infusionMinutes } : {}),
+        ...(x.unit ? { unit: x.unit } : {}),
         ...(x.pumpHalfLife ? { pumpHalfLife: x.pumpHalfLife } : {}),
         ...(x.pumpStep ? { pumpStep: x.pumpStep } : {}),
+        ...(x.pumpPause ? { pumpPause: true } : {}),
         ...(x.maxDose ? { maxDose: x.maxDose } : {}),
       }));
       item.route = item.routes[0].r;
@@ -575,6 +578,8 @@ const ALIASES = {
   '葡萄糖酸钙针': '葡萄糖酸钙',
   '氯化钾针': '氯化钾',
   '止血敏': '酚磺乙胺',
+  '普通肝素': '肝素',
+  '肝素钠': '肝素',
   '4F-PCC': '四因子凝血酶原复合物',
   'PCC': '四因子凝血酶原复合物',
   'Idarucizumab': '依达赛珠单抗',

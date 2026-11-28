@@ -605,9 +605,39 @@ function checkStandardRescueCare() {
   }
 }
 
+function checkCombinedDischarge() {
+  const runCare = (S, limit) => {
+    while (S.running && S.t < limit && !E.dischargeCheck(S).ok) {
+      for (const id of S.cas.cases) TREAT[id](S, S.t);
+      step(S);
+    }
+    assert.equal(E.dischargeCheck(S).ok, true, E.dischargeCheck(S).reasons.join('；'));
+  };
+
+  const pancreatic = E.create(G.generate(3, 101, ['pancreatitis', 'liverFailure']));
+  runCare(pancreatic, 3 * 3600);
+  assert.ok(pancreatic.lactProd < 0.07, '补液恢复灌注后胰腺炎的乳酸驱动回落');
+
+  const chronic = G.generate(3, 547);
+  assert.deepEqual(chronic.cases, ['apap', 'ptx']);
+  const treated = E.create(chronic);
+  runCare(treated, 3 * 3600);
+  assert.ok(treated.cr > 130 && treated.cr <= chronic.apapRenalDischargeLimit);
+  assert.ok(chronic.observations({ ...treated, t: 7200 - 1e-8 }).length === 0, '留观结束按模拟时钟精度判断');
+
+  const rising = { ...treated, cr: treated.cr + 10 };
+  assert.ok(E.dischargeCheck(rising).reasons.some(reason => reason.includes('肌酐回升')));
+  const legacy = JSON.parse(JSON.stringify({ ...treated, cas: undefined, akiObservation: undefined }));
+  const restored = Object.assign(E.create(chronic), legacy);
+  E.restoreDischargeObservation(restored, legacy);
+  assert.match(E.dischargeCheck(restored).reasons.join('；'), /肾功能需连续留观 30/);
+  runCare(restored, treated.t + 3600);
+}
+
 if (require.main === module) {
   checkEmergencyCases();
   checkStandardRescueCare();
+  checkCombinedDischarge();
   for (const sub of substances.ALL) {
     const exposure = sub.cls === '病毒' || sub.cls === '细菌';
     assert.ok(Number.isFinite(sub.cost) && (exposure ? sub.cost === 0 : sub.cost > 0),

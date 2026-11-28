@@ -77,7 +77,7 @@ function procedureObservation(S, startedAt, completedAt, duration, name) {
     return startedAt == null ? null : { endsAt:startedAt + duration, reason:name + '进行中' };
   }
   const endsAt = completedAt + OBSERVATION_TIME;
-  return S.t < endsAt ? { endsAt, reason:name + '后观察' } : null;
+  return S.t < endsAt - 1e-7 ? { endsAt, reason:name + '后观察' } : null;
 }
 
 function advanceDissectionLoad(S, minutes, pressure) {
@@ -303,7 +303,7 @@ const aorticDissection = {
   advance(S, minutes, E) {
     if (S.aorticSurgeryCompletedAt != null) return;
     const endsAt = S.aorticSurgeryStartedAt == null ? null : S.aorticSurgeryStartedAt + SURGERY_TIME;
-    if (endsAt != null && S.t >= endsAt) {
+    if (endsAt != null && S.t >= endsAt - 1e-7) {
       S.aorticSurgeryCompletedAt = endsAt;
       S.aorticDissectionLoad = 0;
       S.svrDrive = 0;
@@ -349,7 +349,7 @@ const aorticDissectionB = {
   },
   advance(S, minutes, E) {
     if (S.tevarCompletedAt != null) return;
-    if (S.tevarStartedAt != null && S.t >= S.tevarStartedAt + TEVAR_DURATION) {
+    if (S.tevarStartedAt != null && S.t >= S.tevarStartedAt + TEVAR_DURATION - 1e-7) {
       S.tevarCompletedAt = S.tevarStartedAt + TEVAR_DURATION;
       S.aorticDissectionLoad = 0;
       S.aorticLegMalperfusion = 0;
@@ -398,7 +398,7 @@ const fallTrauma = {
   observation(S) {
     if (S.fallTraumaHemostasisAt == null) return null;
     const endsAt = S.fallTraumaHemostasisAt + OBSERVATION_TIME;
-    return S.t < endsAt ? { endsAt, reason:'创伤止血后观察' } : null;
+    return S.t < endsAt - 1e-7 ? { endsAt, reason:'创伤止血后观察' } : null;
   },
   advance(S, minutes) {
     S.tensionPTX = S.chestTubePlaced ? 0 : Math.min(1, S.tensionPTX + 0.0035 * minutes);

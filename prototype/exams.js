@@ -43,7 +43,7 @@ const TESTS = {
   bmp: { group: 'blood', name: '电解质+肾功', min: 35, cost: 180, fields: ['k', 'na', 'cl', 'ca', 'cr', 'bun'], desc: '查电解质、肌酐和尿素氮。' },
   cbc: { group: 'blood', name: '血常规', min: 25, cost: 60, fields: ['hb', 'wbc', 'plt'], desc: '查血红蛋白、白细胞和血小板。' },
   lac: { group: 'blood', name: '乳酸', min: 10, cost: 50, fields: ['lac'], desc: '评估乳酸积累及复苏后的变化。' },
-  coag: { group: 'targeted', name: '凝血功能', min: 25, cost: 110, fields: ['coag', 'inr', 'thrombinTime', 'fibrinogen'], desc: '测凝血指数、INR、凝血酶时间与纤维蛋白原。' },
+  coag: { group: 'targeted', name: '凝血功能', min: 25, cost: 110, fields: ['coag', 'inr', 'thrombinTime', 'fibrinogen', 'aptt', 'heparinAntiXa'], desc: '测凝血指数、INR、凝血酶时间和纤维蛋白原。可用 aPTT 和抗 Xa 观察普通肝素的抗凝效应。' },
   digoxin_level: { group: 'targeted', name: '游离地高辛浓度', min: 20, cost: 160, fields: ['digoxinLevel'], desc: '针对地高辛暴露，有助于解释缓慢心律、传导异常与高钾。' },
   methotrexate_level: { group: 'targeted', name: '甲氨蝶呤浓度（色谱）', min: 25, cost: 230, fields: ['mtxLevel'], desc: '结合输注至采样的间隔与肌酐评估延迟清除，可在酶解救援后复查。' },
   troponin: { group: 'targeted', name: '高敏肌钙蛋白 I', min: 30, cost: 170, fields: ['troponin'], desc: '评估心肌损伤，可复查采样比较变化。' },
@@ -60,7 +60,7 @@ const TESTS = {
   echo: { group: 'imaging', name: '床旁心脏超声', min: 5, cost: 150, fields: [], desc: '观察心包积液和左右心室表现。' },
   fast: { group: 'imaging', name: '创伤床旁超声（FAST）', min: 5, cost: 150, fields: [], desc: '观察腹腔、盆腔有无游离液体。' },
   cthead: { group: 'imaging', name: '头颅 CT 平扫', min: 25, cost: 360, fields: [], desc: '评估颅内急性出血和占位效应。' },
-  ctpa: { group: 'imaging', name: 'CT 肺动脉造影', min: 30, cost: 650, fields: [], desc: '检查肺动脉有无充盈缺损。' },
+  ctpa: { group: 'imaging', name: 'CT 肺动脉造影', min: 30, cost: 650, fields: ['pulmonaryClotBurden'], desc: '检查肺动脉有无充盈缺损。' },
   aorta_cta: { group: 'imaging', name: '主动脉 CTA', min: 8, cost: 880, fields: ['ascendingAortaDissection', 'aorticArchInvolvement', 'descendingAortaDissection', 'descendingAortaMalperfusion'],
     desc: '急诊评估主动脉升段、弓部、降段及分支灌注。报告时间为模拟值。' },
   trauma_ct: { group: 'imaging', name: '创伤评估 CT（多部位）', min: 12, cost: 960, fields: ['bluntMultisystemTrauma'],
@@ -225,7 +225,7 @@ const METRICS = {
   ca: ['离子钙', 'mmol/L', 1.12, 1.32],
   cr: ['肌酐', 'µmol/L'],
   bun: ['尿素氮', 'mmol/L'],
-  hb: ['血红蛋白', 'g/L'],
+  hb: ['血红蛋白', 'g/L', 120, 160],
   wbc: ['白细胞', '×10⁹/L', 4, 10],
   plt: ['血小板', '×10⁹/L', 100, 300],
   glu: ['血糖', 'mmol/L', 3.9],
@@ -236,6 +236,8 @@ const METRICS = {
   inr: ['国际标准化比值（INR）', '', null, 1.2],
   thrombinTime: ['凝血酶时间（TT）', 's', null, 21],
   fibrinogen: ['纤维蛋白原', 'g/L', 1.7],
+  aptt: ['活化部分凝血活酶时间（aPTT）', 's'],
+  heparinAntiXa: ['抗 Xa 活性（普通肝素）', 'IU/mL'],
   digoxinLevel: ['游离地高辛', 'ng/mL', null, 2],
   mtxLevel: ['血浆甲氨蝶呤', 'µmol/L'],
   hepato: ['肝损伤指数', '（模拟值）', null, 0.25],
@@ -300,14 +302,21 @@ function targetedSample(S, type, sample, E) {
       return labRows(type, sample);
     case 'coag': {
       const fibrinogen = S.fibrinogen ?? 2.6;
-      sample.coag = Number.isFinite(S.coag) ? rounded(S.coag, 2) : null;
+      const antiXa = E.heparinActivity(S) * 1.4;
+      sample.coag = rounded(E.coagulation(S), 2);
       sample.inr = rounded(1 + 4.8 * (root.SUBSTANCES?.warfarinEffect(S) || 0) + 2 * (S.hepatotox || 0), 2);
       sample.thrombinTime = rounded(17 + 81 * (S.dabigatranLoad || 0) + 9 * Math.max(0, 1.7 - fibrinogen), 1);
       sample.fibrinogen = rounded(fibrinogen, 2);
-      return labRows(type, sample);
+      sample.aptt = rounded(29 + 64 * antiXa + 18 * (S.hepatotox || 0) + 10 * (S.dabigatranLoad || 0), 1);
+      sample.heparinAntiXa = rounded(antiXa, 2);
+      const rows = labRows(type, sample);
+      const pump = S.pumps?.heparin;
+      if (pump?.rate > 0) rows.push(row('采样时普通肝素泵速', `${pump.rate} U/h`));
+      else if (pump?.pausedRate > 0) rows.push(row('采样时普通肝素泵速', '已暂停'));
+      return rows;
     }
     case 'liver':
-      sample.coag = Number.isFinite(S.coag) ? rounded(S.coag, 2) : null;
+      sample.coag = rounded(E.coagulation(S), 2);
       return [...labRows(type, sample), row('结果说明', '肝损伤指数升高提示损伤加重，凝血功能指数下降提示凝血异常加重。为便于复查，保留模拟指数。')];
     case 'digoxin_level':
       sample.digoxinLevel = rounded(6.1 * (S.digoxinLoad || 0), 2);
@@ -384,8 +393,11 @@ function imagingRows(S, type, sample) {
     case 'cthead':
       return [S.hematoma > 0.12 ? abnormal('颅内', '左颞部颅骨内板下见双凸形高密度影') : row('颅内', '未见明确急性出血影'),
         row('占位效应', S.hematoma > 0.3 && S.icp >= 0.6 ? '可见邻近脑组织受压' : '未见明显占位效应')];
-    case 'ctpa':
-      return [(S.clot || 0) > 0.08 ? abnormal('肺动脉', '可见肺动脉充盈缺损') : row('肺动脉', '未见明确充盈缺损')];
+    case 'ctpa': {
+      const clot = S.clot || 0;
+      sample.pulmonaryClotBurden = clot;
+      return [clot > 0.08 ? abnormal('肺动脉', '可见肺动脉充盈缺损') : row('肺动脉', '未见明确充盈缺损')];
+    }
     case 'aorta_cta': {
       const dissection = S.aorticDissectionLoad > 0;
       const ascending = dissection && withTag(S, 'aorticDissection');
@@ -445,7 +457,7 @@ function imagingRows(S, type, sample) {
   }
 }
 
-const API = { EXAM_GROUPS, TEST_GROUPS, EXAMS, TESTS, bedside, labRows, ecgRows, targetedSample, imagingRows, advanceTroponin };
+const API = { EXAM_GROUPS, TEST_GROUPS, EXAMS, TESTS, bedside, valueRow, labRows, ecgRows, targetedSample, imagingRows, advanceTroponin };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 root.LIFE_EXAMS = API;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

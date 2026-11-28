@@ -21,6 +21,28 @@ const finish = (S, type) => {
   return report;
 };
 const reportText = report => report.rows.map(({ label, value }) => label + ' ' + value).join('\n');
+{
+  const S = healthy();
+  const cbc = hb => {
+    S.hb = hb;
+    return finish(S, 'cbc');
+  };
+  const hbRow = report => report.rows.find(row => row.label === '血红蛋白');
+  S.wbc = 12.5;
+  S.plt = 95;
+  const first = cbc(55);
+  assert.deepEqual(first.rows.map(row => row.flag), ['偏低', '偏高', '偏低']);
+  const repeat = cbc(65);
+  assert.deepEqual(hbRow(repeat), { label: '血红蛋白', value: '65 g/L', flag: '偏低' });
+  for (const [value, flag] of [[119, '偏低'], [120, undefined], [160, undefined], [161, '偏高']]) {
+    assert.equal(hbRow(cbc(value)).flag, flag);
+  }
+  const legacy = JSON.parse(JSON.stringify(S));
+  delete hbRow(legacy.diagnosticReports[0]).flag;
+  const archived = E.getReport(restore(legacy), first.id);
+  assert.deepEqual(archived, first);
+}
+
 const advance = (S, minutes) => {
   for (let i = 0; i < minutes; i++) {
     E.tick(S, 60);

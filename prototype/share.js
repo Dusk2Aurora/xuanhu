@@ -55,19 +55,20 @@
       } else if (g.pumpAction) action.push({ pumpAction: g.pumpAction, unit: g.unit });
       actions.push(action);
     }
-    /* 操作记录：日志里的时间戳是 mm:ss 文本，转回秒 */
+    /* 旧日志只保留 HH:mm，新日志保留精确模拟秒数。 */
     const toSec = (t) => {
       const m = String(t || '').match(/(\d+):(\d+)/);
-      return m ? (+m[1]) * 60 + (+m[2]) : 0;
+      return m ? (+m[1]) * 3600 + (+m[2]) * 60 : 0;
     };
     for (const l of (ed ? [] : S.log || [])) {
-      if (String(l[1]).startsWith('操作')) actions.push(['a', toSec(l[0]), String(l[1]).replace(/^操作\s*/, '').slice(0, 36), 0]);
+      if (String(l[1]).startsWith('操作')) actions.push(['a', l[3] ?? toSec(l[0]), String(l[1]).replace(/^操作\s*/, '').slice(0, 36), 0]);
     }
     actions.sort((x, y) => x[1] - y[1]);
     const review = S.dischargeOutcome;
     const failed = review?.status === 'failed';
     const reason = S.death?.reason || (failed ? review.majorReasons?.[0] : '');
-    const score = review && typeof root.LIFE?.finalScore === 'function'
+    const finished = !!(S.death || S.discharged || failed);
+    const score = finished && typeof root.LIFE?.finalScore === 'function'
       ? root.LIFE.finalScore(S) : (S.finalScore ?? S.score ?? 100);
     const payload = {
       v: V,
@@ -77,9 +78,11 @@
       d: difficulty,
       p: { n: p.name || '', x: p.sex || '男', a: p.age || 45, w: p.weight || 70, h: p.height || 170 },
       t: Math.round((S.t || 0) / 60),
-      o: S.death ? 'death' : S.discharged ? 'discharge' : failed ? 'failed' : 'open',
+      o: S.death ? 'death' : failed ? 'failed' : S.discharged ? 'discharge' :
+        S.cas.exploration && !S.running ? 'explored' : 'open',
+      penalized: review?.status === 'penalized' || undefined,
       r: ed ? undefined : String(reason || '').slice(0, 20),
-      sc: ed ? undefined : Math.round(score),
+      sc: (ed && !finished) || S.cas.exploration ? undefined : Math.round(score),
       a: actions.slice(0, 120),
     };
     const body = b64.enc(JSON.stringify(payload));

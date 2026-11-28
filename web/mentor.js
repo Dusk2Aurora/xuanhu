@@ -471,7 +471,8 @@ const RULES = {
       c:'大面积肺栓塞的氧合很差',
       d:'先给氧，必要时无创通气',
       s:'高流量吸氧 15 L/min' },
-    { id:'anti', when: S => !active(S,'heparin') && !active(S,'alteplase'),
+    { id:'anti', when: S => !active(S,'heparin') && !active(S,'alteplase') &&
+        !(root.LIFE.pumpRate(S, 'heparin') > 0 || root.LIFE.heparinActivity(S) > 0.1),
       c:'血栓还在，右心负荷持续加重',
       d:'抗凝是基础，血流动力学不稳要溶栓',
       s:'肝素 5000 U 静推；血压不稳时阿替普酶溶栓' },

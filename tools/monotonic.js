@@ -16,7 +16,7 @@ function run(caseId, setup, minutes) {
   for (let i = 0; i < minutes * 2; i++) E.tick(S, 30);
   return {
     map: E.bp(S).map, sys: E.bp(S).sys, spo2: S.spo2, k: S.k, ph: S.ph,
-    vol: S.vol, coag: S.coag || 1, lac: S.lac, glu: S.glu, hr: S.hr,
+    vol: S.vol, coag: E.coagulation(S), lac: S.lac, glu: S.glu, hr: S.hr,
   };
 }
 

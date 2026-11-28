@@ -119,6 +119,88 @@ const reload = (scenario, saved) => {
 }
 
 {
+  const heparin = SUB.byId('heparin');
+  const route = heparin.routes.find(route => route.pumpHalfLife);
+  const S = bed(), control = bed();
+  const advance = (patient, minutes) => {
+    for (let second = 0; second < minutes * 60; second += 10) E.tick(patient, 10);
+    assert.ok(patient.running);
+  };
+  E.setBleedingRate(S, 'test', 0.0005);
+  E.setBleedingRate(control, 'test', 0.0005);
+  assert.equal(E.give(S, heparin.id, 1200, route.r), 1200);
+  assert.equal(S.pk.length, 0, '开泵不会生成静推医嘱');
+  assert.equal(S.drugCost, 0);
+  advance(S, 30);
+  advance(control, 30);
+  assert.ok(E.coagulation(S) < E.coagulation(control) && S.rbcMass < control.rbcMass);
+  const initialActivity = E.heparinActivity(S);
+  assert.equal(E.give(S, heparin.id, 1800, route.r), 1800);
+  close(E.heparinActivity(S), initialActivity, '调速延续已有抗凝活性');
+  assert.equal(E.give(S, heparin.id, 1800, route.r), null);
+  advance(S, 20);
+  E.orderTest(S, 'coag');
+  const sampled = S.tests.coag.sample;
+  assert.ok(sampled.s.aptt > 29 && sampled.s.heparinAntiXa > 0);
+  const beforePause = E.heparinActivity(S);
+  assert.equal(E.pausePump(S, heparin.id), 1800);
+  assert.equal(E.pausePump(S, heparin.id), null);
+  assert.match(S.log.at(-1)[1], /暂停泵入.*1800 U\/h.*600 U.*¥5\.40/);
+  const { cas, ...state } = S;
+  const restored = reload(cas, JSON.parse(JSON.stringify(state)));
+  advance(restored, 60);
+  close(E.heparinActivity(restored), beforePause / 2, '暂停后按半衰期清除');
+  close(restored.drugCost, 10.8, '暂停和重载期间不产生额外泵费');
+  E.pollTests(restored);
+  const report = E.reports(restored, 'coag').at(-1);
+  assert.equal(report.sampledAt, sampled.t);
+  assert.equal(report.values.aptt, sampled.s.aptt);
+  assert.equal(report.values.heparinAntiXa, sampled.s.heparinAntiXa);
+  assert.equal(report.rows.find(row => row.label === '采样时普通肝素泵速')?.value, '1800 U/h');
+  E.orderTest(restored, 'coag');
+  assert.ok(restored.tests.coag.sample.s.heparinAntiXa < report.values.heparinAntiXa);
+  assert.equal(E.give(restored, heparin.id, 1800, route.r), 1800);
+  assert.equal(restored.given.at(-1).pumpAction, 'resume');
+  advance(restored, 20);
+  assert.equal(E.stopPump(restored, heparin.id), 1800);
+  const segments = restored.given.filter(given => given.pumpSeconds > 0);
+  assert.equal(segments.length, 3);
+  for (const segment of segments) {
+    assert.equal(segment.unit, 'U/h');
+    close(segment.endedAt - segment.t, segment.pumpSeconds, '医嘱时段与运行时长一致');
+    close(segment.pumpDose, 600, '药量随每段泵速和时间计算');
+    close(segment.cost, 5.4, '按该段实际用量收费一次');
+  }
+  close(restored.drugCost, 16.2, '三段费用与药费汇总一致');
+  close(E.pumpDelivery(restored, heparin.id).dose, 1800, '泵入量汇总与三段医嘱一致');
+  E.give(restored, heparin.id);
+  E.give(restored, heparin.id, heparin.dose, '皮下');
+  assert.deepEqual(restored.pk.map(order => order.route), ['静推', '皮下']);
+  close(restored.drugCost, 16.2 + 2 * heparin.cost, '静推与皮下仍按单次剂量计费');
+
+  for (const finish of [
+    patient => E.endCase(patient, 'discharge', '达到出院标准'),
+    patient => { patient.k = 8; assert.equal(E.signDischarge(patient).status, 'failed'); },
+    patient => E.endCase(patient, 'death', '测试病案结束'),
+  ]) {
+    const patient = bed();
+    E.give(patient, heparin.id, 1200, route.r);
+    advance(patient, 1);
+    finish(patient);
+    const [segment, stopped] = patient.given;
+    assert.equal(segment.endedAt, patient.t);
+    assert.equal(stopped.pumpAction, 'stop');
+    close(segment.pumpDose, 20, '结算时关闭最后一段并记录实际泵量');
+    close(segment.cost, 0.18, '结算时最后一段费用与汇总一致');
+    assert.match(patient.log.at(-2)[1], /停止泵入.*1200 U\/h.*20 U.*¥0\.18/);
+    E.finishPumps(patient);
+    E.tick(patient, 60);
+    assert.equal(patient.given.length, 2, '整理病历时重复结算不增加医嘱');
+    close(patient.drugCost, segment.cost, '结算后无新增泵入费用');
+  }
+}
+
+{
   const budgets = Array.from({ length: 2048 }, (_, seed) => FINANCE.initInsurance({ seed }).oopCap)
     .sort((a, b) => a - b);
   assert.ok(budgets[0] < 9000 && budgets[511] < 25000, '新预算仍覆盖困难家庭和相对有限的家庭');

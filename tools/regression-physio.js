@@ -1,6 +1,6 @@
 ﻿/* 生理回归测试：把两轮科学审查发现的每个具体缺陷固化成断言。
  * 任何一条失败，说明那次修复被改回去了。
- * 用法：node tools/regression-physio.js
+ * 用法：node tools/regression-physio.js [--lactate]
  */
 require('../prototype/substances.js');
 require('../prototype/traits.js');
@@ -62,13 +62,28 @@ function check(name, ok, detail) { out.push({ name, ok, detail }); }
   const stableAt = low.roomAirStableSince;
   const observationRemaining = () => E.dischargeCheck(low).reasons.some(reason => reason.includes('室内空气血氧需稳定'));
   const beganObservation = observationRemaining();
-  for (let i = 0; i < 5; i++) E.tick(low, 59);
+  for (let i = 0; i < 1499; i++) E.tick(low, 0.2);
   const stillObserving = observationRemaining();
-  E.tick(low, 5);
+  E.tick(low, 0.2);
   check('0 L/min 撤氧后需连续观察室内空气血氧五分钟', stopped && low.oxygenFlow === 0 &&
     !low.o2 && low.fio2 === 0.21 && stableAt != null && stableAt === low.roomAirStableSince &&
-    beganObservation && stillObserving && !observationRemaining(),
+    beganObservation && stillObserving && !observationRemaining() && E.dischargeCheck(low).observationEndsAt === null,
     `室内空气稳定起点 ${stableAt} 秒，满 300 秒后结束留观`);
+
+  const legacyRoomAir = { t: 240, log: [['操作', '停止吸氧，改室内空气（0 L/min）', 'info']] };
+  const legacyBed = Object.assign(makeBed(), legacyRoomAir);
+  E.restoreDischargeObservation(legacyBed, legacyRoomAir);
+  const legacyDeadline = E.dischargeCheck(legacyBed).observationEndsAt;
+  const currentRoomAir = { ...legacyRoomAir, t: 300, hadOxygenSupport: true, roomAirStableSince: 240 };
+  const currentBed = Object.assign(makeBed(), currentRoomAir);
+  E.restoreDischargeObservation(currentBed, currentRoomAir);
+  const lowSaturation = { ...currentRoomAir, spo2: 93 };
+  const lowSaturationBed = Object.assign(makeBed(), lowSaturation);
+  E.restoreDischargeObservation(lowSaturationBed, lowSaturation);
+  check('撤氧留观读档沿用已验证的进度，旧档从当前复评', legacyDeadline === 540 &&
+    E.dischargeCheck(currentBed).observationEndsAt === legacyDeadline && lowSaturationBed.roomAirStableSince == null &&
+    E.dischargeCheck(lowSaturationBed).observationEndsAt === null,
+    '稳定旧档立即可等待五分钟；现行存档继续计时；仍低氧者待恢复再开始');
 }
 
 {
@@ -171,6 +186,67 @@ function check(name, ok, detail) { out.push({ name, ok, detail }); }
     deceased.death.reason === '测试死亡' && E.finalScore(deceased) === 55, '签字与死亡结局独立');
 }
 
+{
+  const makeBed = () => E.create({ id: 'coagulation-recovery', init: { ...G.BASE } });
+  const advance = (bed, seconds) => {
+    while (seconds > 0) {
+      const step = Math.min(10, seconds);
+      E.tick(bed, step);
+      seconds -= step;
+    }
+  };
+  const aspirin = makeBed(), treated = makeBed(), subcutaneous = makeBed(), lysis = makeBed();
+  for (const bed of [aspirin, treated]) E.give(bed, 'aspirin');
+  E.give(treated, 'heparin');
+  E.give(subcutaneous, 'heparin', null, '皮下');
+  E.give(lysis, 'alteplase');
+  const afterSubcutaneousDose = E.heparinActivity(subcutaneous);
+  for (const bed of [aspirin, treated, subcutaneous, lysis]) advance(bed, 40 * 60);
+  const active = E.coagulation(treated) < E.coagulation(aspirin) - 0.20 &&
+    afterSubcutaneousDose === 0 && E.heparinActivity(subcutaneous) > 0.1 && E.coagulation(subcutaneous) < 0.95 &&
+    E.coagulation(lysis) < 0.6;
+  for (const bed of [aspirin, treated, subcutaneous, lysis]) advance(bed, 11 * 3600);
+  check('普通肝素和溶栓药作用消退后恢复凝血', active && E.heparinActivity(treated) === 0 &&
+    E.coagulation(treated) === E.coagulation(aspirin) && E.coagulation(subcutaneous) === 1 && E.coagulation(lysis) === 1,
+    '静推、皮下、溶栓和阿司匹林合用均在当前药效内改变凝血');
+
+  const treatedPe = E.create(G.generate(2, 123, ['pe']));
+  const reversedPe = E.create(G.generate(2, 123, ['pe']));
+  for (const bed of [treatedPe, reversedPe]) E.give(bed, 'heparin');
+  E.give(reversedPe, 'protamine');
+  G.step(treatedPe, 30, E);
+  G.step(reversedPe, 30, E);
+  const reversedAtDose = E.heparinActivity(reversedPe) === 0 && reversedPe.clot > treatedPe.clot;
+  E.give(reversedPe, 'heparin');
+  const pumped = makeBed();
+  E.give(pumped, 'heparin', 1200, '持续静脉泵入');
+  advance(pumped, 60 * 60);
+  E.give(pumped, 'protamine');
+  const reversedPump = E.heparinActivity(pumped) === 0 && E.coagulation(pumped) === 1;
+  advance(pumped, 60 * 60);
+  check('鱼精蛋白只中和当前肝素，后续静推和泵入可继续起效', reversedAtDose && E.heparinActivity(reversedPe) === 1 &&
+    reversedPump && E.pumpRate(pumped, 'heparin') === 1200 && E.heparinActivity(pumped) > 0.1 && pumped.coag === 1,
+    '肺栓塞病程与化验读取同一肝素活性，既有药效中和后不会继续抵消后来给药');
+
+  const legacy = { t: 6 * 3600, coag: 0.44, hepatotox: 0.10,
+    given: [{ id: 'heparin', d: 5000, t: 0, route: '静推' }], _ixAcc: { '阿司匹林|肝素': 1 } };
+  const restore = saved => {
+    const restored = Object.assign(makeBed(), saved);
+    E.restorePatient(restored, saved);
+    return restored;
+  };
+  const migrated = restore(legacy);
+  const migratedLysis = restore({ t: legacy.t, coag: 0.40, given: [{ id: 'alteplase', d: 100, t: 0, route: '静滴' }] });
+  const oldBleed = restore({ ...legacy, bleedRate: 0.02 });
+  const oldLiverDamage = restore({ ...legacy, hepatotox: 0.65 });
+  const oldReversed = restore({ ...legacy, given: [...legacy.given, { id: 'protamine', d: 50, t: 100 }] });
+  check('旧档只恢复可归因于临时用药的凝血基线', migrated.coag > 0.88 && migrated.coag < 0.90 &&
+    restore(migrated).coag === migrated.coag && migratedLysis.coag > 0.99 &&
+    oldBleed.coag === legacy.coag && oldReversed.coag === legacy.coag &&
+    Math.abs(oldLiverDamage.coag - (1 - 0.78 * 0.65)) < 1e-7,
+    '迁移只执行一次；保留正在出血、已逆转用药和肝损限制');
+}
+
 /* 1. 首帧自洽：create 后与第一个 tick 的血压差 < 3 mmHg */
 for (const id of ['hyperkalemia', 'dka', 'bleed', 'sepsis', 'opioid']) {
   const S = E.create(id);
@@ -245,18 +321,100 @@ for (const id of ['hyperkalemia', 'dka', 'bleed', 'sepsis', 'opioid']) {
   check('CPR 支持消退', S.mapBoost < 24, `25 → ${S.mapBoost.toFixed(1)}`);
 }
 
-/* 9. 低钠纠正过度会被判脱髓鞘（不可出院） */
+/* 9. 血钠纠正超限后的游戏内留观时限 */
 {
-  const S = E.create(G.generate(1, 101, ['hyponatremia']));
-  E.give(S, 'hypertonic_saline', 150);
-  for (let i = 0; i < 40; i++) E.tick(S, 30);
-  E.give(S, 'hypertonic_saline', 150);
-  for (let i = 0; i < 40; i++) E.tick(S, 30);
-  E.give(S, 'hypertonic_saline', 150);
-  for (let i = 0; i < 40; i++) E.tick(S, 30);
-  const rise = S.na - (S.na0 == null ? S.na : S.na0);
-  const blocked = E.dischargeCheck(S).reasons.some(r => r.includes('脱髓鞘'));
-  check('纠正过度 → 脱髓鞘且不能出院', !blocked || rise > 16, `升幅 ${rise.toFixed(1)}，拦截=${blocked}`);
+  const makeBed = () => E.create({ id: 'sodium-observation-test', tags: ['hypona'], init: { ...G.BASE, na: 120 } });
+  const deadline = S => E.dischargeCheck(S).observationEndsAt;
+  const alerts = S => S.log.filter(([, message]) => message.startsWith('血钠 24 h 内升幅过大')).length;
+  const setSodium = (S, sodium, seconds = 1) => {
+    S.naMass = sodium * (S.ecfVd + S.freeWater);
+    S._naPrev = sodium;
+    E.tick(S, seconds);
+  };
+  const restore = S => {
+    const { cas, ...saved } = S;
+    const serialized = JSON.parse(JSON.stringify(saved));
+    const restored = { ...E.create(cas), ...serialized };
+    E.restoreDischargeObservation(restored, serialized);
+    return restored;
+  };
+  const bed = makeBed();
+  setSodium(bed, 130, 60);
+  const atLimit = deadline(bed);
+  setSodium(bed, 131, 60);
+  const initial = E.dischargeCheck(bed);
+  setSodium(bed, 131.2, 30);
+  const plateau = E.dischargeCheck(bed);
+  const restored = restore(bed);
+  bed.t = 7319.6;
+  setSodium(bed, 131, 0.2);
+  const beforeDeadline = E.dischargeCheck(bed);
+  setSodium(bed, 131, 0.2);
+  const afterDeadline = E.dischargeCheck(bed);
+  check('血钠稳定后按首次超限时间结束留观', atLimit === null && initial.observationEndsAt === 7320 &&
+    initial.reasons.some(reason => reason.includes('纠正过快') && reason.includes('120 分钟')) &&
+    plateau.observationEndsAt === 7320 && deadline(restored) === 7320 && beforeDeadline.observationEndsAt === 7320 &&
+    afterDeadline.ok && bed.odsRisk > 1 && alerts(bed) === 1 && E.signDischarge(bed).status === 'normal',
+    '120→131 mmol/L 后留观 2 个模拟小时，稳定平台和读档保持原截止时间');
+
+  const supplemented = makeBed();
+  E.give(supplemented, 'hypertonic_saline');
+  supplemented.t = 120;
+  E.give(supplemented, 'hypertonic_saline');
+  supplemented.t = 1800;
+  const recentDose = E.dischargeCheck(supplemented);
+  const effectEnded = E.dischargeCheck({ ...supplemented, t: 1920 - 1e-9 });
+  check('补钠后的复评时间从最近一次补钠起算', recentDose.observationEndsAt === 1920 &&
+    recentDose.reasons.some(reason => reason.includes('补钠仍在起效')) && effectEnded.observationEndsAt === null &&
+    !effectEnded.reasons.some(reason => reason.includes('补钠仍在起效')),
+    '第一笔补钠已满 30 分钟，第二笔满 30 分钟时解除该项留观');
+
+  const ongoing = makeBed();
+  setSodium(ongoing, 131);
+  setSodium(ongoing, 131.99);
+  const smallRise = deadline(ongoing);
+  setSodium(ongoing, 132);
+  const newRise = deadline(ongoing);
+  setSodium(ongoing, 119);
+  setSodium(ongoing, 131);
+  check('血钠继续明显上升或再次快速纠正会重新留观', smallRise === 7201 && newRise === 7203 &&
+    deadline(ongoing) === 7205 && alerts(ongoing) === 3,
+    '较上次警报多升 1 mmol/L 会重新起算；二次跌至 119 后升回 131 也会重开留观');
+
+  const day = 24 * 60 * 60;
+  const later = makeBed();
+  later.t = day - 60;
+  setSodium(later, 121);
+  setSodium(later, 129, 59);
+  const firstDay = deadline(later);
+  setSodium(later, 129, 2);
+  const nextDayAtLimit = deadline(later);
+  setSodium(later, 130);
+  const nextDayAboveLimit = deadline(later);
+  later.t += day;
+  setSodium(later, 130);
+  check('血钠纠正沿用滚动 24 小时的 10/8 mmol/L 警戒', firstDay === null && nextDayAtLimit === null &&
+    nextDayAboveLimit === day + 3 + 7200 && later.odsRisk === 0 && deadline(later) === null,
+    '首日 10、后续 8，超过 24 小时的低点移出窗口');
+
+  const oldTracker = { ...restored, naOvercorrectedAt: 150, naCorrection: { ...restored.naCorrection } };
+  delete oldTracker.naCorrection.alertPeak;
+  const migratedTracker = restore(oldTracker);
+  setSodium(migratedTracker, 131.2, 60);
+  const oldTrend = { ...restored, t: 3600, na: 131, history: [{ t: 120, na: 131 }, { t: 3600, na: 131 }] };
+  delete oldTrend.naCorrection;
+  delete oldTrend.naOvercorrectedAt;
+  const migratedTrend = restore(oldTrend);
+  const borderlineTrend = restore({ ...oldTrend, na: 130, history: [{ t: 120, na: 130 }] });
+  check('旧血钠存档留观有界并可反复读取', deadline(migratedTracker) === 7350 &&
+    deadline(restore(migratedTracker)) === 7350 && deadline(migratedTrend) === 7320 &&
+    deadline(restore(migratedTrend)) === 7320 && deadline(borderlineTrend) === null,
+    '沿用旧追踪时间或有证据的首次历史升幅，整数历史边界不额外触发');
+
+  const neurologic = E.dischargeCheck({ ...restored, t: 7320, odsDamage: 1, gcs: 8, seizure: 0.4 });
+  check('血钠留观到期仍核查神经症状', neurologic.observationEndsAt === null &&
+    ['渗透性脱髓鞘', '意识 GCS', '仍有抽搐'].every(prefix => neurologic.majorReasons.some(reason => reason.startsWith(prefix))),
+    '既往渗透性脱髓鞘、GCS 8 和抽搐均继续拦截正常出院');
 }
 
 /* 10. 去甲肾上腺素在感染性休克中的升压及撤除支持后的循环观察 */
@@ -351,12 +509,13 @@ for (const id of ['hyperkalemia', 'dka', 'bleed', 'sepsis', 'opioid']) {
   const oldSave = { t: 240, pk: [oldOrder] };
   const legacy = Object.assign(makeBed(), oldSave);
   E.restoreDischargeObservation(legacy, oldSave);
+  const legacyDeadline = E.dischargeCheck(legacy).observationEndsAt;
   const legacyOn = observe(legacy);
   advance(legacy, 540);
   const effectPreserved = legacy.pk[0] === oldOrder && legacy.mod.svr > 0;
   advance(legacy, 100);
   check('旧去甲肾上腺素医嘱保留原药效并自动进入停药观察', legacyOn?.phase === 'legacy' &&
-    legacyOn.remainingSeconds === 624 && !E.pumpRate(legacy, 'norepi') && effectPreserved &&
+    legacyOn.remainingSeconds === 624 && legacyDeadline === 864 && !E.pumpRate(legacy, 'norepi') && effectPreserved &&
     legacy.pk.length === 0 && observe(legacy)?.phase === 'observing', '旧有限医嘱按原药代消退，无需为旧医嘱手动停泵');
 
   const phaseAfter = (drug, route) => {
@@ -774,8 +933,10 @@ for (const id of ['hyperkalemia', 'dka', 'bleed', 'sepsis', 'opioid']) {
     'GCS 14、呼吸 11、血钠 125 仍拦截，达到各项目标后消除');
   const renal = cr => assess(['apap', 'aki', 'bph'], { cr }).filter(r => r.startsWith('肌酐'));
   check('肌酐读数合并并注明各病种的阈值', renal(450).length === 1 &&
-    ['≤130', '≤180', '≤400'].every(target => renal(450)[0].includes(target)) &&
-    renal(150).length === 1 && renal(150)[0].includes('≤130') && !renal(130).length, '对乙酰氨基酚中毒合并肾损伤、尿潴留');
+    ['≤140', '≤180', '≤400'].every(target => renal(450)[0].includes(target)) &&
+    renal(150).length === 1 && renal(150)[0].includes('≤140') && !renal(140).length &&
+    assess(['apap'], { cr: 131 }).some(reason => reason.startsWith('肌酐') && reason.includes('≤130')),
+  '对乙酰氨基酚中毒合并慢性肾病背景下的急性肾损伤及尿潴留');
   const bleeding = assess(['bleed', 'trauma'], { hb: 70, bleedingSites: { bleed: 1, trauma: 1 } });
   check('重复血红蛋白合并，两个出血部位分别保留', count(bleeding, '血红蛋白') === 1 &&
     bleeding.includes('消化道出血未止') && bleeding.includes('创伤出血未控制'), '不同处置原因仍逐项可见');
@@ -1060,7 +1221,9 @@ for (const id of ['hyperkalemia', 'dka', 'bleed', 'sepsis', 'opioid']) {
   const bed = makeBed();
   const noIndication = E.create({ id: 'stable', init: { ...G.BASE } });
   const { svr, plt } = bed;
+  const beforeStart = E.dischargeCheck(bed);
   const accepted = attempt(bed) === 'good';
+  const afterStart = E.dischargeCheck(bed);
   const duplicate = attempt(bed) === 'warn';
   const rejected = attempt(noIndication) === 'warn';
   check('分娩启动保留病因，重复和无指征申请不计费', accepted && duplicate && rejected &&
@@ -1082,15 +1245,22 @@ for (const id of ['hyperkalemia', 'dka', 'bleed', 'sepsis', 'opioid']) {
   advance(restored, 0.2);
   advance(control, 0.2);
   const completion = /胎盘已娩出/;
+  const afterBirth = E.dischargeCheck(restored);
   const atBoundary = restored.deliveryAt === E.DELIVERY_DURATION && restored.delivered &&
     restored.svr === Math.max(18, control.svr - 3) && restored.plt > bed.plt &&
     restored.deliveryRecord?.maternal.includes('SpO₂') && restored.deliveryRecord.newborn.includes('新生儿科') &&
-    restored.cas.extra(restored).some(reason => reason.includes('产后观察'));
+    afterBirth.reasons.some(reason => reason.includes('产后观察'));
   attempt(restored);
   advance(restored, 0.2);
   check('分娩按模拟时间完成一次并开始产后观察', stayedPaused && stillPending && atBoundary &&
     restored.cost === action.cost && restored.log.filter(([, msg]) => completion.test(msg)).length === 1,
     '暂停期间冻结，临界点前重载，完成后再次执行');
+  const afterObservation = E.dischargeCheck({ ...restored, t: E.DELIVERY_DURATION + 900 });
+  check('分娩和产后观察各有独立的复评时点', beforeStart.observationEndsAt === null &&
+    afterStart.majorReasons.some(reason => reason.includes('产科病因')) && afterStart.observationEndsAt === E.DELIVERY_DURATION &&
+    afterBirth.observationEndsAt === E.DELIVERY_DURATION + 900 && afterObservation.observationEndsAt === null &&
+    !afterObservation.reasons.some(reason => reason.includes('产后观察')),
+    '启动后先等分娩完成，产后留观满 15 分钟再复评其余指标');
   check('病情复评在分娩完成时触发', E.conditionReviewChange(bed, beforeDelivery) === null &&
     E.conditionReviewChange(restored, beforeDelivery) === '分娩已完成，胎盘已娩出，进入产后观察' &&
     E.conditionReviewChange(restored, E.conditionReviewBaseline(restored)) === null,
@@ -1103,6 +1273,119 @@ for (const id of ['hyperkalemia', 'dka', 'bleed', 'sepsis', 'opioid']) {
   check('旧档已娩出保留完成时刻和产后病程', alreadyDelivered && legacy.deliveryAt === 90 &&
     legacy.deliveryStartedAt === null && legacy.plt > legacyPlt && legacy.cost === action.cost &&
     !legacy.deliveryRecord && !legacy.log.some(([, msg]) => completion.test(msg)), '兼容即时完成的旧版本');
+}
+
+{
+  const makeBed = () => E.create({ id: 'lactate-test', init: { ...G.BASE } });
+  const healthy = makeBed(), damaged = makeBed(), recovering = makeBed();
+  const beds = [healthy, damaged, recovering];
+  damaged.hepatotox = recovering.hepatotox = 0.85;
+  for (const bed of beds) E.tick(bed, 60);
+  recovering.hepatotox = 0.25;
+  for (const bed of beds) bed.lac = 10.1;
+  for (let elapsed = 0; elapsed < 2 * 3600; elapsed += 10) {
+    for (const bed of beds) E.tick(bed, 10);
+  }
+  const cases = [['正常肝功能', healthy], ['肝损持续', damaged], ['肝损改善', recovering]];
+  const samples = cases.map(([label, bed]) => [label, E.lactateReadings(bed)]);
+  const readings = samples.map(([, sample]) => sample.displayed);
+  if (process.argv.includes('--lactate')) {
+    console.log('乳酸模型两小时对照。生成与清除量为 mmol/L/min，清除系数为 1/min，乳酸浓度为 mmol/L。');
+    console.table(Object.fromEntries(samples.map(([label, sample]) => {
+      const { production, hepaticClearance, totalClearance, hepaticClearanceRate, clearanceRate, raw, displayed } = sample;
+      return [label, {
+        总生成: production.toFixed(6),
+        肝清除量: hepaticClearance.toFixed(6),
+        总清除量: totalClearance.toFixed(6),
+        肝清除系数: hepaticClearanceRate.toFixed(6),
+        总清除系数: clearanceRate.toFixed(6),
+        原始乳酸: raw.toFixed(6),
+        显示乳酸: displayed.toFixed(1),
+      }];
+    })));
+  }
+  check('乳酸清除随肝功能恢复，早期损伤不锁住后续生成', readings[0] < readings[2] && readings[2] <= 2.5 &&
+    readings[1] > readings[2] && recovering.lactProd === G.BASE.lactProd,
+    `两小时后正常肝功能 ${readings[0]}，肝损持续 ${readings[1]}，肝损改善 ${readings[2]} mmol/L`);
+
+  const legacy = { lactProd: 0.185, lac: 10.1, hepatotox: 0.25 };
+  const restored = Object.assign(makeBed(), legacy);
+  E.restorePatient(restored, legacy);
+  const current = { lactProd: 0.07, lactateKineticsVersion: 1 };
+  const preserved = Object.assign(makeBed(), current);
+  E.restorePatient(preserved, current);
+  check('旧档移除锁存的乳酸生成量并保留实测浓度', restored.lactProd === G.BASE.lactProd &&
+    restored.lac === 10.1 && preserved.lactProd === current.lactProd, '当前版本保留病例实时生成驱动');
+
+  const critical = makeBed(), elevated = makeBed(), acceptable = makeBed();
+  critical.lac = 1.5;
+  critical.t = E.orderTest(critical, 'poct_abg');
+  E.pollTests(critical);
+  critical.lac = 10.1;
+  elevated.lac = 3.9;
+  acceptable.lac = 2.5;
+  const ordinary = E.dischargeCheck(critical);
+  const signed = E.signDischarge(critical);
+  check('普通和签字出院评估乳酸，早先正常血气仍保留采样值',
+    E.knownResults(critical).lac?.value === 1.5 && !ordinary.ok &&
+    ordinary.majorReasons.some(reason => reason.includes('乳酸 10.1')) && signed.status === 'failed' &&
+    !critical.discharged && !E.dischargeCheck(elevated).ok && E.signDischarge(elevated).status === 'penalized' &&
+    E.dischargeCheck(acceptable).ok && E.signDischarge(acceptable).status === 'normal',
+    '10.1 判重大问题，3.9 扣分，2.5 达到游戏目标');
+
+  const recent = makeBed();
+  recent.t = (10 * 60 + 51) * 60;
+  recent.lac = 10;
+  const sampledAt = recent.t;
+  E.orderTest(recent, 'poct_abg');
+  recent.t += 9 * 60;
+  E.pollTests(recent);
+  const lab = E.reports(recent).find(report => report.sampledAt === sampledAt);
+  const decision = E.signDischarge(recent);
+  check('10:51 血气乳酸 10.0，11:00 仍高时签字失败',
+    lab?.rows.some(row => row.label.includes('乳酸') && parseFloat(row.value) === 10) &&
+    decision.status === 'failed' && decision.majorReasons.some(reason => reason.includes('乳酸 10.0')),
+    '采样后九分钟仍为重大异常');
+}
+
+// 单病种开局即给药无法覆盖的康复路径。
+{
+  const patient = E.create('opioid');
+  const respiratoryReasons = rate => {
+    patient.rr = rate;
+    return E.dischargeCheck(patient).reasons.filter(reason => reason.startsWith('呼吸 '));
+  };
+  check('固定病例按床旁呼吸读数检查上下界', !respiratoryReasons(11.99).length &&
+    !respiratoryReasons(22.01).length && respiratoryReasons(11.4).length === 1 && respiratoryReasons(22.6).length === 1,
+    '12、22 达标，11、23 各提示一次');
+}
+{
+  const apap = E.create(G.generate(2, 101, ['apap']));
+  let injuryBeforeTreatment;
+  while (apap.running && apap.t < 6 * 3600) {
+    if (apap.t === 3600) injuryBeforeTreatment = apap.hepatotox;
+    if (apap.t >= 3600 && !apap.pk.some(order => order.id === 'nacetylcysteine')) E.give(apap, 'nacetylcysteine', 150);
+    E.tick(apap, 10);
+    G.step(apap, 10, E);
+  }
+  check('延迟解毒后，肝损可消退且凝血能力可恢复', apap.running && injuryBeforeTreatment > 0.5 &&
+    apap.hepatotox < injuryBeforeTreatment / 2 && E.dischargeCheck(apap).ok,
+    `6 小时凝血 ${apap.coag.toFixed(2)}，GCS ${apap.gcs}`);
+
+  for (const cases of [['heatstroke', 'liverFailure'], ['liverFailure', 'heatstroke']]) {
+    const bed = E.create(G.generate(3, 101, cases));
+    E.give(bed, 'nacl', 1000);
+    E.give(bed, 'lactulose', 30);
+    E.setEnv(bed, 'cooling', true);
+    while (bed.running && bed.t < 6 * 3600) {
+      if (bed.glu < 4 && !bed.pk.some(order => order.id === 'dextrose10')) E.give(bed, 'dextrose10', 500);
+      E.tick(bed, 10);
+      G.step(bed, 10, E);
+    }
+    check('热射病合并肝衰控制后乳酸可达标（' + cases.join(' / ') + '）',
+      bed.running && bed.heatstrokeCooled && bed.hepatotox >= 0.25 && E.dischargeCheck(bed).ok,
+      `6 小时乳酸 ${bed.lac.toFixed(1)} mmol/L`);
+  }
 }
 
 const fails = out.filter(x => !x.ok);

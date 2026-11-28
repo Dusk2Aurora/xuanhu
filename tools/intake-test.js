@@ -182,4 +182,14 @@ assert.equal(I.ask(legacy, 'patient', 'present').status, 'unavailable');
 assert.ok(I.view(legacy).known.some(fact => fact.section === 'history' && fact.text === '慢性肾病 3 期'));
 assert.equal(I.ask(legacy, 'ems', 'allergies').evidence.length, 0);
 
+for (const seed of [42, 43]) {
+  const incoming = G.generate(2, seed, ['fallTrauma']);
+  const old = G.generateVersion(2, seed, 6, ['fallTrauma']);
+  const side = incoming.prehospitalAccess.side === 'left' ? '左' : '右';
+  assert.equal(incoming.prehospitalAccess.type, 'piv');
+  assert.ok(incoming.admission.history.some(entry => entry.source === '院前交接' &&
+    entry.text.includes(side + '前臂外周静脉留置针在位')));
+  assert.equal(old.prehospitalAccess, undefined);
+  assert.equal(old.patient.name, incoming.patient.name);
+}
 console.log('入院问诊回归通过');

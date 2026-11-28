@@ -13,7 +13,7 @@
 (function (root) {
 'use strict';
 const clamp = (x,a,b)=>Math.min(b,Math.max(a,x));
-const VERSION = 6;
+const VERSION = 7;
 const EMERGENCY_CASES = root.EMERGENCY_CASES || (typeof module !== 'undefined' && module.exports ? require('./emergency-cases.js') : null);
 const traitsApi = root.TRAITS || (typeof module !== 'undefined' && module.exports ? require('./traits.js') : null);
 const substances = root.SUBSTANCES || (typeof module !== 'undefined' && module.exports ? require('./substances.js') : null);
@@ -1333,6 +1333,7 @@ function makeAdmission(modules, patient, additionalHistory, diabetesType) {
 
 function historyTime(minutes) {
   if (minutes == null) return '到院前（时间未详）';
+  if (minutes === 0) return '到院时';
   if (minutes % 1440 === 0) return `到院前约 ${minutes / 1440} 天`;
   if (minutes % 60 === 0) return `到院前约 ${minutes / 60} 小时`;
   return `到院前约 ${minutes} 分钟`;
@@ -1510,6 +1511,20 @@ function generateCase(difficulty, seed, only, genVersion) {
   if (combinedPvr) init.pvr = 1.8 + 9.5 * init.clot + 6.0 * init.tensionPTX;
   const names = primary.map(m => m.name).join(' + ');
   const admission = makeAdmission(primary, patient, additionalHistory, diabetesType);
+  // 交接记录和实际带入的留置针共用同一来源，既有会诊码仍按原版本生成。
+  const transport = genVersion >= 7 && primary.find(m =>
+    ['fibrinogenBleed', 'fallTrauma', 'aorticDissection'].includes(m.id));
+  const difficultForearm = genVersion >= 7 && cases.includes('burn');
+  const prehospitalAccess = transport ? { type: 'piv', side: difficultForearm || (actualSeed & 1) ? 'left' : 'right' } : null;
+  if (difficultForearm) {
+    admission.history.push({ moduleId: 'burn', minutesBefore: 0, source: '院前交接',
+      text: '右前臂水肿，未辨清浅静脉，转运中未在此处建立通路。' });
+  }
+  if (prehospitalAccess) {
+    const side = prehospitalAccess.side === 'left' ? '左' : '右';
+    admission.history.push({ moduleId: transport.id, minutesBefore: 0, source: '院前交接',
+      text: `到院交接时${side}前臂外周静脉留置针在位，通畅可用。` });
+  }
   const complaint = admissionNarrative({ admission });
 
   /* 并发病程共享同一体征，分别推进后合并共同的病理负荷。 */
@@ -1544,7 +1559,9 @@ function generateCase(difficulty, seed, only, genVersion) {
     complaint,
     /* 主诉 = 主要症状 + 持续时间；并发病史只进现病史 */
     chief: primary[0].chief,
-    admission, traits,
+    admission, traits, ...(prehospitalAccess ? { prehospitalAccess } : {}),
+    ...(difficultForearm ? { vascularAccessSites: { piv: { right: { noVein: true } },
+      usPiv: { right: { ultrasoundVisible: true } } } } : {}),
     comorbidities,
     init,
     goals: Array.from(new Set(primary.flatMap(m => m.goal))),

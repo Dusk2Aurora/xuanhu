@@ -418,6 +418,9 @@ button { color: inherit; }
   cursor: pointer;
 }
 button.drow { width: 100%; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; }
+button.drow:disabled { opacity: .7; cursor: default; }
+.access-order-notice { margin-top: 10px; }
+#accessNotice { margin: 8px 0 0; }
 .paired-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 4px; }
 .related-action { min-height: 44px; border: 0; background: transparent; color: var(--accent); font: inherit; font-size: 13px; cursor: pointer; }
 .drow .nm { flex: 1 1 115px; min-width: 0; font-size: 14px; overflow-wrap: anywhere; }
@@ -890,6 +893,7 @@ button.drow { width: 100%; border: 0; background: transparent; color: inherit; f
       <section class="panel status-panel" aria-labelledby="statusTitle">
         <h2 class="panel-title" id="statusTitle">临床状态</h2>
         <div id="states"></div>
+        <p class="note" id="accessNotice" role="status" hidden></p>
       </section>
       <section class="panel organ-panel" aria-labelledby="organTitle">
         <h2 class="panel-title" id="organTitle">器官参数</h2>
@@ -991,6 +995,7 @@ button.drow { width: 100%; border: 0; background: transparent; color: inherit; f
 <script src="intake.js"></script>
 <script src="exams.js"></script>
 <script src="finance.js"></script>
+<script src="vascular-access.js"></script>
 <script src="advanced-care.js"></script>
 <script src="pe-intervention.js"></script>
 <script src="engine.js"></script>

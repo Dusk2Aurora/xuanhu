@@ -14,7 +14,7 @@ const close = (actual, expected, message) => {
 const reload = (scenario, saved) => {
   const base = bed(70, scenario);
   const S = Object.assign(base, structuredClone(saved));
-  E.restorePatient(S);
+  E.restorePatient(S, saved);
   E.restoreDrugCost(S, saved);
   return S;
 };
@@ -363,4 +363,136 @@ const earnedNoPressor = S => {
   assert.equal(earnedNoPressor(reload(E.CASES.sepsis, oldSave)), true, '完整给药记录不受日志上限影响');
 }
 
-console.log('药费、器械费用、医保预算与升压药成就回归通过');
+{
+  const S = bed();
+  assert.equal(E.orderMedication(S, 'water').status, 'given');
+  assert.equal(E.orderMedication(S, 'v_rhino').status, 'given');
+  assert.equal(E.orderMedication(S, 'naloxone', 0.8, '肌注').status, 'given');
+  const before = { cost: S.cost, drugCost: S.drugCost, count: S.given.length };
+  assert.equal(E.orderMedication(S, 'prbc', 1, '输血').status, 'access');
+  assert.equal(E.orderMedication(S, 'c_plt', 1, '输注').status, 'busy');
+  assert.equal(E.orderMedication(S, 'c_plt', 1, '输注', { replacePending: true }).status, 'access');
+  const { attempt } = E.startAccess(S, 'piv', 'right');
+  assert.equal(E.startAccess(S, 'piv', 'left').ok, false);
+  E.tick(S, attempt.seconds - 7);
+  assert.equal(E.accessRemaining(S), 7);
+  assert.equal(S.cost, before.cost);
+  assert.equal(S.given.length, before.count);
+  const otherBed = bed();
+  assert.equal(E.accessState(otherBed).pending, null);
+  assert.equal(E.accessState(otherBed).lines.length, 0);
+  const resumed = reload(baseline, JSON.parse(JSON.stringify(S)));
+  E.tick(resumed, 8);
+  const state = E.accessState(resumed);
+  assert.equal(state.pending, null);
+  assert.equal(state.lastReceipt.status, 'given');
+  assert.equal(state.lastReceipt.entry, resumed.log.find(line => line[1].startsWith('给予 血小板')));
+  assert.equal(resumed.given.length, before.count + 1);
+  assert.equal(resumed.given.at(-1).t, attempt.endsAt);
+  assert.equal(resumed.given.at(-1).accessLineId, state.activeId);
+  assert.equal(resumed.drugCost, before.drugCost + SUB.byId('c_plt').cost);
+  assert.equal(resumed.cost, before.cost + attempt.cost + SUB.byId('c_plt').cost);
+  assert.equal(E.orderMedication(resumed, 'prbc', 1, '输血').status, 'given');
+  E.tick(resumed, 1);
+  assert.equal(resumed.given.filter(order => order.id === 'c_plt').length, 1);
+}
+
+{
+  const difficult = { ...baseline, seed: 7, diff: 6,
+    vascularAccessSites: { piv: { left: { peripheral: 'collapsed' } } } };
+  const S = bed(70, difficult);
+  assert.equal(E.orderMedication(S, 'epi', 1, '静推').status, 'access');
+  const { attempt } = E.startAccess(S, 'piv', 'left');
+  E.tick(S, attempt.seconds);
+  assert.equal(E.accessState(S).lastReceipt.status, 'failed');
+  assert.equal(E.accessState(S).pending.id, 'epi');
+  assert.equal(S.cost, attempt.failureCost);
+  assert.equal(S.drugCost, 0);
+  assert.equal(S.given.length, 0);
+
+  S.rhythm = 'vf';
+  const retry = E.startAccess(S, 'io', 'right');
+  assert.ok(retry.ok);
+  E.ACTIONS.cpr.apply(S);
+  assert.equal(E.accessState(S).attempt, retry.attempt);
+  E.tick(S, retry.attempt.seconds);
+  assert.equal(E.accessState(S).lastReceipt.status, 'given');
+  assert.equal(S.given.at(-1).id, 'epi');
+  assert.equal(E.accessState(S).lines[0].type, 'io');
+  assert.equal(E.orderMedication(S, 'nacl', 500, '静滴').status, 'given');
+}
+
+{
+  const S = bed(70, { ...baseline, prehospitalAccess: { type: 'piv', side: 'left' } });
+  const heparin = '持续静脉泵入';
+  const activeId = E.accessState(S).activeId;
+  assert.equal(E.accessState(S).lines[0].origin, 'prehospital');
+  assert.equal(E.orderMedication(S, 'heparin', 1200, heparin).status, 'given');
+  assert.equal(E.accessState(S).pumps.heparin, activeId);
+  assert.equal(S.cost, 0);
+  E.pausePump(S, 'heparin');
+  assert.equal(E.accessState(S).pumps.heparin, activeId);
+  assert.equal(E.orderMedication(S, 'heparin', 1400, heparin).status, 'given');
+  assert.equal(E.orderMedication(S, 'insulin', 2, '泵入').status, 'access');
+  const { attempt } = E.startAccess(S, 'cvc', 'right');
+  E.tick(S, attempt.seconds);
+  const centralId = E.accessState(S).lastReceipt.line.id;
+  const infusion = S.pk.find(order => order.id === 'insulin');
+  assert.equal(E.accessState(S).pumps[infusion.accessPumpId], centralId);
+  const previousCost = S.cost;
+  const delivery = E.pumpDelivery(S, 'heparin');
+  assert.ok(E.migrateAccessPumps(S, centralId).ok);
+  assert.equal(S.cost, previousCost);
+  assert.equal(E.pumpRate(S, 'heparin'), 1400);
+  assert.equal(E.pumpDelivery(S, 'heparin'), delivery);
+  assert.equal(E.accessState(S).pumps.heparin, centralId);
+  assert.ok(E.stopInfusion(S, infusion));
+  assert.equal(E.accessState(S).pumps[infusion.accessPumpId], undefined);
+  E.stopPump(S, 'heparin');
+  assert.equal(E.accessState(S).pumps.heparin, undefined);
+}
+
+{
+  const S = bed();
+  assert.equal(E.orderMedication(S, 'calcium_cl').status, 'access');
+  const { attempt } = E.startAccess(S, 'piv', 'left');
+  E.tick(S, attempt.seconds);
+  assert.equal(E.accessState(S).lastReceipt.status, 'access-ready');
+  assert.equal(E.accessState(S).pending.id, 'calcium_cl');
+  assert.equal(S.drugCost, 0);
+  assert.equal(E.orderMedication(S, 'calcium').status, 'given');
+  assert.ok(E.cancelPendingMedication(S));
+  assert.equal(E.orderMedication(S, 'calcium_cl').status, 'access');
+  const central = E.startAccess(S, 'cvc', 'left').attempt;
+  E.tick(S, central.seconds);
+  assert.equal(E.accessState(S).lastReceipt.status, 'given');
+  assert.equal(S.given.at(-1).accessLineId, central.id);
+  assert.equal(E.orderMedication(S, 'insulin', 2, '泵入').status, 'given');
+  const infusion = S.pk.find(order => order.id === 'insulin');
+  for (let i = 0; i < infusion.infusionMinutes; i++) E.tick(S, 60);
+  assert.equal(E.accessState(S).pumps[infusion.accessPumpId], undefined);
+
+  const ended = bed();
+  E.orderMedication(ended, 'calcium');
+  const unfinished = E.startAccess(ended, 'piv', 'left').attempt;
+  E.endCase(ended, 'death', '测试');
+  E.tick(ended, unfinished.seconds);
+  assert.equal(E.accessState(ended).lastReceipt.status, 'cancelled');
+  assert.equal(E.accessState(ended).attempt, null);
+  assert.equal(E.accessState(ended).pending, null);
+  assert.equal(ended.cost, 0);
+}
+
+{
+  const S = bed();
+  const route = '持续静脉泵入';
+  E.give(S, 'heparin', 1200, route);
+  delete S.vascularAccess;
+  const restored = reload(baseline, JSON.parse(JSON.stringify(S)));
+  assert.equal(E.accessState(restored).lines[0].origin, 'legacy');
+  assert.equal(E.orderMedication(restored, 'heparin', 1400, route).status, 'given');
+  assert.equal(E.pumpRate(restored, 'heparin'), 1400);
+  assert.equal(restored.cost, 0);
+}
+
+console.log('药费、器械费用、医保预算、血管通路与升压药成就回归通过');

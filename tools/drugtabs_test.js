@@ -15,6 +15,11 @@ async function main() {
     await page.goto(gameUrl);
     await enterWard(page);
     await page.evaluate(() => {
+      const game = window.__LIFE_GAME;
+      game.startCase({ ...game.S.cas, prehospitalAccess: { type: 'cvc', side: 'right' } }, true);
+    });
+    await page.locator('#admissionIntro').click();
+    await page.evaluate(() => {
       const { S } = window.__LIFE_GAME;
       // Start one yuan below the deductible to exercise a partially reimbursed order.
       S.cost = 799;

@@ -52,7 +52,8 @@ async function main() {
     // This seed has a hidden QT trait and no acute coronary occlusion.
     const [source, topic, lung, testGroup, glucose, procedure] = await page.evaluate(() => {
       const game = window.__LIFE_GAME;
-      game.startCase(window.CASEGEN.generateVersion(6, 11, 5), true);
+      const spec = window.CASEGEN.generateVersion(6, 11, 5);
+      game.startCase({ ...spec, prehospitalAccess: { type: 'cvc', side: 'right' } }, true);
       const { S, E } = game;
       const chart = window.INTAKE.view(S);
       for (const source of chart.sources.filter(item => item.available)) {

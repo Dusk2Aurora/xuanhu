@@ -124,7 +124,7 @@ const DRUGS = [
   ['kcl',      '氯化钾',       '电解质',   20, 'mmol',   12, { r:'静滴', e:{k:+0.95}, note:'禁止静推；外周浓度 ≤40 mmol/L' }],
   ['kcl_oral', '氯化钾（口服）','电解质',  20, 'mmol',   6,  { r:'口服', on:45, du:120, e:{k:+0.7} }],
   ['calcium',  '葡萄糖酸钙',   '电解质',   10, 'mL',     45, { r:'静推', on:2, du:45, e:{ca:+0.35}, note:'保护心肌，不降钾' }],
-  ['calcium_cl','氯化钙',      '电解质',   10, 'mL',     38, { r:'静推', on:1, du:40, e:{ca:+0.5}, note:'补钙并保护心肌。', clinicalNote:'外渗可造成局部组织损伤。' }],
+  ['calcium_cl','氯化钙',      '电解质',   10, 'mL',     38, { r:'静推', on:1, du:40, e:{ca:+0.5}, note:'补钙并保护心肌。本游戏使用中心静脉通路。', clinicalNote:'外渗可造成局部组织损伤。' }],
   ['magnesium','硫酸镁',       '电解质',   2,  'g',      26, { r:'静滴', e:{ca:-0.05}, adverse:{threshold:2.5, eff:{rr:-8, hr:-12}}, note:'用于子痫与尖端扭转型室速；蓄积可抑制呼吸。' }],
   ['nacl',     '生理盐水',     '扩容',     500,'mL',     26, { e:{vol:+0.5}, note:'等渗晶体液' }],
   ['half_saline', '0.45% 氯化钠', '扩容', 500, 'mL', 26, { r:'静滴', on:10, du:360, e:{halfSaline:+0.5}, note:'低渗补液；高渗高血糖状态下，容量恢复后仍需根据血钠和渗透压决定是否使用。' }],
@@ -379,6 +379,7 @@ const INTERACTIONS = [
 
 /* ---------- 多途径：同一种药合并成一条，给药时再选途径 ---------- */
 const ROUTE_MAP = {
+  calcium_cl: [{ r:'静推', centralAccess:true }],
   norepi:     [{ r:'持续静脉泵入', on:1, pumpHalfLife:2 }],
   vasopressin: [{ r:'持续静脉泵入', pumpHalfLife:5, pumpStep:0.005 }],
   dobutamine: [{ r:'持续静脉泵入', on:2, pumpHalfLife:2 }],
@@ -525,6 +526,7 @@ function build() {
         ...(x.pumpHalfLife ? { pumpHalfLife: x.pumpHalfLife } : {}),
         ...(x.pumpStep ? { pumpStep: x.pumpStep } : {}),
         ...(x.pumpPause ? { pumpPause: true } : {}),
+        ...(x.centralAccess ? { centralAccess: true } : {}),
         ...(x.maxDose ? { maxDose: x.maxDose } : {}),
       }));
       item.route = item.routes[0].r;

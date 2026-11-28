@@ -174,6 +174,12 @@ function renderOrganPanel() {
           `<div class="row"><span class="lab">${k}</span><span class="val" data-oi="${i}"></span></div>`).join('')
       + (selected === 'heart' ? '<div id="vascularTone" hidden></div><canvas id="miniEcg" title="最近 4 秒心电图 · 点击查看指标走势" aria-label="最近 4 秒单导联心电图"></canvas>' : '');
     if (selected === 'lung') {
+      const flow = document.createElement('button');
+      flow.type = 'button';
+      flow.id = 'respiratoryFlow';
+      flow.className = 'pill organ-action';
+      flow.addEventListener('click', () => openRespiratoryFlow(S));
+      panel.prepend(flow);
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'pill organ-action';
@@ -208,6 +214,12 @@ function updateOrganValues() {
   const st = organState(selected, s);
   const t = $('#opTitle');
   if (t) { t.value = selected; t.dataset.state = st; }
+  if (selected === 'lung') {
+    const flow = $('#respiratoryFlow');
+    const settings = S.vent ? E.ventilatorSettings(S) : E.oxygenSettings(S);
+    const label = `${S.vent ? '呼吸机吸气' : '氧疗供氧'}流量 · ${settings.flow} L/min`;
+    if (flow.textContent !== label) flow.textContent = label;
+  }
   const waitButton = selected === 'pancreas' && $('#glucoseWait');
   if (waitButton) {
     const label = observation?.kind === 'glucose' ? '结束等待' : `等待血糖变化 · 最多 ${GLUCOSE_REVIEW_MINUTES} 分钟`;
@@ -658,43 +670,52 @@ function syncEnvSheet() {
   }
 }
 
-/* 环境 / 场景切换 */
-function openEnvSheet() {
-  if (!isCurrentPatient(S)) return;
-  const change = key => {
-    const before = { ...S.env };
-    const on = !S.env?.[key];
-    const env = E.setEnv(S, key, on);
-    if (on && key === 'cooling' && !env.cooling) return toast('体温高于 38.5℃ 时可开启物理降温');
-    if (on && key === 'warming' && !env.warming) return toast('体温低于 36.1℃ 时可开启被动保暖');
-    if (Object.keys(env).some(k => !!env[k] !== !!before[k])) {
-      const name = rows.find(row => row.key === key)?.n;
-      const label = key === 'reset' ? '恢复正常环境与活动，结束体温处置' : (on ? '开启' : '关闭') + name;
-      S.log.push([E.fmt(S.t), label, 'info']);
-    }
+function openEnvControls(patient, title, controls, allowReset = false) {
+  if (!isCurrentPatient(patient)) return;
+  const update = label => {
+    patient.log.push([E.fmt(patient.t), label, 'info']);
     saveGame();
     renderStates();
     syncEnvSheet();
   };
-  const toggle = (key, n, amt = '') => ({ key, n, tag: '', amt, run: () => change(key) });
-  const rows = [
-    { sec: '体温处置' },
-    toggle('cooling', '物理降温', '降至 38.5℃ 自动停止'),
-    toggle('warming', '被动保暖', '回升至 36.1℃ 自动停止'),
-    { sec: '环境与活动' },
-    toggle('heat', '炎热环境'),
-    toggle('cold', '寒冷环境'),
-    toggle('exercise', '运动'),
-    toggle('sleep', '睡眠'),
-    { n: '恢复正常', tag: '', amt: '', run: () => change('reset') },
-  ];
-  openSheet('环境 / 场景', S.patient.name, rows, S);
+  const rows = controls.map(([key, n, amt = '', unavailable = '']) => ({
+    key, n, tag: '', amt,
+    run: () => {
+      const on = !patient.env?.[key];
+      const env = E.setEnv(patient, key, on);
+      if (on && !env[key]) return toast(unavailable);
+      update((on ? '开启' : '关闭') + n);
+    },
+  }));
+  if (allowReset) rows.push({ n: '恢复正常', tag: '', amt: '', run: () => {
+    const active = controls.filter(([key]) => patient.env?.[key]);
+    if (!active.length) return;
+    for (const [key] of active) E.setEnv(patient, key, false);
+    update('恢复正常环境与活动');
+  }});
+  openSheet(title, patient.patient.name, rows, patient);
   for (const button of $('#sheetList').querySelectorAll('.drow')) {
     const key = rows[+button.dataset.i].key;
     if (key) button.dataset.env = key;
   }
   $('#sheetTitle').dataset.view = 'env';
   syncEnvSheet();
+}
+
+function openTemperatureSheet(patient) {
+  openEnvControls(patient, '体温处置', [
+    ['cooling', '物理降温', '降至 38.5℃ 自动停止', '体温高于 38.5℃ 时可开启物理降温'],
+    ['warming', '被动保暖', '回升至 36.1℃ 自动停止', '体温低于 36.1℃ 时可开启被动保暖'],
+  ]);
+}
+
+function openEnvSheet(patient) {
+  openEnvControls(patient, '环境 / 场景', [
+    ['heat', '炎热环境'],
+    ['cold', '寒冷环境'],
+    ['exercise', '运动'],
+    ['sleep', '睡眠'],
+  ], true);
 }
 
 /* 给药列表（旧接口，保留给不支持 SUBSTANCES 的场合） */
@@ -742,15 +763,66 @@ function reviewDelivery(patient) {
   openSheet('产科分娩评估', patient.patient.name, rows, patient);
 }
 
+function openRespiratoryFlow(patient) {
+  if (!isCurrentPatient(patient)) return;
+  const ventilated = !!patient.vent;
+  const settings = ventilated ? E.ventilatorSettings(patient) : E.oxygenSettings(patient);
+  const name = ventilated ? '呼吸机吸气流量' : '氧疗供氧流量';
+  openSheet(name, patient.patient.name, [], patient);
+  const list = $('#sheetList');
+  const info = ventilated
+    ? `机械通气 · 当前送气量 ${Math.round(settings.deliveredTidalVolume)} mL · 送气时间 ${settings.deliveryTime.toFixed(2)} 秒`
+    : '自主呼吸 · 0 L/min 停止吸氧，实际吸入氧浓度随呼吸需求变化';
+  list.innerHTML = `<form class="flow-settings">
+    <label for="respFlowInput">${name} <output for="respFlowInput">${settings.flow}</output> L/min</label>
+    <input id="respFlowInput" type="range" min="${settings.minFlow}" max="${settings.maxFlow}" step="${ventilated ? 1 : 0.1}" value="${settings.flow}">
+    <div class="flow-scale" aria-hidden="true"><span>${settings.minFlow}</span><span>${settings.maxFlow} L/min</span></div>
+    <p>${info}</p>
+    <button class="pill" type="submit">应用流量</button>
+  </form>`;
+  const form = list.querySelector('form');
+  const slider = form.querySelector('input');
+  const output = form.querySelector('output');
+  function showValue() {
+    output.value = slider.value;
+    slider.setAttribute('aria-valuetext', slider.value + ' L/min');
+  }
+  showValue();
+  slider.addEventListener('input', showValue);
+  form.addEventListener('submit', event => {
+    event.preventDefault();
+    if (!list.contains(form) || !$('#sheet').classList.contains('on') || !hasCurrentSaveEpoch() || !isCurrentPatient(patient)) return;
+    if (!!patient.vent !== ventilated) { openRespiratoryFlow(patient); return; }
+    const setFlow = ventilated ? E.setVentilatorFlow : E.setOxygenFlow;
+    if (setFlow(patient, slider.valueAsNumber)) {
+      const entry = patient.log.at(-1);
+      markEvent(entry);
+      window.SOUND?.click();
+      saveGame();
+      toast(entry[1]);
+    }
+    closeSheet();
+    renderAll();
+  });
+}
+
 function actionRows() {
-  return Object.entries(E.ACTIONS).filter(([id]) => id !== 'delivery' || S.tags.includes('preeclampsia')).map(([id, a]) => {
+  const patient = S;
+  const actions = Object.entries(E.ACTIONS).filter(([id]) => id !== 'delivery' || S.tags.includes('preeclampsia')).map(([id, a]) => {
     if (id === 'delivery') return {
       n: S.delivered || S.deliveryStartedAt != null ? '查看产科进程' : a.name,
       tag: deliveryStatus(S), amt: '查看', run: () => reviewDelivery(S),
     };
-    const name = id === 'oxygen_off' && S.vent ? '将呼吸机 FiO₂ 调至 21%' : a.name;
+    if (id === 'intubate' && patient.vent) return { n: '调节呼吸机吸气流量',
+      tag: `${E.ventilatorSettings(patient).flow} L/min`, amt: '调节', run: () => openRespiratoryFlow(patient) };
+    if (id === 'oxygen' && !patient.vent) return { n: '调节氧疗供氧流量',
+      tag: `${E.oxygenSettings(patient).flow} L/min`, amt: '调节', run: () => openRespiratoryFlow(patient),
+      related: { label: a.name, run: () => performAction(id, a) } };
+    const name = id === 'oxygen_off' && S.vent ? '将呼吸机 FiO₂ 调至 21%' :
+      id === 'oxygen' && S.vent ? '将呼吸机 FiO₂ 调至 100%' : a.name;
     return { n: name, tag: '', amt: a.cost ? '¥' + a.cost : '—', run: () => performAction(id, a) };
   });
+  return [{ n: '体温处置', tag: '物理降温 · 被动保暖', amt: '查看', run: () => openTemperatureSheet(patient) }, ...actions];
 }
 
 function performAction(id, a) {
@@ -2338,7 +2410,7 @@ function openFeedback() {
 }
 
 /* ---------------- 版本 / 更新检查 ---------------- */
-const APP_VERSION = '1.53.2';
+const APP_VERSION = '1.53.3';
 const releaseRoot = document.querySelector('meta[name="xuanhu-release-root"]')?.content;
 const releaseBase = releaseRoot ? new URL(releaseRoot, location.href).href.replace(/\/$/, '') : '';
 const platformName = location.protocol === 'file:' ? '离线 HTML' :
@@ -2795,6 +2867,7 @@ function bind() {
   bindLobby();
   $('#opTitle').addEventListener('change', event => selectOrgan(event.target.value));
   $('#btnLobby').addEventListener('click', showLobby);
+  $('#btnAdmission').addEventListener('click', openAdmission);
   $('#sheetClose').addEventListener('click', dismissSheet);
   $('#btnDrug').addEventListener('click', () => openDrugSheet());
   $('#btnOps').addEventListener('click', () => {
@@ -2827,7 +2900,7 @@ function bind() {
     {n:'难度设置', tag:'病例难度 ' + caseDiff + ' · 指导 ' + ((MENTOR.LEVELS[level]||MENTOR.LEVELS.intern).name), amt:'', run: () => openSheet('难度设置', '两轴独立', difficultyRows())},
     {n: nightMode ? '☀ 切回白天' : '🌙 夜间模式', tag: nightMode ? '病情推进 ×1.3 · 界面转暗' : '当前白天', amt:'切换', run: () => { closeSheet(); toggleNight(); }},
     {n: realism ? '关闭现实模式' : '现实模式（医保与自付）', tag: realism ? ((S && S.ins ? S.ins.t : '已参保') + ' · 点此关闭') : '开：计费，看家庭自付', amt:'切换', run: () => { closeSheet(); toggleRealism(); }},
-    {n: '环境 / 场景', tag: '降温·保暖·环境', amt: '', run: () => openEnvSheet()},
+    {n: '环境 / 场景', tag: '环境与活动', amt: '', run: () => openEnvSheet(S)},
     {n: autoHint ? '主动提示：开' : '主动提示：关', tag: autoHint ? '自动显示提示' : '只在给药后点评', amt: '', run: () => {
       autoHint = !autoHint;
       try { localStorage.setItem('life.autoHint', autoHint ? '1' : '0'); } catch (e) {}
@@ -2840,7 +2913,6 @@ function bind() {
     {n:'重新开始本病例', tag:'', amt:'', run: () => confirmRestart()},
     {n:'切换病例', tag:'', amt:'', run: () => pickCase()},
     {n:'教程 · 怎么玩', tag:(window.TUTORIAL?window.TUTORIAL.PAGES.length:6)+' 页', amt:'', run: () => { if (window.TUTORIAL) TUTORIAL.open(0); }},
-    {n:'病例说明', tag:'入院记录', amt:'查看', run: openAdmission},
   ]));
   $('#mask').addEventListener('click', dismissSheet);
   $('#detailX').addEventListener('click', closeDetail);
@@ -3180,6 +3252,7 @@ function renderPatient() {
   if (nEl) nEl.textContent = p.name || '—';
   if (mEl) mEl.textContent = [p.age != null ? p.age + ' 岁' : '', p.sex || '', p.weight ? p.weight + ' kg' : '']
     .filter(Boolean).join(' · ');
+  $('#btnAdmission').hidden = !isCurrentPatient(S);
 }
 
 function renderAll() {
@@ -3203,6 +3276,10 @@ function renderAll() {
 
 /* 更新公告：每次发版在这里加一条（新的放最前面） */
 const RELEASES = [
+  { v: '1.53.3', notes: [
+    '「操作 → 体温处置」集中物理降温与被动保暖，病房顶部可直接查看本床病例说明',
+    '肺面板和操作页新增流量计，自主呼吸时调节供氧流量，插管后调节呼吸机吸气流量，单位均为 L/min',
+  ] },
   { v: '1.53.2', notes: [
     '全病房「等病情变化」：任一床明显变化、危情或检查回报时自动恢复 1×，最长 6 个模拟小时',
     '胰腺面板可定向等待血糖复评，最长 30 个模拟分钟，进入目标或再恶化 2 mmol/L 时恢复',

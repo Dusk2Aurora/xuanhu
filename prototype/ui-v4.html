@@ -126,7 +126,20 @@ button { color: inherit; }
   stroke-linecap: round;
   stroke-linejoin: round;
 }
-.patient { display: grid; gap: 1px; min-width: 0; }
+.patient { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 6px; min-width: 0; }
+.patient-identity { display: grid; gap: 1px; min-width: 0; }
+.admission-link {
+  min-height: 36px;
+  padding: 4px 7px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+  cursor: pointer;
+}
 .top .who, .top .meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin: 0; }
 .top .who { font-size: clamp(16px, 2vw, 23px); line-height: 1.2; }
 .top .meta { font-size: 12px; color: var(--ink-2); }
@@ -271,6 +284,13 @@ button { color: inherit; }
 .opan { display: grid; gap: 6px; }
 .opan.hide { display: none; }
 .opan .organ-action { justify-self: start; color: var(--accent); cursor: pointer; }
+.flow-settings { padding: 12px; display: grid; gap: 8px; }
+.flow-settings label { display: flex; align-items: baseline; gap: 5px; }
+.flow-settings output { margin-left: auto; font: 700 24px var(--mono); }
+.flow-settings input { width: 100%; margin: 0; accent-color: var(--accent); }
+.flow-scale { display: flex; justify-content: space-between; color: var(--ink-2); font-family: var(--mono); }
+.flow-settings p { margin: 2px 0; color: var(--ink-2); }
+.flow-settings button { justify-self: end; cursor: pointer; }
 #vascularTone { padding: 4px 0; color: var(--ink-2); font-size: 12px; }
 #conditionReviewResult { margin: 0 0 8px; color: var(--ink-2); font-size: 12px; }
 .opan .row {
@@ -643,7 +663,19 @@ button.drow { width: 100%; border: 0; background: transparent; color: inherit; f
 }
 
 @media (orientation: landscape) and (min-width: 541px) and (max-width: 700px) {
-  .top:has(#budgetChip:not([style*="display: none"])) { flex-wrap: wrap; }
+  .top {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+    grid-template-areas: "ward patient level ask clock" "speed speed speed budget budget";
+  }
+  .ward-link { grid-area: ward; }
+  .patient { grid-area: patient; }
+  .top .sp { display: none; }
+  #levelPill { grid-area: level; }
+  #btnAsk { grid-area: ask; }
+  #clock { grid-area: clock; }
+  #speed { grid-area: speed; justify-self: start; }
+  #budgetChip { grid-area: budget; justify-self: end; }
 }
 
 @media (max-width: 360px) {
@@ -782,8 +814,11 @@ button.drow { width: 100%; border: 0; background: transparent; color: inherit; f
       病房
     </button>
     <div class="patient">
-      <h1 class="who" id="pname">—</h1>
-      <p class="meta" id="pmeta">—</p>
+      <div class="patient-identity">
+        <h1 class="who" id="pname">—</h1>
+        <p class="meta" id="pmeta">—</p>
+      </div>
+      <button class="admission-link" id="btnAdmission" type="button" aria-haspopup="dialog" hidden>病例说明</button>
     </div>
     <span class="sp"></span>
     <span class="pill num" id="clock" role="timer" aria-label="病例用时">02:14</span>

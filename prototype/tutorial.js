@@ -17,12 +17,13 @@ const PAGES = [
   },
   {
     id: 'layout', title: '屏幕上是什么', html: `
-      <div class="tut-h">五个区域</div>
+      <div class="tut-h">六个区域</div>
+      <div class="tut-row"><b>患者信息</b><span>点姓名旁的「病例说明」，查看主诉、现病史和接诊首测。</span></div>
       <div class="tut-row"><b>生命体征</b><span>查看心率、血压、呼吸、血氧、体温和意识</span></div>
       <div class="tut-row"><b>人体视图</b><span>点选器官，与旁边的器官参数对照</span></div>
       <div class="tut-row"><b>临床状态</b><span>点击状态标签可查阅相关解释</span></div>
       <div class="tut-row"><b>器官参数</b><span>随选中的器官切换，选中心脏可查看心电图</span></div>
-      <div class="tut-row"><b>底部操作</b><span>在「检查」开单或办理出院，在「报告」查看化验、胸片和心电图结果。</span></div>`,
+      <div class="tut-row"><b>底部操作</b><span>在「检查」开单或办理出院，在「报告」查看结果，在「操作 → 体温处置」进行物理降温或被动保暖。</span></div>`,
   },
   {
     id: 'vitals', title: '指标怎么看', html: `

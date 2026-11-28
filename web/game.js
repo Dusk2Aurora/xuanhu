@@ -3005,7 +3005,7 @@ function openFeedback() {
 }
 
 /* ---------------- 版本 / 更新检查 ---------------- */
-const APP_VERSION = '1.54.3';
+const APP_VERSION = '1.55';
 const releaseRoot = document.querySelector('meta[name="xuanhu-release-root"]')?.content;
 const releaseBase = releaseRoot ? new URL(releaseRoot, location.href).href.replace(/\/$/, '') : '';
 const platformName = location.protocol === 'file:' ? '离线 HTML' :
@@ -3998,6 +3998,10 @@ function renderAll() {
 
 /* 更新公告：每次发版在这里加一条（新的放最前面） */
 const RELEASES = [
+  { v: '1.55', notes: [
+    '急性肾损伤病例需连续观察自身尿量和肌酐趋势 30 个模拟分钟，血液透析结束后重新计时',
+    '「不靠药」更名为「不用升压药」，按本床整局用药记录判定，涵盖已停用的升压药泵',
+  ] },
   { v: '1.54.3', notes: [
     '床旁菜单可滚动查看本床操作日志，给药、处置及检查回报按最近时间在前显示',
     '新增当前输液与泵药面板，可查看已输量、剩余时间和持续泵速，点进单笔医嘱可提前结束输注或停泵',

@@ -633,6 +633,87 @@ for (const id of ['hyperkalemia', 'dka', 'bleed', 'sepsis', 'opioid']) {
   })), '高钾合并 DKA');
 }
 {
+  const make = (identity) => E.create(G.generate(2, 101, ['aki']), identity);
+  const advance = (bed, seconds, step = 20) => {
+    for (let elapsed = 0; elapsed < seconds; elapsed += step) {
+      const dt = Math.min(step, seconds - elapsed);
+      E.tick(bed, dt);
+      G.step(bed, dt, E);
+    }
+  };
+  const serialize = ({ cas, ...state }) => JSON.parse(JSON.stringify(state));
+  const restore = saved => {
+    const bed = Object.assign(make(), saved);
+    E.restoreDischargeObservation(bed, saved);
+    return bed;
+  };
+  const furo = make({ weight: 56 });
+  Object.assign(furo, { k: 4.9, hco3: 16, cr: 280, renalFactor: 0.062, diuresis: 7.2 });
+  advance(furo, 9 * 60);
+  const inducedUrine = furo.uo * 60;
+  // 复放反馈中的床旁读数，56 kg 病例的总尿量也已越过 0.5 mL/kg/h。
+  furo.uo = 30.04 / 60;
+  const furoCheck = E.dischargeCheck(furo);
+  check('短暂利尿达到 30.04 mL/h 仍会拦截 AKI 签字', inducedUrine >= 28 && Math.round(furo.gfr) === 8 &&
+    furo.cr < 400 && furo.cr > 285 && furoCheck.majorReasons.some(reason => /30\.04 mL\/h.*利尿.*自身尿量/.test(reason)) &&
+    furoCheck.reasons.some(reason => reason.includes('肌酐回升')) && E.signDischarge(furo).status === 'failed',
+    '模拟 GFR 约 8，肌酐低于 400 但仍在回升，总尿量达标时还需评估自身尿量');
+
+  const bed = make();
+  E.give(bed, 'calcium', 10);
+  E.give(bed, 'insulin', 10);
+  E.give(bed, 'dextrose50', 25);
+  advance(bed, 310);
+  E.ACTIONS.dialysis.apply(bed);
+  advance(bed, 180 * 60 - 20);
+  const whileDialyzing = E.dischargeCheck(bed);
+  const endAt = bed.dialysisUntil;
+  const noDialysis = restore({ ...serialize(bed), dialysisUntil: -1 });
+  E.tick(noDialysis, 30);
+  advance(bed, 30, 30);
+  const firstAfterDialysis = E.dischargeCheck(bed);
+  check('透析中和快进跨过透析结束时需重新评估', whileDialyzing.majorReasons.some(reason => reason.includes('透析仍在进行')) &&
+    whileDialyzing.observationEndsAt === endAt && bed.cr < noDialysis.cr && !firstAfterDialysis.ok &&
+    firstAfterDialysis.observationEndsAt === bed.t + 30 * 60,
+    '跨越透析结束的 30 秒中按其中 20 秒清除肌酐，留观从首个透析间期样本开始');
+
+  advance(bed, 10 * 60);
+  const progress = E.dischargeCheck(bed);
+  const saved = serialize(bed);
+  const legacy = { ...saved };
+  delete legacy.akiObservation;
+  const existing = E.dischargeCheck(restore(saved));
+  const legacyBed = restore(legacy);
+  const legacyCheck = E.dischargeCheck(legacyBed);
+  check('读档保留已验证的 AKI 留观，旧档从当前建立基线', !progress.ok &&
+    progress.reasons.some(reason => reason.includes('还需 20 分钟')) &&
+    existing.observationEndsAt === progress.observationEndsAt && legacyCheck.reasons.some(reason => reason.includes('还需 30 分钟')) &&
+    legacyCheck.observationEndsAt === legacy.t + 30 * 60,
+    '旧档缺少自主尿量和肌酐连续趋势，重读后重新观察');
+
+  const dip = restore(serialize(bed));
+  const beforeDip = dip.akiObservation.urineStableSince;
+  const beforeDipState = { renalFactor: dip.renalFactor, diuresis: dip.diuresis };
+  Object.assign(dip, { renalFactor: 0.08, diuresis: 6.4 });
+  advance(dip, 20);
+  const afterDip = dip.akiObservation.urineStableSince;
+  Object.assign(dip, beforeDipState);
+  advance(dip, 20);
+  check('自身尿量中断会重新开始 AKI 留观', beforeDip != null && afterDip == null &&
+    dip.akiObservation.urineStableSince === dip.t && E.dischargeCheck(dip).observationEndsAt === dip.t + 30 * 60,
+    '一拍自身尿量跌落时，即使总尿量受利尿影响，仍需重新累计连续留观');
+
+  advance(bed, 20 * 60);
+  const rebound = E.dischargeCheck({ ...bed, cr: bed.cr + 30 });
+  check('AKI 停透期间肌酐反弹会单独阻止出院', !rebound.ok && rebound.reasons.length === 1 &&
+    rebound.reasons[0].includes('肌酐回升'),
+    '已完成留观，尿量达标，肌酐反弹且仍低于病例绝对上限');
+  advance(legacyBed, 30 * 60);
+  check('稳定的 AKI 和由旧档恢复的患者均可在留观后正常签字', bed.cr < 400 && bed.renalFactor > 0.5 &&
+    E.signDischarge(bed).status === 'normal' && E.signDischarge(legacyBed).status === 'normal',
+    '常规处置后自身尿量达标，离透析稳定满 30 个模拟分钟');
+}
+{
   const assess = (ids, patch) => E.dischargeCheck(Object.assign(E.create(G.generate(4, 13, ids)), patch)).reasons;
   const count = (rows, prefix) => rows.filter(row => row.startsWith(prefix)).length;
   const seizure = assess(['seizure', 'highK'], { gcs: 3, k: 6.9, seizure: 0.79 });

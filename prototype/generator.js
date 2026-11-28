@@ -614,9 +614,9 @@ const MODULES = [
            contractility:0.86, renalFactor:0.08 },
     drivers:{ kProd:0.075, lactProd:0.03 },
     history:[[4320, '病史回顾', '开始恶心、呕吐，尿量明显减少，并出现眼睑及下肢水肿。']],
-    get goal() { return [potassiumGoal(), '肌酐下降', '尿量恢复']; },
+    get goal() { return [potassiumGoal(), '肌酐 ≤400 µmol/L 且趋势稳定', '持续恢复自身尿量，透析结束后复评']; },
     measures: { cr: 400 },
-    hint:'利尿药对这种肾衰是无效的——该透析了。先保护心肌，再安排血透。',
+    hint:'先处理高钾和酸中毒，必要时安排血液透析。复评自身尿量与肌酐趋势，留意利尿药对尿量读数的影响。',
   },
 
   {

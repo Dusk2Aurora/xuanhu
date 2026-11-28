@@ -78,6 +78,11 @@ const DKA_DISCHARGE_GLUCOSE_MAX_EXCLUSIVE = 11;
 const DISCHARGE_K_MIN = 3.5;
 const DISCHARGE_K_MAX = 5.5;
 const potassiumTarget = `${DISCHARGE_K_MIN}–${DISCHARGE_K_MAX} mmol/L`;
+/* 急性肾损伤的游戏留观窗口和肌酐趋势容差。 */
+const AKI_OBSERVATION = 30 * 60;
+const AKI_URINE_TARGET = 0.5;
+const AKI_SEVERE_OLIGURIA = 0.3;
+const AKI_CREATININE_RISE = 5;
 
 function glucoseDischargeTarget(hasDka, includeDkaMinimum = false) {
   if (!hasDka) return `${DISCHARGE_GLUCOSE_MIN}–${DISCHARGE_GLUCOSE_MAX} mmol/L`;
@@ -632,6 +637,7 @@ const ACTIONS = {
     apply: (S) => {
       if (S.dialysisUntil && S.t < S.dialysisUntil) return;
       S.dialysisUntil = S.t + 180 * 60;
+      if (S.tags.includes('aki')) S.akiObservation = null;
       S.log.push(['操作', '开始血液透析（预计 3 h）', 'good']);
     },
   },
@@ -831,6 +837,10 @@ function create(caseId, identity = IDENTITY) {
     S.death = null; S.discharged = false; S.running = true;
   })();
 
+  if (S.tags.includes('aki')) {
+    S.akiObservation = null;
+    trackAkiObservation(S);
+  }
   S._naPrev = S.na;
   return S;
 }
@@ -1082,6 +1092,11 @@ function restoreDischargeObservation(S, saved) {
     S.roomAirStableSince = null;
   }
 
+  if (S.tags.includes('aki')) {
+    // 旧趋势没有连续尿量或肌酐，读取存档后从当前开始留观。
+    S.akiObservation = saved.akiObservation ?? null;
+    trackAkiObservation(S);
+  }
   if (saved.naCorrection) return;
   const previous = (saved.history || []).filter(sample => sample.t > 0 && sample.t <= S.t && Number.isFinite(sample.na));
   const firstLow = previous.find(sample => sample.na < 130);
@@ -1487,13 +1502,40 @@ function give(S, drugId, dose, route, bill = true) {
   return d;
 }
 
-function urineOutput(S, renalPerf) {
+function urineOutput(S, renalPerf, includeDiuresis = true) {
   const volFactor = clamp((S.vol - 2.3) / 2.1, 0.02, 1.6);
-  const osmDiuresis = clamp((S.glu - 12) * 0.28, 0, 4.5);
+  const extraDiuresis = includeDiuresis ? S.diuresis + clamp((S.glu - 12) * 0.28, 0, 4.5) : 0;
   const renalCapacity = S.tags.includes('aki') ? clamp(S.renalFactor, 0.05, 1) : 1;
   const outflowLimit = S.tags.includes('bph') && !S.urineDrained ? 0.08 : 10;
-  const produced = (0.95 * renalPerf * volFactor + S.diuresis + osmDiuresis) * renalCapacity;
+  const produced = (0.95 * renalPerf * volFactor + extraDiuresis) * renalCapacity;
   return clamp(produced, 0, outflowLimit);
+}
+
+function akiUrineRates(S) {
+  const weight = S.patient?.weight ?? S.weight;
+  const measured = 60 * S.uo;
+  const renalPerf = clamp(computeMap(S) / 85, 0.12, 1.25);
+  const spontaneous = Number.isFinite(S.uo) && weight > 0
+    ? Math.min(measured, 60 * urineOutput(S, renalPerf, false)) / weight : null;
+  return { measured, spontaneous, weight };
+}
+
+function trackAkiObservation(S, previousTime = S.t) {
+  // 跨过透析结束的这一拍仍含透析效应，以本拍结束为最早观察起点。
+  if (S.dialysisUntil > S.t || !Number.isFinite(S.cr)) {
+    S.akiObservation = null;
+    return;
+  }
+  if (S.dialysisUntil > previousTime) S.akiObservation = null;
+  const observation = S.akiObservation ??= { samples: [], urineStableSince: null };
+  const { spontaneous } = akiUrineRates(S);
+  observation.urineStableSince = spontaneous >= AKI_URINE_TARGET ? (observation.urineStableSince ?? S.t) : null;
+
+  const { samples } = observation;
+  const cutoff = S.t - AKI_OBSERVATION;
+  while (samples.length > 1 && samples[1].t <= cutoff) samples.shift();
+  const last = samples.at(-1);
+  if (!last || S.t - last.t >= 60 - 1e-7) samples.push({ t: S.t, cr: S.cr });
 }
 
 /* =========================================================================
@@ -1741,15 +1783,22 @@ function tick(S, dtSec) {
   /* ---------- 4. 肾脏：GFR、尿量、肌酐一阶滞后 ---------- */
   const renalPerf = clamp(mapNow / 85, 0.12, 1.25);
   const hypovol = clamp((S.vol - 1.6) / 2.9, 0.15, 1.15);
+  if (S.tags.includes('aki') && S.renalFactor < 0.68 && !inArrest && mapNow >= 65 && S.vol >= 3.8 &&
+      S.k <= DISCHARGE_K_MAX && S.hco3 >= 18 && (!S.tags.includes('bph') || S.urineDrained)) {
+    // 灌注与代谢稳定后，急性损伤逐步恢复，保留病例的慢性肾病背景。
+    S.renalFactor += (0.68 - S.renalFactor) * -Math.expm1(-dtMin / 75);
+  }
   const gfrNow = clamp(110 * renalPerf * hypovol * clamp(S.renalFactor, 0.05, 1.5)
                        * (1 - 0.55 * (S.hepatotox || 0)), 2, 135);
   S.gfr = gfrNow;
   /* 肌酐：生成恒定 − 清除 ∝ GFR，一阶滞后（替代原来"模块直接写 cr"） */
   S.cr = clamp(S.cr + (S.crProd - 0.0128 * (gfrNow / 110) * S.cr) * dtMin, 25, 1400);
-  /* 透析清除肌酐与尿素（半衰期约 90 min）——原来只清钾不清肌酐 */
-  if (S.dialysisUntil > S.t) {
-    S.cr = clamp(S.cr * Math.exp(-Math.LN2 / 90 * dtMin), 40, 1400);
-    S.bun = clamp(S.bun * Math.exp(-Math.LN2 / 90 * dtMin), 1.5, 160);
+  /* 透析清除肌酐与尿素（半衰期约 90 min）。时间步跨过结束时只计透析仍在运行的部分。 */
+  const dialysisMinutes = clamp((S.dialysisUntil - previousTime) / 60, 0, dtMin);
+  if (dialysisMinutes > 0) {
+    const retention = Math.exp(-Math.LN2 / 90 * dialysisMinutes);
+    S.cr = clamp(S.cr * retention, 40, 1400);
+    S.bun = clamp(S.bun * retention, 1.5, 160);
   }
 
   S.bun = clamp(S.bun + (S.cr * 0.045 + 1.2 - S.bun) * 0.004 * dtMin, 1.5, 160);
@@ -1785,7 +1834,7 @@ function tick(S, dtSec) {
 
   /* ---------- 6. 钾 ---------- */
   const kClear = 0.062 * (gfrNow / 110);
-  const dialClear = (S.dialysisUntil > S.t) ? 0.20 * Math.max(0, S.k - 3.2) : 0;
+  const dialClear = 0.20 * Math.max(0, S.k - 3.2) * (dialysisMinutes / dtMin);
   const insShift = (insulinEffect + S.insulinLoad * 0.4) * 0.080 * Math.max(0, S.k - 3.6);
   const acidShift = (S.ph < 7.30 ? (7.30 - S.ph) * 0.06 : -(S.ph - 7.30) * 0.04);
   const kExcrete = kClear * clamp((S.k - 3.7) / 1.3, 0, 2.2);   // 低钾时肾小管重吸收↑，排钾趋近 0
@@ -2074,7 +2123,7 @@ function tick(S, dtSec) {
   const ketoRecover = 0.060 * clamp(insEff - 0.6, 0, 1.6);
   const hco3Gen = clamp(0.004 * (24 - S.hco3) / 8 + 0.004, 0.0015, 0.020)
                 * clamp(gfrNow / 110, 0.12, 1.1)
-                + (S.dialysisUntil > S.t ? 0.05 : 0)
+                + 0.05 * (dialysisMinutes / dtMin)
                 + ketoRecover
                 + (S.hco3Boost || 0);
   const hco3Cons = 0.004
@@ -2156,6 +2205,7 @@ function tick(S, dtSec) {
 
   finishDelivery(S);
   trackCirculationObservation(S);
+  if (S.tags.includes('aki')) trackAkiObservation(S, previousTime);
 
   /* ---------- 19. 历史 ---------- */
   if (!S._lastHist || S.t - S._lastHist >= 10) {
@@ -2374,6 +2424,40 @@ function assessCirculationObservation(S, pressure) {
     reason: `撤除循环支持后需连续稳定 ${minutes} 分钟，观察还需 ${observationTime(remainingSeconds)}` };
 }
 
+function assessAkiDischarge(S, add, observationDeadlines) {
+  const minutes = AKI_OBSERVATION / 60;
+  if (S.dialysisUntil > S.t) {
+    add('血液透析仍在进行，需在结束后复评肾功能', true);
+    observationDeadlines.push(S.dialysisUntil);
+    return;
+  }
+
+  const { measured, spontaneous, weight } = akiUrineRates(S);
+  if (spontaneous == null) add('需复核尿量与体重，评估自身尿量', false);
+  else if (spontaneous < AKI_URINE_TARGET) {
+    const stimulated = (S.diuresis > 0 || S.glu > 12) && measured - spontaneous * weight >= 1;
+    const assistance = stimulated ? '，读数受利尿或渗透性利尿影响' : '';
+    add(`尿量 ${r2(measured)} mL/h${assistance}，需确认自身尿量持续 ≥${AKI_URINE_TARGET} mL/kg/h（约 ${r2(AKI_URINE_TARGET * weight)} mL/h）`,
+      spontaneous < AKI_SEVERE_OLIGURIA);
+  }
+
+  const samples = S.akiObservation?.samples ?? [];
+  const nadir = Math.min(...samples.map(sample => sample.cr));
+  if (S.cr - nadir >= AKI_CREATININE_RISE) {
+    add(`肾功能观察期间肌酐回升（${Math.round(nadir)} → ${Math.round(S.cr)} µmol/L），需继续复查趋势`, false);
+  }
+
+  const since = Math.max(samples[0]?.t ?? S.t, S.akiObservation?.urineStableSince ?? S.t);
+  const endsAt = since + AKI_OBSERVATION;
+  if (S.t < endsAt - 1e-7) {
+    const phase = S.dialysisUntil > 0 ? '透析后' : '急性肾损伤';
+    const observing = spontaneous >= AKI_URINE_TARGET;
+    const remaining = observing ? `，还需 ${observationTime(Math.ceil(endsAt - S.t - 1e-7))}` : '';
+    add(`${phase}需连续留观 ${minutes} 个模拟分钟${remaining}，复评自身尿量与肌酐趋势`, false);
+    if (observing) observationDeadlines.push(endsAt);
+  }
+}
+
 function dischargeCheck(S) {
   const b = bp(S);
   const bad = [];
@@ -2465,6 +2549,7 @@ function dischargeCheck(S) {
     }
     if (S.paco2 > 50) add(`二氧化碳分压 ${Math.round(S.paco2)} mmHg`, S.paco2 >= 65);
   }
+  if (tags.includes('aki')) assessAkiDischarge(S, add, observationDeadlines);
   if (S.cas?.extra) bad.push(...S.cas.extra(S, issue));
   const observationEndsAt = observationDeadlines.length ? Math.min(...observationDeadlines) : null;
   return { ok: bad.length === 0, reasons: [...new Set(bad)], majorReasons: [...new Set(major)],

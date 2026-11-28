@@ -2,6 +2,8 @@ const assert = require('node:assert/strict');
 const SUB = require('../prototype/substances');
 const CASEGEN = require('../prototype/generator');
 const E = require('../prototype/engine');
+const ACHIEVEMENTS = require('../prototype/achievements');
+const SHARE = require('../prototype/share');
 
 const baseline = { id: 'drug-billing-test', init: { ...CASEGEN.BASE } };
 const bed = (weight = 70, scenario = baseline) => E.create(scenario, { weight });
@@ -115,4 +117,58 @@ const reload = (scenario, saved) => {
   close(secondReload.cost, 170 + throughDeath, '旧档总费用保留并累加新费用');
 }
 
-console.log('药费结算回归通过');
+const earnedNoPressor = S => {
+  ACHIEVEMENTS.reset();
+  S.discharged = true;
+  return ACHIEVEMENTS.evaluate(S).includes('no_pressor');
+};
+
+{
+  const scenario = E.CASES.sepsis;
+  const untreated = bed(70, scenario);
+  E.give(untreated, 'ceftriaxone');
+  E.give(untreated, 'furosemide');
+  assert.ok(untreated.drugCost > 0);
+  assert.equal(earnedNoPressor(untreated), true, '非升压药费不影响本床成就');
+  const penalized = bed(70, scenario);
+  penalized.dischargeOutcome = { status: 'penalized' };
+  assert.equal(earnedNoPressor(penalized), false, '扣分出院不符合稳定出院条件');
+
+  for (const id of ['norepi', 'dopamine', 'epi', 'phenylephrine', 'vasopressin']) {
+    const treated = bed(70, scenario);
+    assert.ok(E.give(treated, id) > 0);
+    if (E.pumpRate(treated, id)) E.stopPump(treated, id);
+    treated.log = [];
+    treated.pk = [];
+    const { cas, ...saved } = treated;
+    const resumed = reload(cas, JSON.parse(JSON.stringify(saved)));
+    assert.equal(earnedNoPressor(resumed), false, `给药记录重载后仍可识别 ${id}`);
+    assert.equal(earnedNoPressor(untreated), true, '另一张床的升压药不计入本床');
+  }
+
+  const treated = bed(70, scenario);
+  E.give(treated, 'norepi');
+  const preview = SHARE.parse(SHARE.make(treated)).data;
+  assert.ok(preview.a.some(order => order[2] === 'norepi'));
+  const retaken = SHARE.rebuild(preview, E);
+  assert.equal(retaken.drugCost, 0);
+  assert.equal(earnedNoPressor(retaken), true, '会诊接手从接诊初始状态独立累计用药');
+}
+
+{
+  const scenario = { ...baseline, tags: ['sepsis'], init: { ...baseline.init, preload: [['norepi', 8]] } };
+  const pretreated = bed(70, scenario);
+  assert.deepEqual(pretreated.log, []);
+  assert.equal(pretreated.drugCost, 0);
+  assert.equal(earnedNoPressor(pretreated), false, '院前已实际使用升压药，即使尚未计费也有用药记录');
+
+  const oldSave = { cost: 60, log: [['给药', '去甲肾上腺素 8 μg/min 泵入', 'good']] };
+  assert.equal(earnedNoPressor(reload(E.CASES.sepsis, oldSave)), false, '旧版给药日志可识别');
+  oldSave.log = Array.from({ length: 600 }, () => ['10:00', '查看病情', 'info']);
+  assert.equal(earnedNoPressor(reload(E.CASES.sepsis, oldSave)), false, '旧档日志达到上限且给药信息不足时不授予');
+  oldSave.drugCost = 0;
+  oldSave.given = [];
+  assert.equal(earnedNoPressor(reload(E.CASES.sepsis, oldSave)), true, '完整给药记录不受日志上限影响');
+}
+
+console.log('药费结算与升压药成就回归通过');

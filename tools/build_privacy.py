@@ -52,6 +52,7 @@ HTML = """<!DOCTYPE html>
   <table>
     <tr><th>服务</th><th>用途</th><th>涉及数据</th></tr>
     <tr><td>Netlify</td><td>托管网页版与更新文件</td><td>常规访问日志（IP、时间、UA）</td></tr>
+    <tr><td>GitHub Pages</td><td>托管网页版和离线下载</td><td>GitHub 会记录访问者 IP 地址用于安全维护；选择在 GitHub Issues 发布的反馈会公开显示</td></tr>
     <tr><td>TapTap（如上架）</td><td>应用分发</td><td>由 TapTap 按其隐私政策处理</td></tr>
   </table>
 

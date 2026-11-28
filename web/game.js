@@ -3566,6 +3566,7 @@ function buildFeedbackText() {
 
 function openFeedback() {
   const text = buildFeedbackText();
+  const pages = location.hostname.endsWith('.github.io');
   openSheet('反馈问题', '复制后发作者即可', []);
   const list = document.querySelector('#sheetList');
   if (!list) return;
@@ -3579,11 +3580,13 @@ function openFeedback() {
     '</div>' +
     '<div style="display:flex;gap:8px;padding:0 14px 14px">' +
       '<button id="fbCopy" class="pill" style="flex:1;padding:11px;cursor:pointer;background:rgba(211,58,58,.10);color:#a33;font-weight:700;border-radius:12px">复制报告</button>' +
-      '<button id="fbSend" class="pill" style="flex:1;padding:11px;cursor:pointer;border-radius:12px">直接提交</button>' +
+      (pages ? '<a href="https://github.com/shuangyewu-9264/xuanhu/issues/new" target="_blank" rel="noopener" class="pill" style="flex:1;padding:11px;text-align:center">GitHub 反馈</a>'
+        : '<button id="fbSend" class="pill" style="flex:1;padding:11px;cursor:pointer;border-radius:12px">直接提交</button>') +
       '<button id="fbMail" class="pill" style="flex:1;padding:11px;cursor:pointer;border-radius:12px">邮件发送</button>' +
     '</div>' +
     '<div style="padding:0 14px 16px;font-size:12px;color:var(--ink-3);line-height:1.8">' +
-      '"直接提交"在网页版可用（走站点的表单服务）；APK 里请用"复制报告"，发微信/QQ 给作者。' +
+      (pages ? 'GitHub 问题会公开显示。你可以复制报告，检查内容后自行粘贴。'
+        : '"直接提交"在网页版可用（走站点的表单服务）；APK 里请用"复制报告"，发微信/QQ 给作者。') +
     '</div>';
 
   const ta = list.querySelector('#fbText');
@@ -3600,7 +3603,7 @@ function openFeedback() {
     const body = encodeURIComponent(ta.value);
     location.href = 'mailto:' + m[0] + '?subject=' + subject + '&body=' + body;
   });
-  list.querySelector('#fbSend').addEventListener('click', async () => {
+  list.querySelector('#fbSend')?.addEventListener('click', async () => {
     if (!IS_WEB) { toast('APK 里请用"复制报告"', true); return; }
     try {
       const body = new URLSearchParams({ 'form-name': 'feedback', 'detail': ta.value });
@@ -3616,7 +3619,7 @@ function openFeedback() {
 }
 
 /* ---------------- 版本 / 更新检查 ---------------- */
-const APP_VERSION = '1.57.7';
+const APP_VERSION = '1.57.8';
 const releaseRoot = document.querySelector('meta[name="xuanhu-release-root"]')?.content;
 const releaseBase = releaseRoot ? new URL(releaseRoot, location.href).href.replace(/\/$/, '') : '';
 const platformName = location.protocol === 'file:' ? '离线 HTML' :
@@ -4659,6 +4662,9 @@ function renderAll() {
 
 /* 更新公告：每次发版在这里加一条（新的放最前面） */
 const RELEASES = [
+  { v: '1.57.8', notes: [
+    '新增 GitHub Pages 在线入口。该站点支持复制病例报告并前往 GitHub 反馈。',
+  ] },
   { v: '1.57.7', notes: [
     '病床顶栏的最高倍速从 20× 调整为 32×，与 1×、4×、16× 使用相同的选择方式。',
   ] },

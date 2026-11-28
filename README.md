@@ -4,6 +4,8 @@
 
 ## 开始游戏
 
+直接打开 [GitHub Pages 在线版](https://shuangyewu-9264.github.io/xuanhu/) 即可游玩，也可以从[下载页](https://shuangyewu-9264.github.io/xuanhu/download.html)保存离线版。存档保存在当前浏览器中，GitHub Pages 和 Netlify 两个域名各自保存进度。
+
 电脑上可以直接打开 `web/index.html`，它需要同目录中的 JavaScript 文件。也可以在仓库根目录启动本地网页服务，再访问 [本地游戏](http://localhost:8000/)。
 
 ```sh
@@ -87,7 +89,7 @@ S.bleedRate = Object.values(S.bleedingSites).reduce((a, b) => a + b, 0);
 
 ## 构建与发布
 
-在仓库根目录使用 Python 3.8 或更高版本。网页构建只使用 Python 标准库。当前应用版本为 **1.57.7**。版本与发布流程见[维护交接](docs/维护交接.md)，v1.57.6 的病例重演和验证见[病理与处置反馈复核](docs/病理与处置反馈复核.md)。
+在仓库根目录使用 Python 3.8 或更高版本。网页构建只使用 Python 标准库。当前应用版本为 **1.57.8**。版本与发布流程见[维护交接](docs/维护交接.md)，v1.57.6 的病例重演和验证见[病理与处置反馈复核](docs/病理与处置反馈复核.md)。
 
 | 用途 | 命令 | 结果 |
 | --- | --- | --- |

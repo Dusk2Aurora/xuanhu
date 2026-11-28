@@ -1,6 +1,68 @@
 const assert = require('node:assert/strict');
 const { launchBrowser, gameUrl, enterWard } = require('./browser');
 
+async function checkPresentationWarmup(page) {
+  for (const fatal of [true, false]) {
+    const result = await page.evaluate(fatal => {
+      const game = window.__LIFE_GAME;
+      const { E } = game;
+      const { CASEGEN } = window;
+      let warmupSteps = 0;
+      const spec = {
+        id: 'presentation-test', name: '病程预热测试', tags: [], goals: [], diff: 6,
+        patient: { name: '测试患者', sex: '女', age: 40, height: 165, weight: 60 },
+        traits: [window.TRAITS.byId('slow_cyp')],
+        init: { ...CASEGEN.BASE },
+        advance(S, minutes) {
+          if (minutes < 1) return;
+          warmupSteps++;
+          S.log.push(['预热', '测试记录']);
+          if (fatal) {
+            S.rhythm = 'asystole';
+            S.arrests++;
+            S.insult.hypox = 100;
+            S.naMass += 10;
+            S.events.push({ id: 'test-warmup', t: S.t });
+            E.endCase(S, 'death', '测试预热死亡');
+          } else {
+            S.glu = 3;
+          }
+        },
+      };
+      const snapshot = S => structuredClone({
+        t: S.t, na: S.na, naMass: S.naMass, glu: S.glu, rhythm: S.rhythm, arrests: S.arrests,
+        insult: S.insult, log: S.log, events: S.events, history: S.history,
+        death: S.death, running: S.running, score: E.finalScore(S),
+      });
+      const initial = snapshot(E.create(spec));
+      game.startCase(spec, true);
+      const { S } = game;
+      const admitted = snapshot(S);
+      E.tick(S, 0.2);
+      CASEGEN.step(S, 0.2, E);
+      const afterTick = { t: S.t, running: S.running, death: S.death, score: E.finalScore(S) };
+      const medication = E.orderMedication(S, 'clopidogrel', 300, '口服');
+      return { initial, admitted, warmupSteps, afterTick, medication: medication.status, clopidogrelResist: S.clopidogrelResist };
+    }, fatal);
+
+    assert.equal(result.warmupSteps, 1);
+    assert.equal(result.medication, 'given');
+    assert.equal(result.clopidogrelResist, true, '入院后给药仍执行慢代谢体质回调');
+    if (fatal) {
+      assert.deepEqual(result.admitted, result.initial, '预热死亡后完整保留原接诊状态');
+      assert.deepEqual(result.afterTick, { t: 0.2, running: true, death: null, score: 100 });
+    } else {
+      assert.equal(result.admitted.t, 60);
+      assert.equal(result.admitted.glu, 3);
+      assert.deepEqual(result.admitted.log, []);
+      assert.deepEqual(result.afterTick, { t: 60.2, running: true, death: null, score: 100 });
+    }
+    const intro = page.locator('#admissionIntro');
+    await intro.click();
+    await intro.waitFor({ state: 'detached' });
+  }
+}
+
 async function main() {
   const browser = await launchBrowser();
   try {
@@ -25,6 +87,7 @@ async function main() {
     await choose('病例难度');
     await rows.getByRole('button', { name: /6 急诊首诊/ }).click();
     await enterWard(page);
+    await checkPresentationWarmup(page);
     await page.evaluate(() => window.__LIFE_GAME.startCase(window.CASEGEN.generate(6, 123), true));
     await page.locator('#admissionIntro').click();
     await page.locator('#btnAdmission').click();
@@ -99,8 +162,36 @@ async function main() {
     await page.locator('#detailX').click();
     await page.locator('#btnMenu').click();
     assert.match(await rows.getByRole('button').first().innerText(), /出院/);
+    await close();
+
+    const scoreBefore = await page.evaluate(() => {
+      const { S, E } = window.__LIFE_GAME;
+      S.rhythm = 'sinus';
+      S._vfRisk = 0;
+      return E.finalScore(S);
+    });
+    await page.locator('#btnOps').click();
+    await choose('电除颤');
+    assert.match(await page.locator('#toast').innerText(), /扣 5 分/);
+    assert.deepEqual(await page.evaluate(() => {
+      const { S, E } = window.__LIFE_GAME;
+      return [E.finalScore(S), S.penalties ?? 0, S.log.some(row => row[1].startsWith('带教点评：'))];
+    }), [scoreBefore - 5, 0, false]);
+    await close();
+    await page.locator('#btnMenu').click();
+    await choose('查看操作日志');
+    assert.match(await page.locator('#dKv').innerText(), /误用非同步电击.*扣 5 分/);
+    await page.evaluate(() => {
+      const { S, E } = window.__LIFE_GAME;
+      E.endCase(S, 'death', '测试结局');
+      window.tickWard();
+    });
+    const score = page.locator('.case-review-score');
+    assert.match(await score.getByRole('row', { name: /处置扣分.*误用非同步电击/ }).innerText(), /−5/);
+    assert.equal(await score.getByRole('row', { name: /带教扣分/ }).count(), 0);
+    assert.match(await page.locator('.case-review-log').innerText(), /误用非同步电击.*扣 5 分/);
     assert.deepEqual(errors, []);
-    console.log('Emergency intake, interview, examination, test ordering, report reload and discharge menu passed.');
+    console.log('Presentation warmup, emergency intake, report reload, discharge menu and visible action deductions passed.');
   } finally {
     await browser.close();
   }

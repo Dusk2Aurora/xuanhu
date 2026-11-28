@@ -1,11 +1,10 @@
 const assert = require('node:assert/strict');
 const { launchBrowser, gameUrl, enterWard } = require('./browser');
 
-async function applyFlow(page, rate) {
-  const slider = page.getByRole('slider');
-  await slider.fill(String(rate));
-  assert.equal(await slider.getAttribute('aria-valuetext'), rate + ' L/min');
-  await page.getByRole('button', { name: '应用流量' }).click();
+async function setSlider(page, id, value, unit) {
+  const slider = page.locator('#' + id);
+  await slider.fill(String(value));
+  assert.equal(await slider.getAttribute('aria-valuetext'), value + ' ' + unit);
 }
 
 async function main() {
@@ -20,7 +19,8 @@ async function main() {
     await page.locator('#opTitle').selectOption('lung');
     const meter = page.locator('#respiratoryFlow');
     await meter.click();
-    await applyFlow(page, 6);
+    await setSlider(page, 'respFlowInput', 6, 'L/min');
+    await page.getByRole('button', { name: '应用流量' }).click();
     assert.match(await meter.innerText(), /氧疗供氧流量 · 6 L\/min/);
     const oxygen = await page.evaluate(() => {
       const { E, S } = window.__LIFE_GAME;
@@ -47,23 +47,32 @@ async function main() {
     await page.locator('#sheetList .drow').filter({ hasText: '气管插管 + 机械通气' }).click();
     await closeSheetIfOpen();
     await page.locator('#btnOps').click();
-    await page.locator('#sheetList .drow').filter({ hasText: '调节呼吸机吸气流量' }).click();
-    await applyFlow(page, 15);
-    assert.match(await meter.innerText(), /呼吸机吸气流量 · 15 L\/min/);
+    await page.locator('#sheetList .drow').filter({ hasText: '呼吸机设置' }).click();
+    await setSlider(page, 'respFlowInput', 15, 'L/min');
+    await setSlider(page, 'respRateInput', 20, '次/分');
+    await setSlider(page, 'respFio2Input', 38, '%');
+    assert.match(await page.locator('.flow-settings').innerText(), /300 \/ 450 mL · 吸气 1.20 秒 · 呼气 1.80 秒/);
+    await page.getByRole('button', { name: '应用设置' }).click();
+    assert.match(await meter.innerText(), /呼吸机设置 · 15 L\/min/);
+    assert.match(await page.locator('#opan').innerText(), /RR\s+20\s+rpm · 机械通气/);
+    assert.match(await page.locator('#opan').innerText(), /FiO₂\s+38\s+%/);
     await meter.click();
-    assert.match(await page.locator('.flow-settings').innerText(), /300 mL/);
-    await applyFlow(page, 90);
+    await setSlider(page, 'respFlowInput', 90, 'L/min');
+    assert.match(await page.locator('.flow-settings').innerText(), /450 \/ 450 mL · 吸气 0.30 秒 · 呼气 2.70 秒/);
+    await page.getByRole('button', { name: '应用设置' }).click();
     assert.match(await meter.innerText(), /90 L\/min/);
-    await meter.click();
-    assert.match(await page.locator('.flow-settings').innerText(), /450 mL/);
-    await page.locator('#sheetClose').click();
     await page.reload();
     await enterWard(page);
     await page.locator('#opTitle').selectOption('lung');
-    assert.match(await meter.innerText(), /呼吸机吸气流量 · 90 L\/min/);
+    assert.match(await meter.innerText(), /呼吸机设置 · 90 L\/min/);
     assert.match(await page.locator('#opan').innerText(), /PaO₂/);
+    assert.match(await page.locator('#opan').innerText(), /RR\s+20\s+rpm · 机械通气/);
+    assert.match(await page.locator('#opan').innerText(), /FiO₂\s+38\s+%/);
+    await meter.click();
+    assert.equal(await page.locator('#respRateInput').inputValue(), '20');
+    assert.equal(await page.locator('#respFio2Input').inputValue(), '38');
     assert.deepEqual(errors, []);
-    console.log('Bedside oxygen and ventilator flow controls, intubation, and reload passed.');
+    console.log('Bedside oxygen and ventilator controls, intubation, and reload passed.');
   } finally {
     await browser.close();
   }

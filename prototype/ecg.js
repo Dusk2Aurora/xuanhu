@@ -7,6 +7,12 @@ const STEP_MS = 4, STRIP_MS = 4000;
 const SAMPLES = STRIP_MS / STEP_MS + 1;
 const unit = value => Math.max(0, Math.min(1, value));
 
+// Ionized calcium shifts ventricular repolarization. These bounds tune the simulated tracing.
+function calciumQtShift(calcium) {
+  if (!Number.isFinite(calcium)) return 0;
+  return 0.12 * unit((1.10 - calcium) / 0.45) - 0.08 * unit((calcium - 1.35) / 0.55);
+}
+
 function bump(t, centre, width) {
   const z = (t - centre) / width;
   return Math.abs(z) > 4 ? 0 : Math.exp(-0.5 * z * z);
@@ -20,7 +26,9 @@ function sinus(phase, rr, patient) {
   const wide = unit(Math.max(patient.qrsWide || 0, patient.tca || 0, (potassium - 6.2) / 2.6));
   const qrs = 1 + 1.6 * wide;
   const pr = Math.min(0.16 + 0.045 * highK, 0.38 * rr);
-  const tCentre = Math.min(0.28 * Math.sqrt(rr), 0.52 * rr);
+  const rateScale = Math.sqrt(rr);
+  const normalTCentre = Math.min(0.28 * rateScale, 0.52 * rr);
+  const tCentre = Math.min(normalTCentre + calciumQtShift(patient.ca) * rateScale, 0.62 * rr);
   const p = 0.14 * (1 - highK) * bump(untilR, -pr, Math.min(0.023, rr * 0.055));
   const q = -0.13 * bump(nearR, -0.021 * qrs, 0.006 * qrs);
   const r = (1 - 0.20 * wide) * bump(nearR, 0, 0.011 * qrs);
@@ -115,4 +123,7 @@ class EcgMonitor {
   }
 }
 root.EcgMonitor = EcgMonitor;
+const API = { calciumQtShift };
+if (typeof module !== 'undefined' && module.exports) module.exports = API;
+root.LIFE_ECG = API;
 })(globalThis);

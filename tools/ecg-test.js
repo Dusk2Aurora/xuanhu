@@ -26,10 +26,25 @@ for (const hr of [42, 60, 120, 180]) {
 const normal = trace(60, 4).strip;
 const highK = trace(60, 4, { k: 8 }).strip;
 assert.ok(highK.filter(v => v > 0.45).length > normal.filter(v => v > 0.45).length);
+
+function tPeakDelay(strip) {
+  const rPeak = strip.findIndex((v, i) => v > 0.65 && v > strip[i - 1] && v >= strip[i + 1]);
+  const repolarization = strip.slice(rPeak + 40, rPeak + 115);
+  return (40 + repolarization.indexOf(Math.max(...repolarization))) * 4;
+}
+const normocalcemic = trace(60, 4, { ca: 1.18 });
+const hypocalcemic = trace(60, 4, { ca: 0.75 });
+const hypercalcemic = trace(60, 4, { ca: 1.80 });
+assert.deepEqual(normocalcemic.strip, normal);
+assert.deepEqual(hypocalcemic.beats, normocalcemic.beats);
+assert.deepEqual(hypercalcemic.beats, normocalcemic.beats);
+assert.ok(tPeakDelay(hypocalcemic.strip) - tPeakDelay(normal) >= 60);
+assert.ok(tPeakDelay(normal) - tPeakDelay(hypercalcemic.strip) >= 40);
+
 const vf = trace(0, 16, { rhythm: 'vf' });
 assert.equal(vf.beats.length, 0);
 assert.ok(Math.max(...vf.strip) - Math.min(...vf.strip) > 0.3);
 const flat = trace(0, 16, { rhythm: 'asystole' });
 assert.equal(flat.beats.length, 0);
 assert.ok(flat.strip.every(v => v === 0));
-console.log('ECG rate, QRS count, hyperkalemia, VF and asystole passed');
+console.log('ECG rate, QRS count, potassium and calcium changes, VF and asystole passed');

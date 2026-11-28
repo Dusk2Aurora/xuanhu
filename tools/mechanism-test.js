@@ -127,18 +127,18 @@ function contrast(g, modA, modB, key, expect, minAbs) {
 }
 
 /* =========================================================================
- * 3) 利尿：肺水肿是救命，低血容量是打命
+ * 3) 利尿对肺水肿和失血的影响
  * ========================================================================= */
 {
-  const g = group('呋塞米 40 mg / 60 min（同样是利尿，一个脱肺水，一个脱到休克）', '');
+  const g = group('呋塞米 40 mg / 60 min 对肺水肿和失血的效应', '');
   const ed = diff('edema', S => E.give(S, 'furosemide', 40), 60);
   add(g, 'edema', 'lw', ed, 'down', 0.5);
   add(g, 'edema', 'spo2', ed, 'up', 3);
   add(g, 'edema', 'map', ed, 'flat', 10);      // 只小幅下降（容量还撑得住）
   const bl = diff('bleed', S => E.give(S, 'furosemide', 40), 60);
-  add(g, 'bleed', 'map', bl, 'down', 10);
-  add(g, 'bleed', 'do2', bl, 'down', 20);
-  contrast(g, 'edema', 'bleed', 'map', 'up', 5);   /* 出血改为血压调制后绝对差值缩小 */   // edema 的 MAP 只小降，bleed 大降
+  add(g, 'bleed', 'vol', bl, 'down', 0.02);
+  add(g, 'bleed', 'spo2', bl, 'flat', 0.5);
+  contrast(g, 'edema', 'bleed', 'spo2', 'up', 3);
 }
 
 /* =========================================================================

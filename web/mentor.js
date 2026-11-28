@@ -28,6 +28,8 @@ const LEVELS = {
 const aorticImpulseHigh = S => S.aorticDissectionLoad > 0 && S.map >= 65 &&
   (root.LIFE.bp(S).sys > EMERGENCY_CASES.AORTIC_PRESSURE_LIMIT || S.hr > EMERGENCY_CASES.AORTIC_HR_LIMIT);
 
+const dialysisForPotassium = S => S.k >= 6.5 || (S.k >= 5.5 && S.cr >= 300 && S.uo < 0.5);
+
 /* ---------- 各病例的规则 ---------- */
 const RULES = {
   highK: [
@@ -39,10 +41,6 @@ const RULES = {
       c:'钾还在高位',
       d:'把钾挪进细胞',
       s:'胰岛素 10 U + 50% 葡萄糖 25 mL 静推' },
-    { id:'dialysis', when: S => S.k > 5.2 && !(S.dialysisUntil > S.t),
-      c:'钾总量仍然过高，光靠转移不够',
-      d:'需要真正清除',
-      s:'血液透析' },
     { id:'acid', when: S => S.ph < 7.28 && S.hco3 < 18,
       c:'同时存在代谢性酸中毒',
       d:'纠酸能帮助降钾',
@@ -83,10 +81,10 @@ const RULES = {
       c:'血压勉强够做内镜了',
       d:'止血才是根治',
       s:'急诊内镜止血（需要血压支撑）' },
-    { id:'ppi', when: S => S.eff.ppi < 0.3,
+    { id:'ppi', when: S => S.eff.ppi < 0.3 && !(S.pk || []).some(p => p.id === 'omeprazole' && p.scale > 0 && S.t - p.t <= p.dur * 60),
       c:'抑酸能稳定血凝块',
       d:'基础用药别漏',
-      s:'PPI 80 mg 静推' },
+      s:'在药物中查看奥美拉唑，并继续评估出血来源' },
   ],
   sepsis: [
     { id:'fluid', when: S => S.vol < 4.1 || S.map < 65,
@@ -217,12 +215,18 @@ const RULES = {
   ],
 
   tbi: [
+    { id:'airway', when: S => !S.vent && (S.gcs <= 8 || S.spo2 < 90),
+      c:'意识或氧合恶化，气道有风险', d:'优先保护气道和氧合', s:'复查意识、呼吸和血氧，必要时气管插管' },
+    { id:'craniotomy', when: S => root.LIFE.craniotomyAssessment(S).ok,
+      c:'头颅 CT 和查体支持血肿清除', d:'尽快解除脑压迫', s:'选择开颅血肿清除（操作）' },
+    { id:'cthead', when: S => root.LIFE.craniotomyAssessment(S).status === 'requiresCT',
+      c:'头部外伤后意识恶化，考虑颅内出血', d:'尽快取得头颅影像', s:'选择头颅 CT 平扫（检查 → 影像），等待时复评意识和瞳孔' },
+    { id:'ctNeuroExam', when: S => root.LIFE.craniotomyAssessment(S).status === 'requiresExam',
+      c:'头颅 CT 显示小血肿', d:'复评意识和瞳孔', s:'完成意识与抽搐评估、检查双侧瞳孔，并根据变化复查头颅 CT' },
     { id:'mannitol', when: S => (S.icp || 0) > 0.6,
       c:'颅内压升高，脑疝风险', d:'先脱水降颅压', s:'20% 甘露醇 250 mL 快速静滴（或 3% 高渗盐水 150 mL）' },
-    { id:'craniotomy', when: S => (S.hematoma || 0) > 0.1,
-      c:'血肿占位不会自己消失', d:'必须开颅清除', s:'开颅血肿清除（操作）' },
     { id:'cushing', when: S => S.hr < 60 && root.LIFE.bp(S).sys > 150,
-      c:'Cushing 反应：血压高、心率慢', d:'是颅内压极高的信号，不是高血压病', s:'立即降颅压并准备手术，不要单纯降压' },
+      c:'血压升高伴心率减慢，提示 Cushing 反应', d:'紧急评估颅高压和脑灌注', s:'处理颅高压并复核头颅 CT，复查意识与瞳孔' },
   ],
 
   tca: [
@@ -234,11 +238,11 @@ const RULES = {
 
   myxedema: [
     { id:'thyroxine', when: S => S.hr < 60 || S.temp < 35.5,
-      c:'甲状腺素严重不足', d:'评估激素替代与呼吸支持', s:'在给药面板选择左甲状腺素的静脉途径，随访意识、体温和通气。体温偏低时，在「菜单 → 环境 / 场景」开启「被动保暖」' },
+      c:'甲状腺素严重不足', d:'评估激素替代与呼吸支持', s:'在给药面板选择左甲状腺素的静脉途径，随访意识、体温和通气。体温偏低时，从操作栏的「体温处置」开启被动保暖' },
     { id:'steroid', when: S => S.svr < 20,
       c:'可能合并肾上腺皮质功能不全', d:'激素要同时给', s:'氢化可的松 100 mg 静推' },
     { id:'warm', when: S => Number.isFinite(S.temp) && S.temp < 36.1 && !S.env?.warming,
-      c:'体温偏低会减慢药物代谢并抑制心肌收缩', d:'开启被动保暖', s:'打开「菜单 → 环境 / 场景」，开启「被动保暖」并监测体温' },
+      c:'患者核心体温偏低', d:'开启被动保暖', s:'从操作栏的「体温处置」开启被动保暖并监测体温' },
   ],
   liver: [
     { id:'lactulose', when: S => S.gcs < 13,
@@ -257,7 +261,7 @@ const RULES = {
   ],
   heatstroke: [
     { id:'cool', when: S => S.temp > 38.5 && !S.env?.cooling,
-      c:'核心体温过高，可能造成多器官损伤', d:'先物理降温', s:'打开「菜单 → 环境 / 场景」，开启「物理降温」，体温降到 38.5℃ 时自动停止' },
+      c:'核心体温过高，可能造成多器官损伤', d:'先物理降温', s:'从操作栏的「体温处置」开启物理降温，降至 38.5℃ 自动停止，随后继续观察体温' },
     { id:'fluid', when: S => S.vol < 4.2,
       c:'大量出汗与血管扩张导致容量不足', d:'降温同时补液', s:'生理盐水 1000 mL 快速静滴' },
   ],
@@ -265,8 +269,6 @@ const RULES = {
   aki: [
     { id:'ca', when: S => S.k > 6.0,
       c:'血钾已到危急值', d:'先保护心肌', s:'葡萄糖酸钙 10 mL 缓慢静推' },
-    { id:'dialysis', when: S => S.k > 5.5 || (S.cr || 0) > 500,
-      c:'肾衰本身不会靠药物好转', d:'该透析了', s:'血液透析（操作 → 血液透析）' },
     { id:'insulin', when: S => S.k > 5.5,
       c:'把钾暂时挪进细胞', d:'过渡措施，不能替代透析', s:'胰岛素 10 U + 50% 葡萄糖 25 mL' },
   ],
@@ -391,6 +393,9 @@ const RULES = {
       c:'噻嗪和过量饮水会继续加重低钠',
       d:'处理诱因并监测血钠',
       s:'操作 → 停用噻嗪并限制饮水' },
+    { id:'reassess', when: S => S.na >= 120 && S.na < 130 && S.na - (S.na0 ?? S.na) < 4 && S.gcs >= 13,
+      c:'血钠偏低，需结合症状和变化速度判断', d:'复查电解质和意识',
+      s:'对照两次报告的采样时间，观察血钠趋势，并复查神经状态' },
     { id:'follow', when: S => S.na < 130 && S.na - (S.na0 ?? S.na) >= 4,
       c:'初始升钠目标已达到，血钠尚待恢复',
       d:'按每日限额分阶段纠正',
@@ -500,6 +505,10 @@ function hints(S) {
       if (on) list.push(r);
     }
   }
+  if (dialysisForPotassium(S) && !(S.dialysisUntil > S.t) && !root.LIFE?.advancedDevice(S, 'crrt')?.active) {
+    list.push({ id:'dialysis', c:'当前血钾或排钾风险需要复评',
+      d:'考虑体外清除血钾', s:'复查血钾、心电和尿量，评估血液透析' });
+  }
   return list;
 }
 
@@ -530,13 +539,13 @@ function evaluate(S, kind, id, payload) {
       case 'aspirin':
       case 'clopidogrel':
         if (s.aorticDissectionLoad > 0) return say(false, '胸痛伴主动脉病变线索，请先复核主动脉 CTA，警惕加重出血');
-        return say(true, '已执行');
+        return say(null, '');
       case 'labetalol':
         if (s.aorticDissectionLoad > 0) {
           return s.map >= 65 && s.hr >= 65 ? say(true, '复查双臂血压和心率，保持器官灌注')
             : say(false, '血压或心率偏低，评估灌注后再调整');
         }
-        return say(true, '已执行');
+        return say(null, '');
       case 'pcc4':
         if (s.standardRescueCare && hasTag(s, 'warfarinBleed') && s.map >= 65 && s.hb >= 90) {
           return say(false, '出血程度目前较轻，可先暂停华法林、控制出血源并复查 INR');
@@ -570,7 +579,7 @@ function evaluate(S, kind, id, payload) {
         return say(true, '已给予补钾，请复查血钾');
       case 'calcium':
         if (!hasTag(s, 'highK') && s.k < 5.5) return say(false, '没有高钾时钙剂没有适应证');
-        if (s.t < s.caProtectUntil - 45 * 60 + 60) return say(true, '钙剂已给，保护窗口内不必重复');
+        if (s.caProtectUntil > s.t) return say(true, '钙剂已给，保护窗口内可先复评心电');
         return say(true, '时机正确：先保护心肌，再降钾');
       case 'insulin':
         if (hasTag(s, 'highK') && s.glu < 6) return say(false, '血糖不高，胰岛素必须配伍葡萄糖，小心低血糖');
@@ -578,8 +587,10 @@ function evaluate(S, kind, id, payload) {
         if (hasTag(s, 'dka') && s.glu < 12) return say(false, '血糖已接近目标，继续给会有低血糖风险');
         return say(true, '剂量在常规范围');
       case 'saline':
-        if (s.vol > 5.0) return say(false, '容量已经补足，继续大量补液有肺水肿风险');
-        return say(true, '扩容合理');
+      case 'nacl':
+      case 'ringer':
+        if (s.vol > 5 && (payload?.dose ?? 500) >= 500) return say(false, '容量已经补足，继续大量补液有肺水肿风险');
+        return say(null, '给液后复查循环灌注与氧合');
       case 'prbc':
         if (s.hb > 90) return say(false, '血红蛋白还不至于要输血');
         return say(true, '输血指征明确');
@@ -602,7 +613,7 @@ function evaluate(S, kind, id, payload) {
         if (!triedSeizureRescue(s)) return say(false, '持续惊厥应先给予足量苯二氮卓，并监测呼吸');
         return say(true, '一线治疗后仍有抽搐，可以加用二线止惊药');
       default:
-        return say(true, '已执行');
+        return say(null, '');
     }
   }
 
@@ -625,9 +636,11 @@ function evaluate(S, kind, id, payload) {
       return say(false, '现在不是室颤，除颤没有适应证');
     }
     if (id === 'dialysis') {
-      if (!hasTag(s, 'highK') && !hasTag(s, 'aki')) return say(false, '本例没有透析指征');
-      if (s.k < 5.0) return say(false, '血钾已经不高，透析收益有限');
-      return say(true, '透析指征明确');
+      if (dialysisForPotassium(s)) return say(true, '当前血钾和排钾风险支持透析评估，继续复查血钾和心电');
+      if (s.k <= 5 && s.cr < 200 && s.uo >= 0.5 && s.ph >= 7.2 && s.lungWater < 0.3) {
+        return say(false, '当前血钾、肾功能和容量状态提示透析收益有限，请先复评');
+      }
+      return say(null, '结合血钾趋势、尿量、肾功能和容量状态复评透析');
     }
     if (id === 'endoscopy') {
       if (!(s.bleedingSites.bleed > 0)) return say(false, '当前没有活动性消化道出血');

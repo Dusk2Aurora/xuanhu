@@ -39,9 +39,9 @@ function makeBody(sex, age, rnd) {
   return { height, weight };
 }
 
-/* 体内是否还有某物质的药效（pk 里 dur 未过） */
-const active = (S, id) => !!(S && S.pk && S.pk.some(p => p.id === id));
-const activeAny = (S, ids) => ids.some(id => active(S, id));
+function strongestDrugEffect(S, E, ids) {
+  return Math.max(...ids.map(id => E.drugActivity(S, id)));
+}
 
 function vascularTone(S) {
   const limit = 2.5;
@@ -253,11 +253,11 @@ const MODULES = [
        的写法。扩血管药（硝酸甘油/硝普钠/米力农）直接削减这个驱动 → 后负荷下降 →
        衰竭心肌每搏量上升（engine 的 afterloadF）→ CO 上升 → 心率回落。 */
     advance(S, dtMin, E) {
-      const vaso = 0.55 * E.infusedDrugActivity(S, 'nitroglycerin')
-                 + 0.95 * Math.max(E.pumpEffect(S, 'nitroprusside'), E.infusedDrugActivity(S, 'nitroprusside'))
-                 + (active(S,'hydralazine') ? 0.40 : 0)
-                 + (active(S,'captopril') ? 0.25 : 0)
-                 + (active(S,'milrinone') ? 0.45 : 0);
+      const vaso = 0.55 * E.drugActivity(S, 'nitroglycerin')
+                 + 0.95 * Math.max(E.pumpEffect(S, 'nitroprusside'), E.drugActivity(S, 'nitroprusside'))
+                 + 0.40 * E.drugActivity(S, 'hydralazine')
+                 + 0.25 * E.drugActivity(S, 'captopril')
+                 + 0.45 * E.drugActivity(S, 'milrinone');
       S.svrDrive = clamp((S.svrDrive == null ? 7.5 : S.svrDrive) + (0.02 - vaso) * dtMin, 0, 13);
     },
   },
@@ -303,8 +303,8 @@ const MODULES = [
     /* 不再硬把 glu 封在 2.8、gcs 封在 7：引擎用"胰岛素负荷高 → 摄取↑、肝糖输出被压制"
        的自然方程推进；低血糖损伤按剂量×时间积分判死（替代原来的 45 min 计时器） */
     advance(S, dtMin, E) {
-      const sugar = activeAny(S, ['dextrose50','dextrose10','glucagon']);
-      if (sugar) S.insulinLoad = Math.max(0, (S.insulinLoad || 0) - 0.12 * dtMin);
+      const sugar = strongestDrugEffect(S, E, ['dextrose50','dextrose10','glucagon']);
+      S.insulinLoad = Math.max(0, (S.insulinLoad || 0) - 0.12 * sugar * dtMin);
     },
   },
 
@@ -319,7 +319,7 @@ const MODULES = [
            hb:136, wbc:10.8, plt:250, temp:37.1, gcs:14,
            hr:124, svr:17.6, rr:32, pao2:56, paco2:38, spo2:86, uo:0.8,
            contractility:0.90,
-           airwayResistance:0.85, vdvt:0.67 },
+           airwayResistance:0.85 },
     drivers:{ kProd:0.068, lactProd:0.03 },
     history:[[360, '病史回顾', '开始喘鸣、胸闷，逐渐加重，发作时连贯说话困难。']],
     medicalHistory:['哮喘'],
@@ -332,19 +332,18 @@ const MODULES = [
     },
     hint:'支气管痉挛要靠解痉药打开，吸氧只能买时间。激素要早给。',
     advance(S, dtMin, E) {
-      const beta = activeAny(S, ['salbutamol','salmeterol','epi','isoproterenol','theophylline']);
-      const betaEffect = beta ? 1 : Math.min(1, E.pumpEffect(S, 'isoproterenol'));
-      const anti = active(S,'ipratropium');
-      const steroid = activeAny(S, ['hydrocortisone','dexamethasone']);
+      const beta = strongestDrugEffect(S, E, ['salbutamol','salmeterol','epi','isoproterenol','theophylline']);
+      const betaEffect = Math.max(beta, Math.min(1, E.pumpEffect(S, 'isoproterenol')));
+      const anti = E.drugActivity(S, 'ipratropium');
+      const steroid = strongestDrugEffect(S, E, ['hydrocortisone','dexamethasone']);
       let rate = 0.004;                 // 未处理：气道痉挛持续加重
       rate -= 0.055 * betaEffect;      // β₂ 激动剂：解痉主力
-      if (anti) rate -= 0.012;          // 抗胆碱能：协同
-      if (steroid) rate -= 0.010;       // 激素：压基础炎症张力
+      rate -= 0.012 * anti;          // 抗胆碱能：协同
+      rate -= 0.010 * steroid;       // 激素：压基础炎症张力
       const field = S.burnAirwayResistance == null ? 'airwayResistance' : 'asthmaResistance';
       S[field] = clamp((S[field] ?? 0.85) + rate * dtMin, 0.02, 1);
       S.obstruct = S[field];  // 兼容 mentor.js / check() 的旧字段名
-      /* 气道阻力 → 死腔↑（V/Q 失调）+ 分流↑（替代原来的 spo2 上限钳制） */
-      S.vdvt = clamp(0.33 + 0.40 * S[field], 0.33, 0.75);
+      /* 气道阻力 → 分流↑；引擎从同一阻力推算死腔。 */
       S.shuntSrc.airway = clamp(0.32 * S[field], 0, 0.32);
     },
   },
@@ -368,15 +367,15 @@ const MODULES = [
     check:S=>[ (1-(S.acheActivity==null?1:S.acheActivity))>0.25 ? '胆碱酯酶仍被抑制、分泌物多' : null ].filter(Boolean),
     hint:'阿托品对抗毒蕈碱样症状，碘解磷定复活胆碱酯酶。先给氧再解毒。',
     advance(S, dtMin, E) {
-      const pra = E.infusedDrugActivity(S, 'pralidoxime');
-      const atro = active(S,'atropine');
+      const pra = E.drugActivity(S, 'pralidoxime');
+      const atro = E.drugActivity(S, 'atropine');
       /* 胆碱酯酶活性：老化（不可逆）继续下降，解磷定复活；>6 h 后老化使复活效率大减 */
       const aging = S.t > 6 * 3600 ? 0.20 : 1;
       const react = 0.030 * aging * pra - 0.0016;
       S.acheActivity = clamp((S.acheActivity == null ? 0.12 : S.acheActivity) + react * dtMin, 0, 0.95);
       S.opTox = 1 - S.acheActivity;      // 兼容 mentor.js / check() 的旧字段名
       /* 阿托品只是阻断毒蕈碱受体，不恢复酶活性 */
-      S.muscarinicBlock = clamp((S.muscarinicBlock || 0) + ((atro ? 0.22 : -0.020)) * dtMin, 0, 1);
+      S.muscarinicBlock = clamp((S.muscarinicBlock || 0) + (0.24 * atro - 0.020) * dtMin, 0, 1);
       /* 堆积的 ACh 多少能作用到受体：由引擎换算成心率/分泌物/气道阻力 */
       S.cholinergic = clamp((1 - S.acheActivity) * (1 - S.muscarinicBlock), 0, 1);
       S.shuntSrc.op = clamp(0.30 * S.cholinergic, 0, 0.30);
@@ -402,7 +401,7 @@ const MODULES = [
     ...observeAfter(() => 0, 2 * 3600, '对乙酰氨基酚中毒需观察 2 小时（肝损窗口）'),
     hint:'早期没有症状不等于安全。N-乙酰半胱氨酸越早给越有效，8 小时后疗效明显下降。',
     advance(S, dtMin, E) {
-      const nac = E.infusedDrugActivity(S, 'nacetylcysteine');
+      const nac = E.drugActivity(S, 'nacetylcysteine');
       /* NAPQI 生成（CYP 2E1）→ 与 GSH 结合解毒；GSH 耗竭后与肝细胞蛋白共价结合 */
       const load = S.apapLoad ?? 1;
       const form = 0.016 * load;
@@ -453,13 +452,13 @@ const MODULES = [
     hint:'高血压急症要平稳降压。可持续静脉泵入尼卡地平，根据血压和心率调速。',
     advance(S, dtMin, E) {
       const potency = 0.12 * (E?.pumpEffect?.(S, 'nicardipine') || 0)
-                    + 0.95 * Math.max(E.pumpEffect(S, 'nitroprusside'), E.infusedDrugActivity(S, 'nitroprusside'))
-                    + (active(S,'labetalol') ? 0.35 : 0)
-                    + 0.25 * E.infusedDrugActivity(S, 'nitroglycerin')
-                    + (active(S,'nifedipine') ? 0.18 : 0)
-                    + (active(S,'hydralazine') ? 0.35 : 0)
-                    + (active(S,'captopril') ? 0.15 : 0)
-                    + (active(S,'enalapril') ? 0.15 : 0);
+                    + 0.95 * Math.max(E.pumpEffect(S, 'nitroprusside'), E.drugActivity(S, 'nitroprusside'))
+                    + 0.35 * E.drugActivity(S, 'labetalol')
+                    + 0.25 * E.drugActivity(S, 'nitroglycerin')
+                    + 0.18 * E.drugActivity(S, 'nifedipine')
+                    + 0.35 * E.drugActivity(S, 'hydralazine')
+                    + 0.15 * E.drugActivity(S, 'captopril')
+                    + 0.15 * E.drugActivity(S, 'enalapril');
       S.svrDrive = clamp((S.svrDrive == null ? 7 : S.svrDrive) + (0.020 - potency) * dtMin, 0, 13);
       S.htn = clamp(S.svrDrive / 7, 0, 1.2);   // 兼容旧字段名
       const b = E && E.bp ? E.bp(S) : { sys: 0, dia: 0, map: 0 };
@@ -502,7 +501,7 @@ const MODULES = [
     init:{ vol:4.3, k:4.2, na:137, hco3:21, lac:3.6, glu:7.4, cr:96, bun:6.4,
            hb:131, wbc:11.0, plt:220, temp:36.7, gcs:13,
            hr:132, svr:15.0, rr:30, pao2:54, paco2:30, spo2:86, uo:0.5,
-           contractility:0.85, clot:0.90, pvr:10.35, vdvt:0.65 },
+           contractility:0.85, clot:0.90, pvr:10.35 },
     drivers:{ kProd:0.068, lactProd:0.045 },
     history:[
       [null, '病史回顾', '近期曾长时间久坐。'],
@@ -514,13 +513,12 @@ const MODULES = [
     check:S=>[ (S.clot||0)>0.25 ? '右心负荷仍未减轻（血栓未清除）' : null ].filter(Boolean),
     hint:'大面积肺栓塞先给氧、抗凝，血流动力学不稳时溶栓。补液要小心，右心已经撑不住了。',
     advance(S, dtMin, E) {
-      const lysis = 0.050 * E.infusedDrugActivity(S, 'alteplase');
+      const lysis = 0.050 * E.drugActivity(S, 'alteplase');
       const hep = 0.012 * clamp((E?.heparinActivity(S) || 0) * 2, 0, 1);
       S.clot = clamp((S.clot == null ? 0.90 : S.clot) + (0.003 - lysis - hep) * dtMin, 0, 1);
       /* 血栓负荷 → 肺血管阻力（替代原来的 svr 上限钳制） */
       S.pvr = 1.8 + 9.5 * S.clot;
       S.shuntSrc.clot = clamp(0.28 * S.clot, 0, 0.28);
-      S.vdvt = clamp(0.33 + 0.35 * S.clot, 0.33, 0.68);   // 死腔↑ → 通气效率下降
     },
   },
 
@@ -587,7 +585,7 @@ const MODULES = [
            contractility:0.88, ca:1.05 },
     drivers:{ kProd:0.010, lactProd:0.055 },
     history:[[480, '病史回顾', '出现上腹剧痛并向背部放射，伴频繁呕吐，弯腰时疼痛稍缓。']],
-    goal:['平均动脉压 ≥ 65','尿量 ≥ 30 mL/h','疼痛缓解'],
+    goal:['平均动脉压 ≥ 65','尿量 ≥ 30 mL/h','纠正有效循环容量不足'],
     measures: { vol: 3.9, uo: 0.5 },
     hint:'胰腺炎的头 24 小时死于第三间隙丢失，不是死于疼痛——先补液，再谈镇痛。',
     lactateDrive(S) {
@@ -612,7 +610,7 @@ const MODULES = [
            hb:145, wbc:9.5, plt:250, temp:36.6, gcs:11,
            hr:108, sv:58, svr:14, rr:22, pao2:92, paco2:38, spo2:97, uo:1.2,
            contractility:0.90, insulinBase:0.55 },
-    drivers:{ kProd:0.011, lactProd:0.02 },
+    drivers:{ kProd:0.011, lactProd:0.02, glucoseIn:0.19 },  // 基础肝糖输出 0.14 mmol/min，加高渗病例的 0.05
     history:[
       [null, '家属转述', '近几天饮水少。'],
       [null, '家属转述', '逐渐出现乏力、嗜睡，送医前反应明显变差。'],
@@ -627,7 +625,6 @@ const MODULES = [
     },
     hint:'高渗状态先补液：血糖降太快会导致脑水肿，血钠也要慢慢降。',
     advance(S) {
-      S.glucoseIn = 0.05;
       /* 意识与容量恢复后可恢复饮水，补足后续尿液自由水丢失。 */
       S.freeWaterRate = S.gcs >= 13 && S.vol >= 4.2 ? S.uo * 0.00035 : 0;
     },
@@ -692,7 +689,7 @@ const MODULES = [
       [null, '现场人员转述', '现场有人目击患者晕倒。'],
     ],
     goal:['核心体温 ≤ 37.8','收缩压 ≥ 90','意识恢复'],
-    hint:'热射病需尽快散热。在「环境 / 场景」开启物理降温，同时补液并监测血压。',
+    hint:'热射病需尽快散热。从操作栏的「体温处置」开启物理降温，同时补液并监测血压。',
     lactateDrive(S) {
       return BASE.lactProd + (0.08 - BASE.lactProd) * clamp((S.heatstrokeDrive ?? 1.30) / 1.30, 0, 1);
     },
@@ -718,7 +715,7 @@ const MODULES = [
     medicationHistory:['两个月前停用甲状腺激素替代药'],
     goal:['体温 ≥ 36.0','心率 ≥ 55','意识恢复'], minDischargeHR:55,
     check:S=>[ (S.myxedemaSeverity ?? 1) > 0.35 ? '甲状腺激素替代治疗尚未充分生效' : null ].filter(Boolean),
-    hint:'左甲状腺素 + 氢化可的松，同时在「环境 / 场景」开启被动保暖，避免大剂量升压药。',
+    hint:'左甲状腺素 + 氢化可的松，同时从操作栏的「体温处置」开启被动保暖，避免大剂量升压药。',
     advance(S, dtMin){
       const replacement = clamp(S.thyroidReplacement || 0, 0, 1);
       S.myxedemaSeverity = clamp((S.myxedemaSeverity ?? 1) + (0.001 - 0.018 * replacement) * dtMin, 0, 1);
@@ -768,7 +765,6 @@ const MODULES = [
     advance(S, dtMin){
       S.tca = Math.max(0, (S.tca == null ? 0.78 : S.tca) - 0.0006 * dtMin);   // 自身清除极慢
       S.qrsWide = Math.max(S.qrsWide || 0, S.tca);
-      if (S.tca > 0.55) S._vfRisk = (S._vfRisk || 0) + 0.030 * dtMin;   // 三环类：QRS 增宽 → 室性心律失常
     },
   },
 
@@ -785,13 +781,10 @@ const MODULES = [
     goal:['意识恢复','颅内压下降','血压心率回稳'],
     ...observeAfter(S => S.cranied ? (S.craniotomyAt ?? 0) : null, 900, '开颅术后观察未满 15 分钟', (S, issue = dischargeReason) =>
       S.hematoma > 0.12 ? [issue('颅内血肿未清除')] : []),
-    hint:'硬膜外血肿有"中间清醒期"——意识变差就是再出血。甘露醇只是争取时间，必须开颅。',
+    hint:'头部外伤后先清醒再嗜睡，需紧急头颅 CT。复评意识和瞳孔，维持气道、氧合与灌注；影像证实较大血肿时尽快清除。',
     advance(S, dtMin){
       /* 动脉出血持续 → 血肿扩大；开颅后不再增长 */
       if (!S.cranied) S.hematoma = Math.min(1.2, (S.hematoma || 0) + 0.0014 * dtMin);
-      /* Cushing 反应：颅压升高 → 血压升、心率降（脑疝前兆） */
-      const icp = S.icp || 0;
-      /* Cushing 反应已移入引擎的 hrTarget / toneTarget，模块里再改会被下一拍覆盖 */
     },
   },
 
@@ -837,7 +830,7 @@ const MODULES = [
       [60, '院前病史', '出现持续的胸骨后压榨样痛，向左肩放射，伴冷汗。'],
       [null, '院前病史', '曾含服硝酸甘油，疼痛持续。', 'prehospital'],
     ],
-    goal:['胸痛缓解','血压心率稳定','ST 段回落'],
+    goal:['恢复冠脉灌注','血压心率稳定','ST 段回落'],
     ...observeAfter(S => S.reperfused ? (S.reperfusionAt ?? 0) : null, 900, 'PCI 后观察未满 15 分钟', (S, issue = dischargeReason) => [
       S.stemi > 0.15 ? issue('冠脉未再通（ST 仍抬高）') : null,
       (S.map || 100) < 68 ? '平均动脉压不足' : null,
@@ -1465,8 +1458,10 @@ function generateCase(difficulty, seed, only, genVersion) {
     }
     if (comorb === 'copd') {
       init.pao2 = clamp(init.pao2 - 8, 40, 90);
-      init.paco2 = init.paco2 + 6;
-      init.vdvt = unified ? Math.max(init.vdvt || 0, 0.42) : 0.42;
+      /* 既往稳定期的二氧化碳潴留，入院血气另叠加急性病程。 */
+      init.chronicPaco2 = 46;
+      init.paco2 += init.chronicPaco2 - 40;
+      init.vdvt = Math.max(init.vdvt || 0, 0.42);
       additionalHistory.push('慢性阻塞性肺疾病');
     }
     if (comorb === 'anemia') {
@@ -1528,18 +1523,13 @@ function generateCase(difficulty, seed, only, genVersion) {
   const complaint = admissionNarrative({ admission });
 
   /* 并发病程共享同一体征，分别推进后合并共同的病理负荷。 */
-  const deadSpaceBackground = additionalHistory.includes('慢性阻塞性肺疾病') ? 0.42 : 0.33;
-  const combinedDeadSpace = combined && (cases.includes('asthma') || cases.includes('pe'));
   const variableLactate = primary.filter(m => m.lactateDrive);
   const backgroundLactate = Math.max(BASE.lactProd, ...primary.filter(m => !m.lactateDrive).map(m => m.drivers?.lactProd ?? BASE.lactProd));
   const advance = function (S, dtMin, E) {
-    let deadSpace = deadSpaceBackground;
     for (const m of primary) {
       if (!m.advance) continue;
       m.advance(S, dtMin, E);
-      if (combinedDeadSpace && (m.id === 'asthma' || m.id === 'pe')) deadSpace = Math.max(deadSpace, S.vdvt);
     }
-    if (combinedDeadSpace) S.vdvt = deadSpace;
     if (combinedAirway) S.airwayResistance = Math.max(S.asthmaResistance, S.burnAirwayResistance);
     if (combinedPvr) S.pvr = 1.8 + 9.5 * S.clot + 6.0 * S.tensionPTX;
     if (variableLactate.length) {

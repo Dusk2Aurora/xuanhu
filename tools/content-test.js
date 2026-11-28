@@ -307,8 +307,9 @@ const TREAT = {
   },
 
   tbi(S) {
-    if ((S.icp || 0) > 0.6 && !S._man) { S._man = 1; E.give(S, 'mannitol', 250); }
-    if ((S.hematoma || 0) > 0.1 && !S._cran) { S._cran = 1; E.ACTIONS.craniotomy.apply(S); S.cranied = 1; }
+    if (!S.tests.cthead) E.orderTest(S, 'cthead');
+    if (E.craniotomyAssessment(S).ok) E.ACTIONS.craniotomy.apply(S);
+    else if ((S.icp || 0) > 0.6 && !S.cranied && !S._man) { S._man = 1; E.give(S, 'mannitol', 250); }
   },
 
   burn(S, t) {
@@ -525,7 +526,7 @@ function checkEmergencyCases() {
   const B = E.create(G.generate(2, 101, ['aorticDissectionB']));
   const beforeLegs = E.examine(B, 'legs');
   assert.equal(beforeLegs.values.rightFootPerfusionReduced, 1);
-  TREAT.aorticDissectionB(B);
+  E.orderTest(B, 'aorta_cta');
   while (!B.tests.aorta_cta.done) step(B);
   const descending = E.reports(B, 'aorta_cta').at(-1);
   assert.equal(descending.values.ascendingAortaDissection, 0);
@@ -537,6 +538,7 @@ function checkEmergencyCases() {
   tevar.apply(B);
   assert.equal(B.tevarStartedAt, undefined);
   assert.equal(B.aorticSurgeryStartedAt, undefined);
+  E.give(B, 'labetalol');
   while (B.running && B.t < 45 * 60 && emergency.tevarStatus(B) !== 'ready') step(B);
   assert.equal(emergency.tevarCirculation(B).ready, true);
   const tevarCost = B.cost;
@@ -698,7 +700,7 @@ if (require.main === module) {
     if (!ok) pass = false;
 
     rows.push({
-      id: m.id, name: m.name, hintCount,
+      id: m.id, name: m.name, hintCount, needDeath,
       treatOk, treatN: SEEDS.length,
       noneBad, noneDead, noneN: SEEDS.length,
       treatAvg: Math.round(treatRuns.reduce((s, r) => s + r.min, 0) / treatRuns.length),
@@ -747,7 +749,7 @@ if (require.main === module) {
         console.log(`  [治疗失败] ${r.id} seed=${x.seed} → ${x.outcome}（${x.min} min）${x.reason}`);
       for (const x of r.noneRuns.filter(x => x.outcome === '出院'))
         console.log(`  [自然病程过轻] ${r.id} seed=${x.seed} → 未处理也出院（${x.min} min）`);
-      if (r.noneDead / r.noneN < 0.7)
+      if (r.noneDead / r.noneN < r.needDeath)
         console.log(`  [致死率不足] ${r.id} 只死 ${r.noneDead}/${r.noneN}`);
       if (r.hintCount < 2) console.log(`  [导师规则不足] ${r.id} 只有 ${r.hintCount} 条`);
     }

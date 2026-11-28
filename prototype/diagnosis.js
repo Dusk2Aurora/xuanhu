@@ -579,7 +579,7 @@ const RULES = [
       if (num(s.shunt) != null && num(s.shunt) > 0.15) return null;
       if (num(s.lungWater) != null && num(s.lungWater) > 0.30) return null;
       const ob = c.flag('airwayResistance') != null ? c.flag('airwayResistance') : c.flag('obstruct');
-      const vdvt = c.flag('vdvt');
+      const vdvt = root.LIFE?.effectiveDeadSpace?.(c.S) ?? c.flag('vdvt');
       const airwayEvidence = (ob != null && ob > 0.25)
         || (vdvt != null && vdvt > 0.55)
         || c.logHas(/喘鸣|哮鸣|喘息|哮喘|COPD/);

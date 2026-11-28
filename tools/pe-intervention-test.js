@@ -42,6 +42,8 @@ assert.equal(restored.log.filter(row => row[1]?.includes('导管取栓完成')).
 assert.equal(restored.cost, before + procedure.cost);
 assert.equal(procedure.active(bed), true, '读档后操作独立');
 
+restored.t = E.orderTest(restored, 'cthead');
+E.pollTests(restored);
 E.ACTIONS.craniotomy.apply(restored);
 assert.equal(restored.cranied, true);
 const withoutAnticoagulation = seconds => {

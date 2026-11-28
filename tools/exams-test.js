@@ -50,6 +50,63 @@ const advance = (S, minutes) => {
   }
 };
 
+/* 开颅判断只使用已回报的影像和已记录的神经查体。 */
+{
+  const trauma = bed('tbi');
+  const operation = E.ACTIONS.craniotomy;
+  operation.apply(trauma);
+  assert.match(trauma.log.at(-1)[1], /先取得急诊头颅 CT/);
+  assert.equal(trauma.cost, 0);
+  E.orderTest(trauma, 'cthead');
+  operation.apply(trauma);
+  assert.match(trauma.log.at(-1)[1], /待回报/);
+  assert.equal(trauma.cranied, undefined);
+
+  advance(trauma, 8);
+  E.pollTests(trauma);
+  const report = E.reports(trauma, 'cthead').at(-1);
+  assert.equal(report.reportedAt, 480);
+  assert.ok(report.values.epiduralHematomaVolume > 30);
+  const postoperative = restore(trauma);
+  operation.apply(postoperative);
+  assert.equal(postoperative.hematoma, 0);
+  assert.equal(postoperative.craniotomyAt, 480);
+  const cost = postoperative.cost;
+  operation.apply(postoperative);
+  assert.equal(postoperative.cost, cost);
+  assert.match(postoperative.log.at(-1)[1], /术后观察/);
+  advance(postoperative, 60);
+  assert.equal(postoperative.death, null);
+  assert.equal(postoperative.gcs, 15);
+
+  // 旧存档实有文字影像所见时，可沿用报告。过期或出具新报告后重新评估。
+  const oldSave = JSON.parse(JSON.stringify(trauma));
+  delete oldSave.diagnosticReports.at(-1).values.epiduralHematomaVolume;
+  assert.ok(E.craniotomyAssessment(restore({ ...oldSave, cas: trauma.cas })).ok);
+  trauma.t = 31 * 60;
+  assert.match(E.craniotomyAssessment(trauma).reason, /超过 30 分钟/);
+  trauma.hematoma = 0;
+  finish(trauma, 'cthead');
+  trauma.hematoma = 0.70;
+  operation.apply(trauma);
+  assert.match(trauma.log.at(-1)[1], /最近的头颅 CT 未见/);
+  assert.equal(trauma.cranied, undefined);
+}
+
+{
+  const smallHematoma = bed('tbi');
+  smallHematoma.hematoma = 0.40;
+  assert.equal(finish(smallHematoma, 'cthead').values.epiduralHematomaVolume, 24);
+  smallHematoma.gcs = 8;
+  smallHematoma.icp = 0.80;
+  assert.equal(E.craniotomyAssessment(smallHematoma).status, 'requiresExam');
+  E.examine(smallHematoma, 'neuro');
+  E.examine(smallHematoma, 'pupils');
+  assert.equal(E.craniotomyAssessment(smallHematoma).ok, true);
+  smallHematoma.t += 6 * 60;
+  assert.equal(E.craniotomyAssessment(smallHematoma).status, 'requiresExam');
+}
+
 /* 待出期间不公布其他化验，重开同一检查也不重复扣费。 */
 {
   const S = healthy();
@@ -133,6 +190,30 @@ for (const [module, test, pattern] of [
   ['edema', 'lungus', /B 线.*增多/],
 ]) {
   assert.match(reportText(finish(bed(module), test)), pattern, module);
+}
+
+/* 心电图和床旁所见反映检查当时的状态，各自留档。 */
+for (const [ca, qt, sign] of [
+  [0.75, /QT 间期.*延长/, /手足痉挛/],
+  [1.80, /QT 间期.*缩短/, /抗阻力量减弱/],
+]) {
+  const S = healthy();
+  S.ca = ca;
+  E.orderTest(S, 'bmp');
+  E.orderTest(S, 'ecg');
+  const bedside = E.examine(S, 'neuro');
+  assert.match(reportText(bedside), sign);
+  S.ca = 1.18;
+
+  const abnormal = finish(S, 'ecg');
+  assert.match(reportText(abnormal), qt);
+  assert.equal(E.knownResults(S).ca, undefined);
+  assert.doesNotMatch(reportText(finish(S, 'ecg')), qt);
+  assert.doesNotMatch(reportText(E.examine(S, 'neuro')), sign);
+  assert.equal(finish(S, 'bmp').values.ca, ca);
+  const saved = restore(S);
+  assert.match(reportText(E.getReport(saved, abnormal.id)), qt);
+  assert.match(reportText(E.getReport(saved, bedside.id)), sign);
 }
 
 /* DKA 的模拟血酮与血糖/渗透压分开，采样时留档，复查反映酮体逐步清除。 */
@@ -227,7 +308,9 @@ for (const S of [bed('bleed'), E.create('bleed')]) {
   assert.equal(report.rows.at(-1).value, tone.text);
   assert.equal(report.rows.at(-1).flag, '偏高');
   E.give(S, 'labetalol', 10, '静推');
-  advance(S, 10);
+  advance(S, 1);
+  assert.ok(!CASEGEN.vascularTone(S).controlled, '尚在起效，保留血管张力异常');
+  advance(S, 20);
   tone = CASEGEN.vascularTone(S);
   report = E.examine(S, 'circulation');
   assert.ok(tone.controlled);

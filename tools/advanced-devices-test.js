@@ -241,6 +241,62 @@ function roundTrip(S) {
 }
 
 {
+  const scenarios = ['highK', 'aki', 'bph'];
+  const advance = (S, minutes) => {
+    for (let step = 0; step < minutes * 6; step++) {
+      E.tick(S, 10);
+      CASEGEN.step(S, 10, E);
+    }
+    assert.equal(S.death, null);
+  };
+  for (const id of scenarios) {
+    const spec = CASEGEN.generate(2, 43, [id]);
+    const control = E.create(spec, identity);
+    const intermittent = E.create(spec, identity);
+    const continuous = E.create(spec, identity);
+    E.ACTIONS.dialysis.apply(intermittent);
+    act(continuous, 'crrt');
+    for (const S of [control, intermittent, continuous]) advance(S, 30);
+    assert.ok(intermittent.k < continuous.k && continuous.k < control.k - 0.5, id);
+    if (id === 'highK') {
+      const expectedEnd = intermittent.dialysisUntil;
+      E.ACTIONS.dialysis.apply(intermittent);
+      assert.equal(intermittent.dialysisUntil, expectedEnd);
+      assert.match(intermittent.log.at(-1)[1], /预计还需 150 分钟/);
+      advance(intermittent, 150);
+      const postDialysis = intermittent.k;
+      assert.ok(postDialysis < 5.5);
+      advance(intermittent, 30);
+      assert.ok(intermittent.k > postDialysis + 0.2);
+      assert.equal(intermittent.log.filter(([, text]) => text.includes('血液透析已结束')).length, 1);
+    }
+  }
+}
+
+{
+  const S = bed({ renalFactor: 0.2, cr: 310, k: 4.5, hco3: 19, kProd: 0.16 });
+  act(S, 'crrt');
+  act(S, 'crrt', 'trial');
+  const sampledAt = S.t;
+  E.orderTest(S, 'bmp');
+  run(S, 35 * 60);
+  E.pollTests(S);
+  const report = E.reports(S, 'bmp').at(-1);
+  assert.equal(report.sampledAt, sampledAt);
+  assert.equal(report.reportedAt, sampledAt + 35 * 60);
+  assert.equal(report.values.k, 4.5);
+  assert.ok(S.k > report.values.k + 0.3);
+  assert.match(E.advancedDeviceReadings(S, 'crrt'), /净化暂停.*血钾 4.5 mmol\/L（采样 00:00:00）/);
+  E.orderTest(S, 'poct_abg');
+  run(S, 2 * 60);
+  E.pollTests(S);
+  const potassium = E.knownResults(S).k;
+  assert.equal(potassium.sampledAt, report.reportedAt);
+  assert.ok(potassium.value > report.values.k);
+  assert.match(E.advancedDeviceReadings(S, 'crrt'), /血钾 \d\.\d mmol\/L（采样 00:35:00）/);
+}
+
+{
   const observed = bed({ seizure: 0.12 }, ['seizure']);
   const unobserved = bed({ seizure: 0.12 }, ['seizure']);
   assert.equal(E.convulsionSigns(observed), null, '查体无可见抽动');

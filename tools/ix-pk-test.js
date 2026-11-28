@@ -43,6 +43,40 @@ const ok = (name, cond, detail) => { if (cond) { pass++; } else { fail++; consol
   ok('清除后不再继续累积', Math.abs(kEnd - kMid) < 0.60, `Δ=${(kEnd-kMid).toFixed(2)}`);
 }
 
+/* 相互作用随浓度减弱，清除后再次合用会开始新一段累计暴露。 */
+{
+  const spec = { id: 'interaction-reexposure', init: { ...CASEGEN.BASE } };
+  const both = E.create(spec), captoprilOnly = E.create(spec);
+  const doseBoth = () => {
+    E.give(both, 'captopril', 25);
+    E.give(both, 'ibuprofen', 400);
+  };
+  const advance = minutes => {
+    for (let i = 0; i < minutes; i++) {
+      E.tick(both, 60);
+      E.tick(captoprilOnly, 60);
+    }
+  };
+  doseBoth();
+  E.give(captoprilOnly, 'captopril', 25);
+  const [{ onset, dur }] = both.pk;
+  advance(100);
+  const firstKidneyEffect = 1 - both.renalFactor;
+  const fullToneEffect = both.mod.svr - captoprilOnly.mod.svr;
+  const tailMinute = Math.ceil(onset * 0.35 + dur + 2 * dur / 4.5);
+  advance(tailMinute - 100);
+  const tailToneEffect = both.mod.svr - captoprilOnly.mod.svr;
+  advance(Math.ceil(dur * 1.8) + 1 - tailMinute);
+  const afterClearance = both.renalFactor;
+  ok('合用体征效应跟随当前浓度，清除后归零', fullToneEffect > 0.3 &&
+    tailToneEffect > 0.05 && tailToneEffect < 0.1 && both.mod.svr === captoprilOnly.mod.svr);
+  doseBoth();
+  advance(100);
+  ok('持续共存时累积封顶，清除后重新合用可再次损伤肾清除',
+    firstKidneyEffect > 0.08 && afterClearance > 1 - firstKidneyEffect - 0.02 &&
+    Math.abs(1 - both.renalFactor / afterClearance - firstKidneyEffect) < 0.01);
+}
+
 /* ④ 日志只在两药同时存在时记录 */
 {
   const S = E.create('hyperkalemia');

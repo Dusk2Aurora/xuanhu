@@ -3626,7 +3626,7 @@ function openFeedback() {
 }
 
 /* ---------------- 版本 / 更新检查 ---------------- */
-const APP_VERSION = '1.57.5';
+const APP_VERSION = '1.57.6';
 const releaseRoot = document.querySelector('meta[name="xuanhu-release-root"]')?.content;
 const releaseBase = releaseRoot ? new URL(releaseRoot, location.href).href.replace(/\/$/, '') : '';
 const platformName = location.protocol === 'file:' ? '离线 HTML' :
@@ -4676,9 +4676,12 @@ function renderAll() {
 
 /* 更新公告：每次发版在这里加一条（新的放最前面） */
 const RELEASES = [
-  { v: '1.57.5', notes: [
+  { v: '1.57.6', notes: [
     '处置扣分可从操作日志和结算核对。透析显示运行进度，开颅依据已回报的影像与查体。',
-    '呼吸机可逐床调节频率、流量和氧浓度。修正肺水消退后残留的死腔，以及颅压、室颤和部分药物的联动。',
+    '呼吸机可逐床调节频率、流量和氧浓度。肺水消退后，无效通气的比例会随病情回落。',
+    '修正颅压对意识的重复影响、诱因解除后的室颤风险和部分药物的剂量反应。钙异常可在心电图和查体中观察。',
+  ] },
+  { v: '1.57.5', notes: [
     '术语表 494 条：新增「结果解读」13 条，教你怎么看血气、血常规、电解质、肝功、肌钙蛋白、心电、胸片、超声与 CT',
     '新增玩法术语：血管通路、ECMO、CRRT、持续脑电、肺动脉取栓、输液泵药、探索床、亚低温、设备试撤、现实规则计分',
     '教程新增「怎么看检查结果」一页，共 15 页',

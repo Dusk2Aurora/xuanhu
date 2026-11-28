@@ -19,6 +19,16 @@ const reload = (scenario, saved) => {
   return S;
 };
 
+// Direct engine callers and the bedside order path must both reject invalid doses.
+for (const id of ['naloxone', 'calcium', 'esmolol', 'insulin']) {
+  const S = bed();
+  const initial = JSON.stringify(S);
+  for (const dose of [0, -1, NaN, Infinity]) {
+    assert.equal(E.give(S, id, dose), null);
+    assert.equal(JSON.stringify(S), initial, id + ' invalid dose mutated patient');
+  }
+}
+
 for (const sub of SUB.ALL) {
   for (const route of sub.routes || []) {
     if (!/静滴|静脉滴注|输液|挂液|输血|输注|泵入/.test(route.r)) continue;

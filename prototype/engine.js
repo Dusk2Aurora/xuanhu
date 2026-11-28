@@ -2074,6 +2074,7 @@ function logInfusionStart(S, order) {
 }
 
 function give(S, drugId, dose, route, bill = true) {
+  if (dose != null && !(Number.isFinite(dose) && dose > 0)) return null;
   const SUB = root.SUBSTANCES;
   if (SUB) {
     const s = SUB.byId(drugId);

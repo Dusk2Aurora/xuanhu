@@ -10,6 +10,8 @@ const EMERGENCY_CASES = root.EMERGENCY_CASES || (typeof module !== 'undefined' &
 
 /* 体内是否还有某物质的药效（与 generator.js 的 active() 保持一致） */
 const active = (S, id) => !!(S && S.pk && S.pk.some(p => p.id === id));
+const includesDeliveredDose = (S, orders, id) => !!orders?.some(order => order.id === id &&
+  (!order.infusionMinutes || root.LIFE?.infusionProgress(S, order)?.deliveredDose > 0));
 const insulinActivity = S => root.LIFE?.insulinActivity?.(S) ?? S.eff.insulin;
 const SEIZURE_RESCUE_DOSE = { diazepam: 10, lorazepam: 4, midazolam: 10 };
 const triedSeizureRescue = S => (S.given || []).some(({ id, d, route }) =>
@@ -335,7 +337,7 @@ const RULES = {
       c:'当前心率或胆碱能负荷提示仍需评估毒蕈碱样症状',
       d:'阿托品对抗毒蕈碱样症状，可重复',
       s:'阿托品 1 mg 静推，每 5–10 分钟重复至分泌物干燥' },
-    { id:'pra', when: S => !active(S,'pralidoxime'),
+    { id:'pra', when: S => !includesDeliveredDose(S, S.pk, 'pralidoxime'),
       c:'胆碱酯酶被抑制，烟碱样和中枢症状不会自己好',
       d:'要复活胆碱酯酶',
       s:'碘解磷定 1 g 静滴' },
@@ -345,7 +347,7 @@ const RULES = {
       s:'高流量吸氧，必要时吸痰' },
   ],
   apap: [
-    { id:'nac', when: S => !active(S,'nacetylcysteine') && S.t < 8 * 3600,
+    { id:'nac', when: S => !includesDeliveredDose(S, S.pk, 'nacetylcysteine') && S.t < 8 * 3600,
       c:'对乙酰氨基酚已吸收，肝毒性正在启动',
       d:'解毒剂越早越好，8 小时后疗效明显下降',
       s:'N-乙酰半胱氨酸 150 mg/kg 静滴' },
@@ -445,33 +447,33 @@ const RULES = {
   warfarinBleed: [
     { id:'history', when: S => !S.tests.coag?.done, c:'出血伴抗凝用药史', d:'核实抗凝药种类，查凝血功能', s:'查用药记录和凝血报告，复评血压与血红蛋白' },
     { id:'support', when: S => S.standardRescueCare && S.admissionMedicationHeldAt == null, c:'抗凝用药期间出现少量消化道出血', d:'暂停院前用药，评估 INR 并处理出血源', s:'复查 INR、评估维生素 K₁，时机合适时内镜止血' },
-    { id:'reversal', when: S => !S.standardRescueCare && !S.given?.some(x => x.id === 'pcc4'), c:'华法林相关重大出血', d:'及时逆转抗凝并处理出血源', s:'评估四因子凝血酶原复合物及维生素 K₁，稳定后内镜止血' },
+    { id:'reversal', when: S => !S.standardRescueCare && !includesDeliveredDose(S, S.given, 'pcc4'), c:'华法林相关重大出血', d:'及时逆转抗凝并处理出血源', s:'评估四因子凝血酶原复合物及维生素 K₁，稳定后内镜止血' },
   ],
   dabigatranBleed: [
     { id:'history', when: S => !S.tests.coag?.done, c:'出血伴抗凝用药史', d:'核实最后一次服药和肾功能', s:'查用药记录和凝血报告' },
     { id:'support', when: S => S.standardRescueCare && S.admissionMedicationHeldAt == null, c:'抗凝用药期间出现少量消化道出血', d:'暂停院前用药并处理出血源', s:'复查凝血酶时间和肾功能，观察抗凝效应回落' },
-    { id:'reversal', when: S => (!S.standardRescueCare || S.map < 65) && !S.given?.some(x => x.id === 'idarucizumab'), c:'达比加群相关重大出血', d:'评估特异性逆转', s:'依达赛珠单抗逆转达比加群，同时评估内镜止血' },
+    { id:'reversal', when: S => (!S.standardRescueCare || S.map < 65) && !includesDeliveredDose(S, S.given, 'idarucizumab'), c:'达比加群相关重大出血', d:'评估特异性逆转', s:'依达赛珠单抗逆转达比加群，同时评估内镜止血' },
   ],
   digoxinTox: [
     { id:'toxin', when: S => !S.tests.digoxin_level?.done, c:'缓慢心律伴用药线索', d:'确认暴露与严重程度', s:'复核心电图、血钾、肾功及地高辛浓度' },
     { id:'support', when: S => S.standardRescueCare && S.admissionMedicationHeldAt == null, c:'有地高辛用药与轻型毒性线索', d:'暂停院前地高辛并观察', s:'复查血药浓度、血钾、肾功能和心电图' },
-    { id:'fab', when: S => (!S.standardRescueCare || S.hr < 45 || S.k > 6) && !S.given?.some(x => x.id === 'digoxinFab'), c:'严重地高辛毒性可累及心律', d:'结合病史评估特异性抗体', s:'评估地高辛免疫 Fab，治疗后随访心律及血钾' },
+    { id:'fab', when: S => (!S.standardRescueCare || S.hr < 45 || S.k > 6) && !includesDeliveredDose(S, S.given, 'digoxinFab'), c:'严重地高辛毒性可累及心律', d:'结合病史评估特异性抗体', s:'评估地高辛免疫 Fab，治疗后随访心律及血钾' },
   ],
   mtxDelayed: [
     { id:'level', when: S => !S.tests.methotrexate_level?.done, c:'近期有大剂量甲氨蝶呤治疗史', d:'对照给药时间、血药浓度和肌酐', s:'查看交接记录，复查甲氨蝶呤浓度和肾功' },
-    { id:'support', when: S => S.standardRescueCare && !S.given?.some(x => x.id === 'leucovorin'), c:'血药浓度轻度延迟回落', d:'按浓度和肾功继续支持', s:'继续补液、评估碱化并给予亚叶酸钙，复查浓度和肾功' },
-    { id:'rescue', when: S => (!S.standardRescueCare || S.mtxLevel >= 5) && !S.given?.some(x => x.id === 'glucarpidase'), c:'甲氨蝶呤清除延迟', d:'结合暴露评估酶解救援与后续支持', s:'评估 Glucarpidase，并核对亚叶酸钙救援时序' },
+    { id:'support', when: S => S.standardRescueCare && !includesDeliveredDose(S, S.given, 'leucovorin'), c:'血药浓度轻度延迟回落', d:'按浓度和肾功继续支持', s:'继续补液、评估碱化并给予亚叶酸钙，复查浓度和肾功' },
+    { id:'rescue', when: S => (!S.standardRescueCare || S.mtxLevel >= 5) && !includesDeliveredDose(S, S.given, 'glucarpidase'), c:'甲氨蝶呤清除延迟', d:'结合暴露评估酶解救援与后续支持', s:'评估 Glucarpidase，并核对亚叶酸钙救援时序' },
   ],
   fibrinogenBleed: [
     { id:'coag', when: S => !S.tests.coag?.done, c:'持续失血伴凝血异常', d:'判断是否消耗了纤维蛋白原', s:'复查凝血报告和血红蛋白' },
-    { id:'replace', when: S => !S.given?.some(x => ['fibrinogenConcentrate','cryoprecipitate'].includes(x.id)), c:'活动性出血伴纤维蛋白原不足', d:'补充缺失成分并处理出血源', s:'评估纤维蛋白原浓缩物或冷沉淀，稳定后内镜止血' },
+    { id:'replace', when: S => !['fibrinogenConcentrate','cryoprecipitate'].some(id => includesDeliveredDose(S, S.given, id)), c:'活动性出血伴纤维蛋白原不足', d:'补充缺失成分并处理出血源', s:'评估纤维蛋白原浓缩物或冷沉淀，稳定后内镜止血' },
   ],
   pe: [
     { id:'o2', when: S => S.spo2 < 92,
       c:'大面积肺栓塞的氧合很差',
       d:'先给氧，必要时无创通气',
       s:'高流量吸氧 15 L/min' },
-    { id:'anti', when: S => !active(S,'heparin') && !active(S,'alteplase') &&
+    { id:'anti', when: S => !active(S,'heparin') && !includesDeliveredDose(S, S.pk, 'alteplase') &&
         !(root.LIFE.pumpRate(S, 'heparin') > 0 || root.LIFE.heparinActivity(S) > 0.1),
       c:'血栓还在，右心负荷持续加重',
       d:'抗凝是基础，血流动力学不稳要溶栓',

@@ -23,8 +23,27 @@ for (const sub of SUB.ALL) {
   for (const route of sub.routes || []) {
     if (!/静滴|静脉滴注|输液|挂液|输血|输注|泵入/.test(route.r)) continue;
     const minutes = SUB.infusionMinutesFor(route, route.d);
+    const label = `${sub.n}（${route.r}）`;
     assert.ok(Boolean(minutes > 0) !== Boolean(route.pumpHalfLife > 0),
-      `${sub.n}（${route.r}）应能按定时输注或持续泵管理`);
+      label + ' 应能按定时输注或持续泵管理');
+    const S = bed(70, { ...baseline, prehospitalAccess: { type: 'piv' } });
+    assert.equal(E.orderMedication(S, sub.id, route.d, route.r).status, 'given', label);
+    if (minutes) {
+      const order = S.pk.find(record => record.id === sub.id);
+      assert.equal(E.infusionProgress(S, order)?.deliveredDose, 0, label);
+      E.tick(S, 1);
+      const partial = E.infusionProgress(S, order);
+      assert.ok(partial.running && partial.deliveredDose > 0 && partial.deliveredDose < route.d, label);
+      assert.ok(E.stopInfusion(S, order), label);
+      E.tick(S, 1);
+      assert.equal(E.infusionProgress(S, order).deliveredDose, partial.deliveredDose, label);
+    } else {
+      assert.equal(E.pumpRate(S, sub.id), route.d, label);
+      E.tick(S, 1);
+      assert.ok(E.pumpEffect(S, sub.id) > 0, label);
+      assert.ok(E.stopPump(S, sub.id), label);
+      assert.equal(E.pumpRate(S, sub.id), 0, label);
+    }
   }
 }
 

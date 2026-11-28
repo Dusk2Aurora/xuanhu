@@ -1911,7 +1911,7 @@ function pausePump(S, drugId) {
 
 function finishPumps(S) {
   for (const [id, pump] of Object.entries(S.pumps || {})) {
-    if (pump.delivery && pump.rate > 0) stopPump(S, id);
+    if (pump.rate > 0 || pump.pausedRate > 0) stopPump(S, id);
   }
   if (!S.running) closeVascularAccess(S);
 }
@@ -2200,9 +2200,14 @@ function closeVascularAccess(S) {
   if (S.vascularAccess) S.vascularAccess.attempt = null;
 }
 
+function drugInducedDiuresis(S) {
+  const dopamine = S.pumps?.dopamine && root.SUBSTANCES?.byId('dopamine');
+  return (S.diuresis || 0) + (dopamine ? dopamine.eff.uo * pumpEffect(S, 'dopamine') : 0);
+}
+
 function urineOutput(S, renalPerf, includeDiuresis = true) {
   const volFactor = clamp((S.vol - 2.3) / 2.1, 0.02, 1.6);
-  const extraDiuresis = includeDiuresis ? S.diuresis + clamp((S.glu - 12) * 0.28, 0, 4.5) : 0;
+  const extraDiuresis = includeDiuresis ? drugInducedDiuresis(S) + clamp((S.glu - 12) * 0.28, 0, 4.5) : 0;
   const renalCapacity = S.tags.includes('aki') ? clamp(S.renalFactor, 0.05, 1) : 1;
   const outflowLimit = S.tags.includes('bph') && !S.urineDrained ? 0.08 : 10;
   const produced = (0.95 * renalPerf * volFactor + extraDiuresis) * renalCapacity;
@@ -2595,7 +2600,7 @@ function advancePhysiology(S, dtSec) {
      —— 替代原来"肺水肿只能靠模块直接给 SpO₂ 设上限"的写法 */
   S.pcwp = computePcwp(S);
   const filt = S.pcwp - 13 + Math.max(0, (S.interstitium - 11) * 3);
-  const diur = (S.diuresis || 0) + (S.eff.furo || 0);
+  const diur = drugInducedDiuresis(S) + (S.eff.furo || 0);
   S.lungWater = clamp((S.lungWater || 0.12) + (0.0018 * filt - 0.012 * (1 + diur)) * dtMin, 0.05, 1.5);
 
   /* ---------- 3. 血压（先用上一拍的状态，供灌注判定） ---------- */
@@ -3342,7 +3347,7 @@ function assessAkiDischarge(S, add, observationDeadlines) {
   const canObserveMild = canObserveMildOliguria(S, spontaneous);
   if (spontaneous == null) add('需复核尿量与体重，评估自身尿量', false);
   else if (spontaneous < AKI_URINE_TARGET && !canObserveMild) {
-    const stimulated = (S.diuresis > 0 || S.glu > 12) && measured - spontaneous * weight >= 1;
+    const stimulated = (drugInducedDiuresis(S) > 0 || S.glu > 12) && measured - spontaneous * weight >= 1;
     const assistance = stimulated ? '，读数受利尿或渗透性利尿影响' : '';
     const severe = spontaneous < AKI_SEVERE_OLIGURIA;
     const reason = severe
@@ -3416,6 +3421,7 @@ function dischargeCheck(S) {
   }
   const circulationObservation = assessCirculationObservation(S, b);
   if (pumpRate(S, 'nicardipine') > 0) add('仍在持续静脉泵入尼卡地平，需评估停泵后的血压', true);
+  if (pumpRate(S, 'nitroprusside') > 0) add('仍在持续静脉泵入硝普钠，需评估停泵后的血压', true);
   if (pumpRate(S, 'esmolol') > 0) add('仍在持续静脉泵入艾司洛尔，需评估停泵后的心率和血压', true);
   if (circulationObservation?.reason) {
     const { phase, reason } = circulationObservation;

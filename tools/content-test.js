@@ -226,8 +226,10 @@ const TREAT = {
   },
   htnEmergency(S) {
     if (!S._p) { S._p = 1; E.give(S, 'nitroprusside', 0.5); E.give(S, 'labetalol', 10); }
-    if ((S._sys || 0) > 160 && !has(S, 'nitroprusside')) E.give(S, 'nitroprusside', 0.5);
-    if ((S._sys || 0) > 160 && !has(S, 'labetalol')) E.give(S, 'labetalol', 10);
+    const systolic = bp(S).sys;
+    if (systolic > 160 && !E.pumpRate(S, 'nitroprusside')) E.give(S, 'nitroprusside', 0.5);
+    if (systolic <= 150 && E.pumpRate(S, 'nitroprusside')) E.stopPump(S, 'nitroprusside');
+    if (systolic > 160 && !has(S, 'labetalol')) E.give(S, 'labetalol', 10);
   },
   hyponatremia(S) {
     /* 病因处理优先：停噻嗪 + 限水，否则补多少钠都会被稀释回去 */

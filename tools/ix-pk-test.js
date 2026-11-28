@@ -224,6 +224,26 @@ const ok = (name, cond, detail) => { if (cond) { pass++; } else { fail++; consol
     Math.abs(S.tox.apap - 540) < 1e-9 && E.infusedDrugActivity(S, order.id) < 0.2);
 }
 
+for (const [condition, drug, hint, standardRescueCare = false] of [
+  ['apap', 'nacetylcysteine', 'nac'], ['organophosphate', 'pralidoxime', 'pra'], ['warfarinBleed', 'pcc4', 'reversal'],
+  ['dabigatranBleed', 'idarucizumab', 'reversal'], ['digoxinTox', 'digoxinFab', 'fab'],
+  ['mtxDelayed', 'glucarpidase', 'rescue'], ['mtxDelayed', 'leucovorin', 'support', true],
+  ['fibrinogenBleed', 'cryoprecipitate', 'replace'], ['fibrinogenBleed', 'fibrinogenConcentrate', 'replace'],
+  ['pe', 'alteplase', 'anti'],
+]) {
+  const S = E.create(CASEGEN.generate(2, 101, [condition]));
+  S.standardRescueCare = standardRescueCare;
+  const hasHint = () => MENTOR.hints(S).some(entry => entry.id === hint);
+  const before = hasHint();
+  E.give(S, drug);
+  E.stopInfusion(S, S.pk.at(-1));
+  E.tick(S, 1);
+  const atZeroDose = hasHint();
+  E.give(S, drug);
+  E.tick(S, 1);
+  ok(`${drug} 在取消零剂量医嘱后保留导师提示，实际输注后撤下提示`, before && atZeroDose && !hasHint());
+}
+
 /* 持续泵入沿模拟时钟生效，调速和停泵沿用当时的药物浓度。 */
 for (const [id, rate, unit, halfLife] of [
   ['dobutamine', 5, 'μg/kg/min', 2], ['isoproterenol', 1, 'μg/min', 3],
@@ -274,6 +294,56 @@ for (const [id, rate, unit, halfLife] of [
   const residual = E.pumpEffect(restored, id);
   ok(`${sub.n} 重新开泵时延续停泵后的残余浓度`,
     E.give(restored, id) === rate && E.pumpEffect(restored, id) === residual);
+}
+
+{
+  const spec = { id: 'dopamine-diuresis-test', init: { ...CASEGEN.BASE } };
+  const S = E.create(spec);
+  const control = E.create(spec);
+  E.give(S, 'dopamine');
+  ok('多巴胺持续泵纳入循环支持，并在开泵时没有瞬时利尿',
+    E.activeCirculationSupport(S).running.includes('dopamine') && S.uo === control.uo);
+  for (let minute = 0; minute < 5; minute++) {
+    E.tick(S, 60);
+    E.tick(control, 60);
+  }
+  const infusedDifference = S.uo - control.uo;
+  E.stopPump(S, 'dopamine');
+  for (let minute = 0; minute < 12; minute++) {
+    E.tick(S, 60);
+    E.tick(control, 60);
+  }
+  ok('多巴胺随泵入增加尿量，停泵后药效随残余浓度减弱',
+    infusedDifference > 0.3 && S.uo - control.uo < infusedDifference / 2);
+}
+
+{
+  const S = E.create({ id: 'finish-pumps-test', init: { ...CASEGEN.BASE } });
+  for (const id of ['dopamine', 'nitroprusside', 'norepi']) E.give(S, id);
+  E.give(S, 'heparin', 1200, '持续静脉泵入');
+  E.tick(S, 5);
+  E.stopPump(S, 'norepi');
+  E.pausePump(S, 'heparin');
+  const { cost, drugCost } = S;
+  const heparin = E.pumpDelivery(S, 'heparin');
+  E.endCase(S, 'death', '结案测试');
+  E.finishPumps(S);
+  const stops = S.given.filter(order => order.pumpAction === 'stop').map(order => order.id);
+  ok('结案关闭运行和暂停的给药泵，已停的泵只记一次',
+    !S.running && stops.length === 4 && new Set(stops).size === 4 &&
+    Object.values(S.pumps).every(pump => !pump.rate && !pump.pausedRate));
+  ok('结案保留已输时段，清理泵路不重复计费',
+    S.cost === cost && S.drugCost === drugCost && E.pumpDelivery(S, 'heparin') === heparin && heparin.seconds === 5);
+}
+
+{
+  const S = E.create({ id: 'nitroprusside-discharge-test', init: { ...CASEGEN.BASE } });
+  E.give(S, 'nitroprusside');
+  const running = E.dischargeCheck(S);
+  E.stopPump(S, 'nitroprusside');
+  const stopped = E.dischargeCheck(S);
+  ok('硝普钠输注时需评估停泵后血压，不触发升压药留观', !running.ok &&
+    running.majorReasons.some(reason => reason.includes('硝普钠')) && !running.circulationObservation && stopped.ok);
 }
 
 /* 血管加压素和其他循环支持泵共用撤除支持后的观察窗口。 */

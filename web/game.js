@@ -29,7 +29,7 @@ const MAX_OBSERVATION_SECONDS = 6 * 3600;
 let lastCaseReview = false;
 let paused = false;
 let bigFont = false;
-/* 白天 / 夜间：夜间难度显著提升（病情推进更快、提示更少、界面转暗） */
+/* 白天 / 夜间：仅切换界面配色 */
 let nightMode = false;
 const REALISM_RULES = {
   insurance: { name: REALISM_BONUS.names.insurance, note: '普通病例按参保类型结算并追踪家庭自付。无病探索可自由使用设备和药品。' },
@@ -319,7 +319,7 @@ function updateOrganValues() {
   const rows = ed ? edOrganRows(selected, s, S) : ORGAN_META[selected].f(s, S);
   rows.forEach(([k, v, u], i) => {
     const el = document.querySelector('[data-oi="' + i + '"]');
-    if (el) el.innerHTML = `${escapeHtml(v)}${u ? `<span style="font-size:9px;color:#9a9a9a"> ${escapeHtml(u)}</span>` : ''}`;
+    if (el) el.innerHTML = `${escapeHtml(v)}${u ? `<span style="font-size:9px;color:var(--ink-3)"> ${escapeHtml(u)}</span>` : ''}`;
   });
 }
 /* ---------------- 体征 / 状态 ---------------- */
@@ -1176,7 +1176,7 @@ function openGiveConfig(it, patient, back, { backLabel = '返回药物列表', r
         <button type="button" id="drugBack" class="pill">${backLabel}</button>
         ${routes.length > 1 ? `<div class="sec">给药途径</div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;padding:0 0 14px">
-            ${routes.map((x, i) => `<button type="button" class="pill" data-ri="${i}" aria-pressed="${i === ri}" style="cursor:pointer;${i === ri ? 'background:#f7e6e6;color:#a33;font-weight:700' : ''}">${x.r}</button>`).join('')}
+            ${routes.map((x, i) => `<button type="button" class="pill" data-ri="${i}" aria-pressed="${i === ri}" style="cursor:pointer;${i === ri ? 'background:var(--accent-soft);color:var(--accent);font-weight:700' : ''}">${x.r}</button>`).join('')}
           </div>` : ''}
         ${pump ? `<div class="sec">${rt.r} · ${currentRate ? `当前泵速 ${currentRate} ${unit}` : pausedRate ? `已暂停 · 暂停前 ${pausedRate} ${unit}` : '未泵入'}</div>` : ''}
         <div class="sec">${pump ? (currentRate ? '调整泵速' : pausedRate ? '恢复泵速' : '起始泵速') : infusion ? '输注总量' : '剂量'}</div>
@@ -1184,14 +1184,14 @@ function openGiveConfig(it, patient, back, { backLabel = '返回药物列表', r
           <button id="dMinus" class="pill" style="width:46px;height:46px;font-size:22px;cursor:pointer">−</button>
           <div style="flex:1;text-align:center">
             <span style="font-family:var(--mono);font-size:28px;font-weight:600">${pump ? dose : fmt(dose)}</span>
-            <span style="font-size:13px;color:#9a9a9a"> ${unit}</span>
+            <span style="font-size:13px;color:var(--ink-3)"> ${unit}</span>
           </div>
           <button id="dPlus" class="pill" ${dose >= hi ? 'disabled' : ''} style="width:46px;height:46px;font-size:22px;cursor:pointer">+</button>
         </div>
         <div style="display:flex;gap:6px;justify-content:center;padding-bottom:10px">
-          ${[0.5, 1, 2, 5].filter(f => !rt.maxDose || rt.d * f <= hi).map(f => `<button type="button" class="pill" data-mul="${f}" style="cursor:pointer;${Math.abs(dose - rt.d * f) < 1e-6 ? 'font-weight:700;color:#a33' : ''}">${f === 1 ? '常规' : f + '×'}</button>`).join('')}
+          ${[0.5, 1, 2, 5].filter(f => !rt.maxDose || rt.d * f <= hi).map(f => `<button type="button" class="pill" data-mul="${f}" style="cursor:pointer;${Math.abs(dose - rt.d * f) < 1e-6 ? 'font-weight:700;color:var(--accent)' : ''}">${f === 1 ? '常规' : f + '×'}</button>`).join('')}
         </div>
-        ${warn ? `<div class="note" style="margin-bottom:10px;color:#a33;background:#fdf3f2">${warn}</div>` : ''}
+        ${warn ? `<div class="note" style="margin-bottom:10px;color:var(--accent);background:var(--danger-bg)">${warn}</div>` : ''}
         <div class="note" style="margin-bottom:12px;font-size:11.5px">
           ${quote}${feeLabel} ${money(price)}${selfPay == null ? '' : ' · 预计新增自付 ' + money(selfPay)}<br>
           ${payment ? '游戏支付 · ' + payment + '<br>' : ''}
@@ -1204,7 +1204,7 @@ function openGiveConfig(it, patient, back, { backLabel = '返回药物列表', r
           ${it.note ? '<br>' + escapeHtml(it.note) : ''}
           ${it.clinicalNote ? '<br>临床提示（当前模拟未覆盖） · ' + escapeHtml(it.clinicalNote) : ''}
         </div>
-        <button id="dGo" class="pill" ${sameRate ? 'disabled' : ''} style="width:100%;padding:14px;font-size:16px;font-weight:700;cursor:${sameRate ? 'default' : 'pointer'};background:${over ? '#f7e6e6' : '#fff'}">
+        <button id="dGo" class="pill" ${sameRate ? 'disabled' : ''} style="width:100%;padding:14px;font-size:16px;font-weight:700;cursor:${sameRate ? 'default' : 'pointer'};background:${over ? 'var(--danger-bg)' : 'var(--card)'}">
           ${order}
         </button>
         ${currentRate && rt.pumpPause ? '<button type="button" id="dPause" class="pill" style="width:100%;margin-top:8px;padding:14px;font-size:16px;font-weight:700;cursor:pointer">暂停泵入</button>' : ''}
@@ -1925,7 +1925,7 @@ function ensureMentorDOM() {
   const pill = document.createElement('span');
   pill.id = 'levelPill';
   pill.className = 'pill';
-  pill.style.cssText = 'cursor:pointer;font-size:11.5px;color:#8a7a7a';
+  pill.style.cssText = 'cursor:pointer;font-size:11.5px;color:var(--ink-3)';
   pill.textContent = '上级医生：实习';
   pill.addEventListener('click', () => openSheet('难度', '影响提示详略与计分', levelRows()));
   document.querySelector('.top').insertBefore(pill, document.querySelector('.top .sp'));
@@ -2352,7 +2352,7 @@ function loop(ts) {
     }));
     let observationEnd = observationStopReason();
     const adv = observationEnd ? 0 : !observation
-      ? dt * speed * (nightMode ? 1.3 : 1)
+      ? dt * speed
       : Math.min(dt * 1200, 20);
     acc += adv;
     let accessFinished = false;
@@ -2982,7 +2982,7 @@ function openStats() {
   html += '<div class="sec">总体</div>';
   html += '<div style="padding:0 12px 10px">';
   html += '<table style="width:100%;border-collapse:collapse;font-size:13px">';
-  const row = (k, v) => '<tr><td style="padding:6px 4px;color:#8a8078">' + k + '</td>' +
+  const row = (k, v) => '<tr><td style="padding:6px 4px;color:var(--ink-3)">' + k + '</td>' +
     '<td style="padding:6px 4px;text-align:right;font-weight:600">' + v + '</td></tr>';
   html += row('总局数', total);
   html += row('出院', cured);
@@ -2997,12 +2997,12 @@ function openStats() {
 
   html += '<div class="sec">最常遇到的诊断</div><div style="padding:0 12px 10px">';
   if (topDx.length) html += topDx.map(([n, c]) => row(n, c + ' 次')).join('');
-  else html += '<div style="color:#9a9a9a;font-size:13px;padding:6px">还没有记录</div>';
+  else html += '<div style="color:var(--ink-3);font-size:13px;padding:6px">还没有记录</div>';
   html += '</div>';
 
   html += '<div class="sec">最常犯的错</div><div style="padding:0 12px 14px">';
   if (topMis.length) html += topMis.map(([n, c]) => row(n, c + ' 次')).join('');
-  else html += '<div style="color:#9a9a9a;font-size:13px;padding:6px">暂时没有——保持住</div>';
+  else html += '<div style="color:var(--ink-3);font-size:13px;padding:6px">暂时没有——保持住</div>';
   html += '</div>';
 
   /* 近 10 局走势 */
@@ -3014,10 +3014,10 @@ function openStats() {
       const w = Math.max(4, Math.round(sc * 1.6));
       const col = r.结局 === '出院' ? '#7fb069' : '#c0392b';
       return '<div style="display:flex;align-items:center;gap:8px;margin:4px 0">' +
-        '<span style="flex:0 0 96px;font-size:11px;color:#8a8078;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
+        '<span style="flex:0 0 96px;font-size:11px;color:var(--ink-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
         String(r.病例名 || '') + '</span>' +
         '<span style="display:inline-block;height:10px;border-radius:5px;background:' + col + ';width:' + w + 'px"></span>' +
-        '<span style="font-size:11px;color:#6b625d">' + sc + '</span></div>';
+        '<span style="font-size:11px;color:var(--ink-2)">' + sc + '</span></div>';
     }).join('');
     html += '</div>';
   }
@@ -3049,8 +3049,8 @@ function mountBedBar() {
     'bottom:calc(env(safe-area-inset-bottom, 0px) + 64px)',
     'display:none', 'align-items:center', 'gap:6px',
     'padding:5px 10px', 'border-radius:999px',
-    'background:rgba(255,255,255,.92)', 'box-shadow:0 2px 10px rgba(0,0,0,.10)',
-    'font-size:12px', 'color:#6b625d', 'z-index:21', 'cursor:pointer',
+    'background:var(--card)', 'box-shadow:0 2px 10px rgba(0,0,0,.10)',
+    'font-size:12px', 'color:var(--ink-2)', 'z-index:21', 'cursor:pointer',
     'backdrop-filter:blur(8px)', '-webkit-backdrop-filter:blur(8px)',
     'transition:opacity .45s ease',
   ].join(';');
@@ -3384,10 +3384,10 @@ function openChart(gid) {
     '<div class="sec">选择指标</div>' +
     '<div style="display:flex;gap:6px;flex-wrap:wrap;padding:0 10px 12px">' +
     groups.map(x => '<span class="pill" data-g="' + x.id + '" style="cursor:pointer;' +
-      (x.id === cur.id ? 'background:#f7e6e6;color:#a33;font-weight:700' : '') + '">' + x.name + '</span>').join('') +
+      (x.id === cur.id ? 'background:var(--accent-soft);color:var(--accent);font-weight:700' : '') + '">' + x.name + '</span>').join('') +
     '</div>' +
     '<canvas id="chartCv" style="width:100%;height:230px;display:block"></canvas>' +
-    '<div class="note" style="margin:10px 12px;font-size:11.5px;color:#8a8078">' +
+    '<div class="note" style="margin:10px 12px;font-size:11.5px;color:var(--ink-3)">' +
       (ed ? '图表使用床旁监护记录。血氧趋势可点床旁血氧，化验前后对照请看「报告」。'
         : '采样每 30 游戏秒一次，最多保留最近 720 个点。') +
     '</div>';
@@ -3469,12 +3469,12 @@ function showSeverePopup() {
   el.style.cssText = 'position:fixed;inset:0;z-index:300;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.42)';
   el.innerHTML =
     '<div style="width:min(420px,88vw);background:var(--card);color:var(--ink);border-radius:16px;padding:20px 20px 16px;box-shadow:0 20px 60px rgba(0,0,0,.35);border:1px solid rgba(211,58,58,.35)">' +
-      '<div style="font-size:11px;letter-spacing:2px;color:#c0392b;margin-bottom:6px">⚠ 病情加重</div>' +
+      '<div style="font-size:11px;letter-spacing:2px;color:var(--red);margin-bottom:6px">⚠ 病情加重</div>' +
       '<div style="font-size:18px;font-weight:700;margin-bottom:8px">' + (ed ? '请立即复评' : '已转入重症') + '</div>' +
       '<div style="font-size:13px;line-height:1.7;color:var(--ink-2)">' + (reasons.length ? reasons.join(' · ') : '生命体征恶化') + '</div>' +
       '<div style="font-size:12.5px;line-height:1.7;color:var(--ink-3);margin-top:8px">' +
         (ed ? '结合床旁监护复评，按需安排检查。' : '从现在起血液指标改为实时监护；床位费按重症计。') + '</div>' +
-      '<button id="sevOk" style="margin-top:14px;width:100%;padding:11px;border-radius:11px;border:1px solid rgba(211,58,58,.4);background:rgba(211,58,58,.10);color:#c0392b;font:inherit;font-weight:700;cursor:pointer">知道了</button>' +
+      '<button id="sevOk" style="margin-top:14px;width:100%;padding:11px;border-radius:11px;border:1px solid rgba(211,58,58,.4);background:rgba(211,58,58,.10);color:var(--red);font:inherit;font-weight:700;cursor:pointer">知道了</button>' +
     '</div>';
   document.body.appendChild(el);
   severePopup = el;
@@ -3504,7 +3504,7 @@ function openAbout() {
       '安卓版只申请网络权限（检查更新 / 在线版 / 反馈）。不申请存储、相机、麦克风、定位。' +
     '</div>' +
     '<div class="sec">医学免责</div>' +
-    '<div style="padding:0 14px 10px;font-size:12.5px;line-height:1.9;color:#a33">' +
+    '<div style="padding:0 14px 10px;font-size:12.5px;line-height:1.9;color:var(--accent)">' +
       '本作是教学模拟。所有病例、数值、处置均为教学演示，<b>不构成医疗建议</b>，不能用于真实诊疗。' +
     '</div>' +
     '<div style="display:flex;gap:8px;padding:6px 14px 10px">' +
@@ -3579,7 +3579,7 @@ function openFeedback() {
       '<textarea id="fbText" style="width:100%;height:220px;padding:10px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink);font:11.5px/1.6 monospace;resize:vertical">' + text.replace(/</g, '&lt;') + '</textarea>' +
     '</div>' +
     '<div style="display:flex;gap:8px;padding:0 14px 14px">' +
-      '<button id="fbCopy" class="pill" style="flex:1;padding:11px;cursor:pointer;background:rgba(211,58,58,.10);color:#a33;font-weight:700;border-radius:12px">复制报告</button>' +
+      '<button id="fbCopy" class="pill" style="flex:1;padding:11px;cursor:pointer;background:rgba(211,58,58,.10);color:var(--accent);font-weight:700;border-radius:12px">复制报告</button>' +
       (pages ? '<a href="https://github.com/shuangyewu-9264/xuanhu/issues/new" target="_blank" rel="noopener" class="pill" style="flex:1;padding:11px;text-align:center">GitHub 反馈</a>'
         : '<button id="fbSend" class="pill" style="flex:1;padding:11px;cursor:pointer;border-radius:12px">直接提交</button>') +
       '<button id="fbMail" class="pill" style="flex:1;padding:11px;cursor:pointer;border-radius:12px">邮件发送</button>' +
@@ -3619,7 +3619,7 @@ function openFeedback() {
 }
 
 /* ---------------- 版本 / 更新检查 ---------------- */
-const APP_VERSION = '1.57.9';
+const APP_VERSION = '1.57.10';
 const releaseRoot = document.querySelector('meta[name="xuanhu-release-root"]')?.content;
 const releaseBase = releaseRoot ? new URL(releaseRoot, location.href).href.replace(/\/$/, '') : '';
 const platformName = location.protocol === 'file:' ? '离线 HTML' :
@@ -3705,7 +3705,7 @@ async function checkUpdate() {
   openSheet('检查更新', '当前版本 ' + APP_VERSION, []);
   const list = document.querySelector('#sheetList');
   if (!list) return;
-  list.innerHTML = '<div style="padding:16px 14px;font-size:13px;color:#8a8078">正在查找更新…</div>';
+  list.innerHTML = '<div style="padding:16px 14px;font-size:13px;color:var(--ink-3)">正在查找更新…</div>';
   const loading = list.firstElementChild;
 
   const cands = updateBaseCandidates();
@@ -3725,10 +3725,10 @@ async function checkUpdate() {
     const dl = downloadPageUrl(cands[0]);
     list.innerHTML =
       '<div style="padding:14px 14px 4px;font-size:13px;line-height:1.8">' +
-        '<div style="color:#8a8078;margin-bottom:8px">没连上更新服务器（校外、或服务器没开）。可以直接打开下载页：</div>' +
+        '<div style="color:var(--ink-3);margin-bottom:8px">没连上更新服务器（校外、或服务器没开）。可以直接打开下载页：</div>' +
       '</div>' +
       '<div style="padding:0 14px 12px">' +
-        '<a href="' + dl + '" target="_blank" class="pill" style="display:block;padding:12px;text-align:center;text-decoration:none;background:rgba(211,58,58,.10);color:#a33;font-weight:700;border-radius:12px">打开下载页</a>' +
+        '<a href="' + dl + '" target="_blank" class="pill" style="display:block;padding:12px;text-align:center;text-decoration:none;background:rgba(211,58,58,.10);color:var(--accent);font-weight:700;border-radius:12px">打开下载页</a>' +
       '</div>' +
       '<div class="sec">下载页地址（可改）</div>' +
       '<div style="padding:0 14px 10px">' +
@@ -3772,13 +3772,13 @@ async function checkUpdate() {
     '<div style="padding:14px;font-size:13px;line-height:1.8">' +
       '<div>当前版本：<b>' + APP_VERSION + '</b></div>' +
       '<div>服务器版本：<b>' + info.version + '</b>' +
-        (newer ? ' <span style="color:#c0392b">（有新版本）</span>' : ' <span style="color:#27ae60">（已是最新）</span>') + '</div>' +
-      (size ? '<div style="color:#8a8078">安装包：' + size + '</div>' : '') +
-      '<div style="color:#8a8078;font-size:11.5px;margin-top:4px">来源：' + usedBase + '</div>' +
+        (newer ? ' <span style="color:var(--red)">（有新版本）</span>' : ' <span style="color:var(--green)">（已是最新）</span>') + '</div>' +
+      (size ? '<div style="color:var(--ink-3)">安装包：' + size + '</div>' : '') +
+      '<div style="color:var(--ink-3);font-size:11.5px;margin-top:4px">来源：' + usedBase + '</div>' +
     '</div>' +
     '<div class="sec">获取新版本</div>' +
     '<div style="padding:0 14px 10px;display:flex;gap:8px">' +
-      '<a href="' + dl + '" target="_blank" class="pill" style="flex:1;padding:11px;text-align:center;text-decoration:none;background:rgba(211,58,58,.10);color:#a33;font-weight:700;border-radius:12px">下载页</a>' +
+      '<a href="' + dl + '" target="_blank" class="pill" style="flex:1;padding:11px;text-align:center;text-decoration:none;background:rgba(211,58,58,.10);color:var(--accent);font-weight:700;border-radius:12px">下载页</a>' +
       (apkUrl ? '<a href="' + escapeHtml(apkUrl) + '" target="_blank" class="pill" style="flex:1;padding:11px;text-align:center;text-decoration:none;border-radius:12px">下载 APK</a>' : '') +
     '</div>' +
     '<div style="padding:0 14px 16px">' +
@@ -3830,7 +3830,7 @@ function openInsuranceHelp() {
     '<div class="sec">家庭预算提醒</div>' +
     '<div style="padding:0 14px 10px;font-size:12.5px;line-height:1.9">' +
       '· 自付 > 承受力：提醒<br>' +
-      '· 自付超过承受力的 130% 时，<b style="color:#c0392b">在病历中记录超支</b>。' +
+      '· 自付超过承受力的 130% 时，<b style="color:var(--red)">在病历中记录超支</b>。' +
     '</div>' +
     (ins ? (
       '<div class="sec">本例</div>' +
@@ -3850,7 +3850,7 @@ function openInsuranceHelp() {
     '<div style="display:flex;gap:6px;padding:0 14px 10px;flex-wrap:wrap">' +
       ['职工医保', '居民医保', '异地自费', 'random'].map(t =>
         '<button data-ins="' + t + '" class="pill" style="flex:1;min-width:80px;padding:9px;cursor:pointer;' +
-        (S?.ins?.t === t ? 'background:rgba(211,58,58,.12);color:#a33;font-weight:700' : '') +
+        (S?.ins?.t === t ? 'background:rgba(211,58,58,.12);color:var(--accent);font-weight:700' : '') +
         '">' + (t === 'random' ? '随机切换' : t) + '</button>').join('') +
     '</div>' +
     '<div style="padding:6px 14px 16px;font-size:12px;color:var(--ink-3);line-height:1.8">' +
@@ -3882,7 +3882,7 @@ function openOnlineMode() {
     '</div>' +
     '<div style="display:flex;gap:8px;padding:0 14px 14px">' +
       '<button id="olGo" class="pill" style="flex:1;padding:10px;cursor:pointer">应用内加载</button>' +
-      '<button id="olBrowser" class="pill" style="flex:1;padding:10px;cursor:pointer;background:rgba(211,58,58,.10);color:#a33;font-weight:700">浏览器打开</button>' +
+      '<button id="olBrowser" class="pill" style="flex:1;padding:10px;cursor:pointer;background:rgba(211,58,58,.10);color:var(--accent);font-weight:700">浏览器打开</button>' +
       '<button id="olClear" class="pill" style="flex:1;padding:10px;cursor:pointer">清除</button>' +
     '</div>' +
     (cur ? '<div style="padding:0 14px 16px;font-size:12px;color:var(--ink-3)">当前：' + cur + '</div>' : '');
@@ -3932,10 +3932,10 @@ function openConsult() {
   list.innerHTML =
     '<div class="sec">我要分享这一例</div>' +
     '<div style="padding:0 12px 12px">' +
-      '<div style="font-size:12px;color:#8a8078;margin-bottom:8px">' +
+      '<div style="font-size:12px;color:var(--ink-3);margin-bottom:8px">' +
         (isEDIntake(patient) ? '对方可用会诊码重建本例，从急诊首诊开始。' :
           '会诊码包含病例来源、病人身份、处置与结局。对方粘贴后可预览，也可以接手重来。') + '</div>' +
-      '<textarea id="cShareOut" readonly style="width:100%;height:88px;padding:10px;border-radius:10px;border:1px solid #e8e4e2;font:12px/1.5 monospace;background:#faf9f8;resize:none"></textarea>' +
+      '<textarea id="cShareOut" readonly style="width:100%;height:88px;padding:10px;border-radius:10px;border:1px solid var(--line);font:12px/1.5 monospace;color:var(--ink);background:var(--subtle);resize:none"></textarea>' +
       '<div style="display:flex;gap:8px;margin-top:8px">' +
         '<button id="cMake" class="pill" style="flex:1;padding:10px;cursor:pointer"' + (patient ? '' : ' disabled') + '>生成本例会诊码</button>' +
         '<button id="cCopy" class="pill" style="flex:1;padding:10px;cursor:pointer"' + (patient ? '' : ' disabled') + '>复制</button>' +
@@ -3943,7 +3943,7 @@ function openConsult() {
     '</div>' +
     '<div class="sec">我要接手别人的病例</div>' +
     '<div style="padding:0 12px 16px">' +
-      '<textarea id="cIn" placeholder="粘贴对方发来的会诊码（HX1- 开头）" style="width:100%;height:88px;padding:10px;border-radius:10px;border:1px solid #e8e4e2;font:12px/1.5 monospace;background:#faf9f8;resize:none"></textarea>' +
+      '<textarea id="cIn" placeholder="粘贴对方发来的会诊码（HX1- 开头）" style="width:100%;height:88px;padding:10px;border-radius:10px;border:1px solid var(--line);font:12px/1.5 monospace;color:var(--ink);background:var(--subtle);resize:none"></textarea>' +
       '<div style="display:flex;gap:8px;margin-top:8px">' +
         '<button id="cParse" class="pill" style="flex:1;padding:10px;cursor:pointer">解析并查看</button>' +
       '</div>' +
@@ -3964,7 +3964,7 @@ function openConsult() {
     const raw = list.querySelector('#cIn').value;
     const r = window.SHARE.parse(raw);
     const pv = list.querySelector('#cPreview');
-    if (!r.ok) { pv.innerHTML = '<div style="color:#c0392b;font-size:12.5px">' + escapeHtml(r.err) + '</div>'; return; }
+    if (!r.ok) { pv.innerHTML = '<div style="color:var(--red);font-size:12.5px">' + escapeHtml(r.err) + '</div>'; return; }
     const d = r.data;
     const ed = isEDIntake({ diff: d.d });
     const p = d.p || {};
@@ -3987,11 +3987,11 @@ function openConsult() {
     pv.innerHTML =
       '<div style="font-size:13px;line-height:1.7">' +
       '<div><b>会诊病例</b></div>' +
-      '<div style="color:#8a8078">病人：' + escapeHtml(p.n || '—') + ' · ' + escapeHtml(p.x) + ' · ' + escapeHtml(p.a) + ' 岁 · ' + escapeHtml(p.w) + ' kg</div>' +
-      (ed ? '<div style="color:#8a8078">第 6 级 · 急诊首诊</div>' + (d.o === 'open' ? '' : outcomeLine) : outcomeLine +
-        '<div style="margin-top:6px;color:#6b625d">处置 ' + acts.length + ' 条：' + escapeHtml(acts.slice(0, 6).join('；') || '无') + (acts.length > 6 ? ' …' : '') + '</div>') +
+      '<div style="color:var(--ink-3)">病人：' + escapeHtml(p.n || '—') + ' · ' + escapeHtml(p.x) + ' · ' + escapeHtml(p.a) + ' 岁 · ' + escapeHtml(p.w) + ' kg</div>' +
+      (ed ? '<div style="color:var(--ink-3)">第 6 级 · 急诊首诊</div>' + (d.o === 'open' ? '' : outcomeLine) : outcomeLine +
+        '<div style="margin-top:6px;color:var(--ink-2)">处置 ' + acts.length + ' 条：' + escapeHtml(acts.slice(0, 6).join('；') || '无') + (acts.length > 6 ? ' …' : '') + '</div>') +
       '</div>' +
-      '<button id="cTake" class="pill" style="margin-top:10px;padding:10px 16px;cursor:pointer;background:#f7e6e6;color:#a33;font-weight:700">接手这一例</button>';
+      '<button id="cTake" class="pill" style="margin-top:10px;padding:10px 16px;cursor:pointer;background:var(--accent-soft);color:var(--accent);font-weight:700">接手这一例</button>';
     const take = pv.querySelector('#cTake');
     take.addEventListener('click', () => {
       if (patient !== S || !list.contains(take) || !$('#sheet').classList.contains('on')) return;
@@ -4008,9 +4008,9 @@ let glossaryCat = '全部';
 (() => {
   const st = document.createElement('style');
   st.textContent = '.gl-cats{display:flex;flex-wrap:wrap;gap:6px;padding:0 12px 10px}'
-    + '.gl-cat{padding:6px 11px;border-radius:999px;border:1px solid var(--line);background:#fff;'
-    + 'font:inherit;font-size:12px;color:#6b625d;cursor:pointer}'
-    + '.gl-cat.on{background:#a33;border-color:#a33;color:#fff}';
+    + '.gl-cat{padding:6px 11px;border-radius:999px;border:1px solid var(--line);background:var(--card);'
+    + 'font:inherit;font-size:12px;color:var(--ink-2);cursor:pointer}'
+    + '.gl-cat.on{background:var(--accent);border-color:var(--accent);color:var(--accent-on)}';
   if (document.head) document.head.appendChild(st);
 })();
 
@@ -4032,17 +4032,17 @@ function openGlossary(q, cat) {
   if (!host) return;
   host.innerHTML =
     '<div style="padding:2px 12px 8px"><input id="glSearch" placeholder="搜索症状、疾病、药物、检查、玩法…" ' +
-    'style="width:100%;padding:10px 12px;border-radius:11px;border:1px solid #e8e4e2;font:inherit;' +
-    'font-size:14px;outline:none;background:#faf9f8" value="' + (q || '').replace(/"/g, '&quot;') + '"></div>' +
+    'style="width:100%;padding:10px 12px;border-radius:11px;border:1px solid var(--line);font:inherit;' +
+    'font-size:14px;outline:none;color:var(--ink);background:var(--subtle)" value="' + (q || '').replace(/"/g, '&quot;') + '"></div>' +
     '<div class="gl-cats">' + cats.map(c =>
       '<button type="button" class="gl-cat' + (c === active ? ' on' : '') + '" data-cat="' + c + '">' +
       c + (c === '全部' ? '' : ' ' + (counts[c] || 0)) + '</button>').join('') + '</div>' +
     '<div id="glList">' + list.map(t =>
       '<div class="drow" data-t="' + t.n + '"><span class="nm">' + t.n +
-      (t.abbr ? '<span style="font-size:10px;color:#b3a6a6"> · ' + t.abbr + '</span>' : '') +
-      '</span><span class="amt" style="font-size:11px;color:#9a8f89">' + (t.normal || '') + '</span></div>'
+      (t.abbr ? '<span style="font-size:10px;color:var(--ink-3)"> · ' + t.abbr + '</span>' : '') +
+      '</span><span class="amt" style="font-size:11px;color:var(--ink-3)">' + (t.normal || '') + '</span></div>'
     ).join('') + '</div>' +
-    (list.length ? '' : '<div style="padding:18px;color:#9a9a9a;font-size:13px">没有匹配的术语</div>');
+    (list.length ? '' : '<div style="padding:18px;color:var(--ink-3);font-size:13px">没有匹配的术语</div>');
   /* 不自动聚焦：平板/手机上会立刻弹软键盘挡住列表 */
   host.scrollTop = 0;
   if (host.parentElement) host.parentElement.scrollTop = 0;
@@ -4069,8 +4069,8 @@ function openHandbook() {
   if (list) {
     list.innerHTML = '<div style="padding:2px 12px 10px">' +
       '<input id="hbSearch" placeholder="搜索诊断 / 药名…" ' +
-      'style="width:100%;padding:10px 12px;border-radius:11px;border:1px solid #e8e4e2;' +
-      'font:inherit;font-size:14px;outline:none;background:#faf9f8"></div>' + html;
+      'style="width:100%;padding:10px 12px;border-radius:11px;border:1px solid var(--line);' +
+      'font:inherit;font-size:14px;outline:none;color:var(--ink);background:var(--subtle)"></div>' + html;
     const inp = list.querySelector('#hbSearch');
     if (inp) {
       inp.addEventListener('input', () => {
@@ -4168,7 +4168,7 @@ function openBedsideMenu(assessment) {
     {n:'术语表', tag:(window.GLOSSARY?window.GLOSSARY.TERMS.length:0)+' 条', amt:'查看', run: () => openGlossary()},
     {n:'成就', tag: (window.ACHIEVEMENTS ? `${window.ACHIEVEMENTS.unlocked().size} / ${window.ACHIEVEMENTS.list.length} 已解锁` : '未加载'), amt:'查看', run: () => openAchievements()},
     {n:'难度设置', tag:'病例难度 ' + caseDiff + ' · 指导 ' + ((MENTOR.LEVELS[level]||MENTOR.LEVELS.intern).name), amt:'', run: () => openSheet('难度设置', '两轴独立', difficultyRows())},
-    {n: nightMode ? '☀ 切回白天' : '🌙 夜间模式', tag: nightMode ? '病情推进 ×1.3 · 界面转暗' : '当前白天', amt:'切换', run: () => { closeSheet(); toggleNight(); }},
+    {n: nightMode ? '☀ 切回白天' : '🌙 夜间模式', tag: nightMode ? '当前为深色界面' : '当前白天', amt:'切换', run: () => { closeSheet(); toggleNight(); }},
     {n:'现实模式', tag:ruleNames(enabledRules()), amt:'设置', run:openRealismSettings},
     {n: '环境 / 场景', tag: '环境与活动', amt: '', run: () => openEnvSheet(S)},
     {n: autoHint ? '主动提示：开' : '主动提示：关', tag: autoHint ? '自动显示提示' : '只在给药后点评', amt: '', run: () => {
@@ -4486,7 +4486,7 @@ function toggleNight() {
   nightMode = !nightMode;
   try { localStorage.setItem('life.night', nightMode ? '1' : '0'); } catch (e) {}
   applyTheme();
-  toast(nightMode ? '🌙 夜间模式：病情推进加快，提示减少' : '☀ 白天模式');
+  toast(nightMode ? '🌙 夜间模式' : '☀ 白天模式');
   renderAll();
 }
 
@@ -4670,6 +4670,9 @@ function renderAll() {
 
 /* 更新公告：每次发版在这里加一条（新的放最前面） */
 const RELEASES = [
+  { v: '1.57.10', notes: [
+    '夜间模式仅切换配色，病程按所选倍速推进。改善给药、会诊和术语表等界面的文字对比度。',
+  ] },
   { v: '1.57.9', notes: [
     '修正 Pages 版本清单中的网页与离线版路径。下载页会说明本站是否附带 APK，并在需要时提供 Netlify 安卓下载入口。',
   ] },
